@@ -8,6 +8,7 @@ from rclpy.time import Time
 from rclpy.duration import Duration
 
 from geometry_msgs.msg import PoseStamped, TransformStamped
+from std_msgs.msg import Bool, Float64MultiArray
 from tf2_ros import Buffer, TransformListener, TransformBroadcaster
 from tf2_ros import TransformException
 
@@ -33,6 +34,16 @@ class GroundTruthLocalization(Node):
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.tf_broadcaster = TransformBroadcaster(self)
 
+        self.declare_parameter("position_tolerance_m", 0.03)
+        self.declare_parameter("yaw_tolerance_rad", 0.05236)
+
+        self.position_tolerance_m = float(
+            self.get_parameter("position_tolerance_m").value
+        )
+        self.yaw_tolerance_rad = float(
+            self.get_parameter("yaw_tolerance_rad").value
+        )
+
         self.latest_pose = None
         self.last_warning_time = 0.0
 
@@ -40,6 +51,17 @@ class GroundTruthLocalization(Node):
             PoseStamped,
             "/tugger/ground_truth_pose",
             self.pose_callback,
+            10
+        )
+
+        self.error_publisher = self.create_publisher(
+            Float64MultiArray,
+            "/tugger/localization_error",
+            10
+        )
+        self.health_publisher = self.create_publisher(
+            Bool,
+            "/tugger/localization_healthy",
             10
         )
 
@@ -96,8 +118,28 @@ class GroundTruthLocalization(Node):
             odom_to_base.transform.rotation
         )
 
+        dx = gx - ox
+        dy = gy - oy
+        position_error = math.hypot(dx, dy)
+        yaw_error = math.atan2(
+            math.sin(gyaw - oyaw),
+            math.cos(gyaw - oyaw)
+        )
+
+        error = Float64MultiArray()
+        # [position error (m), yaw error (rad), truth minus odom x (m), y (m)]
+        error.data = [position_error, yaw_error, dx, dy]
+        self.error_publisher.publish(error)
+
+        healthy = Bool()
+        healthy.data = (
+            position_error <= self.position_tolerance_m
+            and abs(yaw_error) <= self.yaw_tolerance_rad
+        )
+        self.health_publisher.publish(healthy)
+
         # T_map_odom = T_map_base * inverse(T_odom_base)
-        map_odom_yaw = gyaw - oyaw
+        map_odom_yaw = yaw_error
 
         c = math.cos(map_odom_yaw)
         s = math.sin(map_odom_yaw)

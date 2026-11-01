@@ -7,8 +7,6 @@ from rclpy.node import Node
 
 from sensor_msgs.msg import JointState
 from nav_msgs.msg import Odometry
-from geometry_msgs.msg import TransformStamped
-from tf2_ros import TransformBroadcaster
 
 
 class FourWSOdometry(Node):
@@ -197,8 +195,6 @@ class FourWSOdometry(Node):
 
         half_yaw = 0.5 * self.yaw
 
-        if not hasattr(self, '_tf_broadcaster'):
-            self._tf_broadcaster = TransformBroadcaster(self)
         odom = Odometry()
 
         odom.header.stamp = current_time.to_msg()

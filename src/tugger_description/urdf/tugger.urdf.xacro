@@ -61,20 +61,13 @@
 
   <link name="base_link">
 
-
     <!-- LOWER WHITE FILLETED LAYER -->
-
     <visual name="bottom_layer">
-
-      <origin xyz="0 0 0"
-              rpy="0 0 0"/>
-
+      <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
         <mesh filename="package://tugger_description/meshes/filleted_body.stl"/>
       </geometry>
-
       <material name="body_white"/>
-
     </visual>
 
 
@@ -111,16 +104,11 @@
 
 
     <!-- SIMPLE COLLISION -->
-
     <collision>
-
-      <origin xyz="0 0 0.0475"
-              rpy="0 0 0"/>
-
+      <origin xyz="0 0 0.0475" rpy="0 0 0"/>
       <geometry>
         <box size="0.88 0.58 0.15"/>
       </geometry>
-
     </collision>
 
 
@@ -535,6 +523,28 @@
 
   </joint>
 
+  <!-- Thin, 50 mm square QR camera below the intact lower chassis.  Its
+       optical origin remains centred over base_footprint / the lift platform. -->
+  <link name="downward_camera_link">
+    <visual>
+      <geometry><box size="0.050 0.050 0.005"/></geometry>
+      <material name="camera_black"/>
+    </visual>
+    <inertial>
+      <mass value="0.01"/>
+      <inertia ixx="0.00001" ixy="0" ixz="0" iyy="0.00001" iyz="0" izz="0.00001"/>
+    </inertial>
+  </link>
+
+  <joint name="downward_camera_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="downward_camera_link"/>
+    <!-- Mounted just below the intact lower chassis: the lens is 60 mm above
+         the floor in the normal Gazebo resting pose, clear of the chassis
+         underside while retaining a 330 mm-wide 140-degree field of view. -->
+    <origin xyz="0 0 -0.040" rpy="0 1.57079632679 0"/>
+  </joint>
+
 
 
   <!-- GAZEBO FRONT CAMERA SENSOR -->
@@ -584,6 +594,19 @@
           <near>0.05</near>
           <far>50.0</far>
         </clip>
+      </camera>
+    </sensor>
+  </gazebo>
+
+  <gazebo reference="downward_camera_link">
+    <sensor name="downward_camera" type="camera">
+      <always_on>true</always_on>
+      <update_rate>15</update_rate>
+      <topic>/downward_camera/image_raw</topic>
+      <camera>
+        <horizontal_fov>2.44346</horizontal_fov>
+        <image><width>640</width><height>480</height><format>R8G8B8</format></image>
+        <clip><near>0.01</near><far>0.50</far></clip>
       </camera>
     </sensor>
   </gazebo>
@@ -823,6 +846,34 @@
 
     </plugin>
 
+  </gazebo>
+
+  <!-- Cargo coupling is intentionally command-driven; it is inactive until
+       the operator panel emits an attach topic in the Gazebo simulation. -->
+  <gazebo>
+    <plugin filename="gz-sim-detachable-joint-system"
+            name="gz::sim::systems::DetachableJoint">
+      <parent_link>lift_platform_link</parent_link>
+      <child_model>cargo_station_0_box</child_model>
+      <child_link>link</child_link>
+      <topic>/cargo/station_0/attach</topic>
+      <detach_topic>/cargo/station_0/detach</detach_topic>
+      <output_topic>/cargo/station_0/state</output_topic>
+      <suppress_child_warning>true</suppress_child_warning>
+    </plugin>
+  </gazebo>
+
+  <gazebo>
+    <plugin filename="gz-sim-detachable-joint-system"
+            name="gz::sim::systems::DetachableJoint">
+      <parent_link>lift_platform_link</parent_link>
+      <child_model>cargo_station_3_box</child_model>
+      <child_link>link</child_link>
+      <topic>/cargo/station_3/attach</topic>
+      <detach_topic>/cargo/station_3/detach</detach_topic>
+      <output_topic>/cargo/station_3/state</output_topic>
+      <suppress_child_warning>true</suppress_child_warning>
+    </plugin>
   </gazebo>
 
 </robot>

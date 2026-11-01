@@ -69,6 +69,13 @@
         </visual>
       </link>
     </model>
+    <!-- Static, floor-level QR fiducials.  Their centres are the commanded
+         base_footprint docking centres; the downward camera reads them only
+         during the final local docking phase. -->
+    <model name="qr_station_1"><static>true</static><pose>-17.5 -7.0 0.002 0 0 0</pose><link name="link"><visual name="qr"><geometry><plane><normal>0 0 1</normal><size>0.22 0.22</size></plane></geometry><material><pbr><metal><albedo_map>file://media/qr/station_1.png</albedo_map><roughness>0.8</roughness><metalness>0.0</metalness></metal></pbr></material></visual></link></model>
+    <model name="qr_dropoff_2"><static>true</static><pose>-17.5 7.0 0.002 0 0 0</pose><link name="link"><visual name="qr"><geometry><plane><normal>0 0 1</normal><size>0.22 0.22</size></plane></geometry><material><pbr><metal><albedo_map>file://media/qr/dropoff_2.png</albedo_map><roughness>0.8</roughness><metalness>0.0</metalness></metal></pbr></material></visual></link></model>
+    <model name="qr_station_3"><static>true</static><pose>17.5 7.0 0.002 0 0 0</pose><link name="link"><visual name="qr"><geometry><plane><normal>0 0 1</normal><size>0.22 0.22</size></plane></geometry><material><pbr><metal><albedo_map>file://media/qr/station_3.png</albedo_map><roughness>0.8</roughness><metalness>0.0</metalness></metal></pbr></material></visual></link></model>
+    <model name="qr_dropoff_4"><static>true</static><pose>17.5 -7.0 0.002 0 0 0</pose><link name="link"><visual name="qr"><geometry><plane><normal>0 0 1</normal><size>0.22 0.22</size></plane></geometry><material><pbr><metal><albedo_map>file://media/qr/dropoff_4.png</albedo_map><roughness>0.8</roughness><metalness>0.0</metalness></metal></pbr></material></visual></link></model>
     <model name="north_wall">
       <static>true</static>
       <pose>0 12.45 4 0 0 0</pose>

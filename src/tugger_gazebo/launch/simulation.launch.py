@@ -46,7 +46,10 @@ def generate_launch_description():
     )
 
     # Allow Gazebo to resolve package://tugger_description/... mesh URIs.
-    gazebo_resource_path = os.path.dirname(description_pkg)
+    gazebo_resource_path = os.pathsep.join([
+        os.path.dirname(description_pkg),
+        gazebo_pkg,
+    ])
 
     set_gazebo_resource_path = SetEnvironmentVariable(
         name='GZ_SIM_RESOURCE_PATH',
@@ -141,7 +144,24 @@ def generate_launch_description():
             '/front_camera/image_raw@sensor_msgs/msg/Image[gz.msgs.Image',
             '/front_camera/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
             '/rear_camera/image_raw@sensor_msgs/msg/Image[gz.msgs.Image',
-            '/rear_camera/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo'
+            '/rear_camera/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
+            '/downward_camera/image_raw@sensor_msgs/msg/Image[gz.msgs.Image',
+            '/downward_camera/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo'
+        ],
+        output='screen'
+    )
+
+    # The detachable-joint Gazebo systems use Empty messages for cargo pickup
+    # and release.  The RQt panel publishes the ROS endpoints below.
+    cargo_attachment_bridge = Node(
+        package='ros_gz_bridge',
+        executable='parameter_bridge',
+        name='cargo_attachment_bridge',
+        arguments=[
+            '/cargo/station_0/attach@std_msgs/msg/Empty[gz.msgs.Empty',
+            '/cargo/station_0/detach@std_msgs/msg/Empty[gz.msgs.Empty',
+            '/cargo/station_3/attach@std_msgs/msg/Empty[gz.msgs.Empty',
+            '/cargo/station_3/detach@std_msgs/msg/Empty[gz.msgs.Empty',
         ],
         output='screen'
     )
@@ -214,6 +234,7 @@ def generate_launch_description():
         imu_bridge,
         lidar_bridge,
         camera_bridge,
+        cargo_attachment_bridge,
         spawn_robot,
         joint_state_broadcaster_spawner,
         steering_controller_spawner,

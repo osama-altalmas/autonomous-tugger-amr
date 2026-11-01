@@ -1,0 +1,6 @@
+<library path="src">
+  <class name="TuggerOperatorPanel" type="tugger_control.operator_panel.OperatorPanel" base_class_type="rqt_gui_py::Plugin">
+    <description>Simulation-safe mission, cargo, and lift operator panel for the tugger AMR.</description>
+    <qtgui><group><label>Tugger</label></group><label>Operator Panel</label></qtgui>
+  </class>
+</library>

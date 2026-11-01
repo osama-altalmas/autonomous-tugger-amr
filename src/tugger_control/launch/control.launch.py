@@ -62,8 +62,17 @@ def generate_launch_description():
         ]
     )
 
+    qr_docking_vision = Node(
+        package='tugger_control',
+        executable='qr_docking_vision',
+        name='qr_docking_vision',
+        output='screen',
+        parameters=[{'use_sim_time': True, 'qr_size_m': 0.22}],
+    )
+
     return LaunchDescription([
         four_ws_controller,
         four_ws_odometry,
         ekf,
+        qr_docking_vision,
     ])

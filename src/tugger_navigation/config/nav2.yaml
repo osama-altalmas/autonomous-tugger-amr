@@ -65,7 +65,7 @@ controller_server:
     failure_tolerance: 0.3
 
     progress_checker_plugins: ["progress_checker"]
-    goal_checker_plugins: ["goal_checker"]
+    goal_checker_plugins: ["goal_checker", "precision_goal_checker"]
     controller_plugins: ["FollowPath"]
 
     progress_checker:
@@ -78,6 +78,14 @@ controller_server:
       stateful: true
       xy_goal_tolerance: 0.07
       yaw_goal_tolerance: 0.07
+
+    # Used only by the saved under-stand docking paths.  Facility routes
+    # retain the normal 7 cm tolerance above.
+    precision_goal_checker:
+      plugin: "nav2_controller::SimpleGoalChecker"
+      stateful: true
+      xy_goal_tolerance: 0.02
+      yaw_goal_tolerance: 0.035
 
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
