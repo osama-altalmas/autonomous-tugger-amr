@@ -36,13 +36,24 @@ class SavedRouteRepository:
             raise ValueError(f'Saved route has invalid pose data: {key}')
         return route, converted
 
+    def routes_to(self, destination):
+        """Return every statically-valid saved route ending at ``destination``."""
+        matches = []
+        for key, entry in self.database.get('routes', {}).items():
+            if entry.get('target') == destination:
+                route, poses = self.route(key)
+                matches.append((key, route, poses))
+        if not matches:
+            raise ValueError(f'No saved routes target destination: {destination}')
+        return matches
+
 
 class PrecisionDockingRepository:
     """Load an offline Phase 14 staging-to-under-stand approach.
 
     The Phase 14 artifacts remain explicitly simulator-only candidates.  This
-    loader verifies their static geometry gates; it does not turn their
-    ``execution_approved`` field into a certification claim.
+    loader verifies their static geometry gates; it does not turn route
+    metadata into a certification claim.
     """
 
     def __init__(self, directory):

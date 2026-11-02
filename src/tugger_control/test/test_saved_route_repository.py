@@ -26,6 +26,29 @@ def test_reads_a_validated_route(tmp_path):
     assert poses == [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]
 
 
+def test_lists_every_validated_route_for_a_destination(tmp_path):
+    database = {
+        'version': 'AMR_V1_FIVE_STATION_DATABASE',
+        'routes': {
+            'A__TO__station': {
+                'source': 'A', 'target': 'station',
+                'status': 'VALIDATED_STATIC_CANDIDATE', 'route_file': 'a.json',
+            },
+            'B__TO__station': {
+                'source': 'B', 'target': 'station',
+                'status': 'VALIDATED_STATIC_CANDIDATE', 'route_file': 'b.json',
+            },
+        },
+    }
+    for name, source in (('a.json', 'A'), ('b.json', 'B')):
+        (tmp_path / name).write_text(json.dumps({
+            'source': source, 'target': 'station', 'poses': [[0, 0, 0], [1, 0, 0]],
+        }))
+    (tmp_path / 'route_database.json').write_text(json.dumps(database))
+    matches = SavedRouteRepository(tmp_path).routes_to('station')
+    assert [key for key, _route, _poses in matches] == ['A__TO__station', 'B__TO__station']
+
+
 def test_reads_the_precise_staging_to_dock_section(tmp_path):
     route = {
         'schema': 'amr_phase14_two_segment_refined_v1',

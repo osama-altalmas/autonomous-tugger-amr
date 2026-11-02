@@ -48,6 +48,9 @@ def generate_launch_description():
     # Allow Gazebo to resolve package://tugger_description/... mesh URIs.
     gazebo_resource_path = os.pathsep.join([
         os.path.dirname(description_pkg),
+        # `model://tugger_gazebo/...` needs the directory that contains the
+        # package directory, not the package directory itself.
+        os.path.dirname(gazebo_pkg),
         gazebo_pkg,
     ])
 

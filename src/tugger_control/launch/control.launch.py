@@ -67,7 +67,7 @@ def generate_launch_description():
         executable='qr_docking_vision',
         name='qr_docking_vision',
         output='screen',
-        parameters=[{'use_sim_time': True, 'qr_size_m': 0.22}],
+        parameters=[{'use_sim_time': True, 'qr_grid_size_m': 0.064}],
     )
 
     return LaunchDescription([

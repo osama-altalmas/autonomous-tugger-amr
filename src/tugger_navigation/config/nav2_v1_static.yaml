@@ -57,6 +57,7 @@ controller_server:
     - precision_goal_checker
     controller_plugins:
     - FollowPath
+    - PrecisionFollowPath
     progress_checker:
       plugin: nav2_controller::SimpleProgressChecker
       required_movement_radius: 0.1
@@ -69,8 +70,8 @@ controller_server:
     precision_goal_checker:
       plugin: nav2_controller::SimpleGoalChecker
       stateful: true
-      xy_goal_tolerance: 0.02
-      yaw_goal_tolerance: 0.035
+      xy_goal_tolerance: 0.01
+      yaw_goal_tolerance: 0.01745
     FollowPath:
       plugin: nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController
       max_linear_vel: 0.2
@@ -91,6 +92,26 @@ controller_server:
       use_cost_regulated_linear_velocity_scaling: true
       regulated_linear_scaling_min_radius: 0.29
       regulated_linear_scaling_min_speed: 0.05
+    PrecisionFollowPath:
+      plugin: nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController
+      max_linear_vel: 0.05
+      lookahead_dist: 0.1
+      min_lookahead_dist: 0.06
+      max_lookahead_dist: 0.14
+      lookahead_time: 0.5
+      rotate_to_heading_angular_vel: 0.0
+      use_rotate_to_heading: false
+      allow_reversing: true
+      transform_tolerance: 0.2
+      use_velocity_scaled_lookahead_dist: true
+      min_approach_linear_velocity: 0.01
+      approach_velocity_scaling_dist: 0.2
+      use_collision_detection: true
+      max_allowed_time_to_collision_up_to_carrot: 1.0
+      use_regulated_linear_velocity_scaling: true
+      use_cost_regulated_linear_velocity_scaling: true
+      regulated_linear_scaling_min_radius: 0.29
+      regulated_linear_scaling_min_speed: 0.01
 global_costmap:
   global_costmap:
     ros__parameters:
