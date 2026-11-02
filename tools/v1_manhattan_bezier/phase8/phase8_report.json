@@ -1,0 +1,238 @@
+{
+  "version": "AMR_V1_PHASE8_EXPERIMENTAL",
+  "map_sha256": "7455e51ecdfb1f4c853776f69cabaf7981283228b0ee0fdb09fe1a0b435d2d29",
+  "mode": "OFFLINE_LAYERED_DOCKING_DIAGNOSTIC",
+  "original_warehouse_map_modified": false,
+  "all_four_directions_evaluated": true,
+  "physical_execution_approved": false,
+  "stations": {
+    "cargo_dropoff_northwest": {
+      "collision_layer": {
+        "tabletop_model_present": false,
+        "tabletop_grid_cells": 0,
+        "leg_grid_cells": 30,
+        "occupied_cells_reclassified": 0,
+        "original_map_modified": false,
+        "wall_overlap_excluded_by_evidence": false,
+        "full_3d_collision_verified": false,
+        "physical_validation_complete": false
+      },
+      "entries": {
+        "east": {
+          "status": "REJECTED",
+          "reason": "Pre-docking footprint blocked even in experimental local layer",
+          "requested_predock_pose": [
+            -16.5,
+            7.0,
+            3.14159
+          ],
+          "execution_approved": false
+        },
+        "north": {
+          "status": "REJECTED",
+          "reason": "Pre-docking footprint blocked even in experimental local layer",
+          "requested_predock_pose": [
+            -17.5,
+            8.0,
+            -1.5708
+          ],
+          "execution_approved": false
+        },
+        "west": {
+          "status": "REJECTED",
+          "reason": "Pre-docking footprint blocked even in experimental local layer",
+          "requested_predock_pose": [
+            -18.5,
+            7.0,
+            -0.0
+          ],
+          "execution_approved": false
+        },
+        "south": {
+          "status": "REJECTED",
+          "reason": "Pre-docking footprint blocked even in experimental local layer",
+          "requested_predock_pose": [
+            -17.5,
+            6.0,
+            1.5708
+          ],
+          "execution_approved": false
+        }
+      },
+      "selected_entry": null,
+      "selected_distance_m": null,
+      "physical_execution_approved": false
+    },
+    "cargo_dropoff_southeast": {
+      "collision_layer": {
+        "tabletop_model_present": false,
+        "tabletop_grid_cells": 0,
+        "leg_grid_cells": 30,
+        "occupied_cells_reclassified": 0,
+        "original_map_modified": false,
+        "wall_overlap_excluded_by_evidence": false,
+        "full_3d_collision_verified": false,
+        "physical_validation_complete": false
+      },
+      "entries": {
+        "east": {
+          "status": "REJECTED",
+          "reason": "Pre-docking footprint blocked even in experimental local layer",
+          "requested_predock_pose": [
+            18.5,
+            -7.0,
+            3.14159
+          ],
+          "execution_approved": false
+        },
+        "north": {
+          "status": "REJECTED",
+          "reason": "Pre-docking footprint blocked even in experimental local layer",
+          "requested_predock_pose": [
+            17.5,
+            -6.0,
+            -1.5708
+          ],
+          "execution_approved": false
+        },
+        "west": {
+          "status": "REJECTED",
+          "reason": "Pre-docking footprint blocked even in experimental local layer",
+          "requested_predock_pose": [
+            16.5,
+            -7.0,
+            -0.0
+          ],
+          "execution_approved": false
+        },
+        "south": {
+          "status": "REJECTED",
+          "reason": "Pre-docking footprint blocked even in experimental local layer",
+          "requested_predock_pose": [
+            17.5,
+            -8.0,
+            1.5708
+          ],
+          "execution_approved": false
+        }
+      },
+      "selected_entry": null,
+      "selected_distance_m": null,
+      "physical_execution_approved": false
+    },
+    "cargo_station_0": {
+      "collision_layer": {
+        "tabletop_model_present": true,
+        "tabletop_grid_cells": 756,
+        "leg_grid_cells": 30,
+        "occupied_cells_reclassified": 562,
+        "original_map_modified": false,
+        "wall_overlap_excluded_by_evidence": false,
+        "full_3d_collision_verified": false,
+        "physical_validation_complete": false
+      },
+      "entries": {
+        "east": {
+          "status": "REJECTED",
+          "reason": "Pre-docking footprint blocked even in experimental local layer",
+          "requested_predock_pose": [
+            -16.5,
+            -7.0,
+            3.14159
+          ],
+          "execution_approved": false
+        },
+        "north": {
+          "status": "REJECTED",
+          "reason": "Pre-docking footprint blocked even in experimental local layer",
+          "requested_predock_pose": [
+            -17.5,
+            -6.0,
+            -1.5708
+          ],
+          "execution_approved": false
+        },
+        "west": {
+          "status": "REJECTED",
+          "reason": "Pre-docking footprint blocked even in experimental local layer",
+          "requested_predock_pose": [
+            -18.5,
+            -7.0,
+            -0.0
+          ],
+          "execution_approved": false
+        },
+        "south": {
+          "status": "REJECTED",
+          "reason": "Pre-docking footprint blocked even in experimental local layer",
+          "requested_predock_pose": [
+            -17.5,
+            -8.0,
+            1.5708
+          ],
+          "execution_approved": false
+        }
+      },
+      "selected_entry": null,
+      "selected_distance_m": null,
+      "physical_execution_approved": false
+    },
+    "cargo_station_3": {
+      "collision_layer": {
+        "tabletop_model_present": true,
+        "tabletop_grid_cells": 729,
+        "leg_grid_cells": 30,
+        "occupied_cells_reclassified": 583,
+        "original_map_modified": false,
+        "wall_overlap_excluded_by_evidence": false,
+        "full_3d_collision_verified": false,
+        "physical_validation_complete": false
+      },
+      "entries": {
+        "east": {
+          "status": "REJECTED",
+          "reason": "Pre-docking footprint blocked even in experimental local layer",
+          "requested_predock_pose": [
+            18.5,
+            7.0,
+            3.14159
+          ],
+          "execution_approved": false
+        },
+        "north": {
+          "status": "REJECTED",
+          "reason": "Pre-docking footprint blocked even in experimental local layer",
+          "requested_predock_pose": [
+            17.5,
+            8.0,
+            -1.5708
+          ],
+          "execution_approved": false
+        },
+        "west": {
+          "status": "REJECTED",
+          "reason": "Pre-docking footprint blocked even in experimental local layer",
+          "requested_predock_pose": [
+            16.5,
+            7.0,
+            -0.0
+          ],
+          "execution_approved": false
+        },
+        "south": {
+          "status": "REJECTED",
+          "reason": "Pre-docking footprint blocked even in experimental local layer",
+          "requested_predock_pose": [
+            17.5,
+            6.0,
+            1.5708
+          ],
+          "execution_approved": false
+        }
+      },
+      "selected_entry": null,
+      "selected_distance_m": null,
+      "physical_execution_approved": false
+    }
+  }
+}

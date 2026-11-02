@@ -41,3 +41,26 @@ rosbag2_*/
 imu_plots/
 plots/
 *.csv
+
+# Local development backups
+*.before_tf_fix
+*.before_cmd_vel
+
+# Development snapshots and backup copies
+*.before_*
+*.backup_*
+*.bak2
+
+# Phase 14 development ignores
+*.orig
+*.backup*
+*.phase14_backup
+*.failed_patch
+*.phase3_baseline
+/logs/
+/odom.
+tools/v1_manhattan_bezier/phase14/routes_refined/phase14f_*.json
+
+# Generated navigation diagnostics
+/tools/v1_manhattan_bezier/diagnostics/
+/tools/v1_manhattan_bezier/docking/docking_report.json

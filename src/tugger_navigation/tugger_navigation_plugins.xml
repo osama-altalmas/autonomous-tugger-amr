@@ -1,0 +1,21 @@
+<library path="tugger_bidirectional_planner">
+  <class
+    type="tugger_navigation::BidirectionalPlanner"
+    base_class_type="nav2_core::GlobalPlanner">
+    <description>
+      Computes independent forward-only and reverse-only kinematic paths
+      and selects the shorter valid path.
+    </description>
+  </class>
+</library>
+
+<library path="tugger_rrt_star_planner">
+  <class
+    type="tugger_navigation::RRTStarReedsSheppPlanner"
+    base_class_type="nav2_core::GlobalPlanner">
+    <description>
+      Custom RRT* global planner using Reeds-Shepp steering,
+      direction-aware rewiring, and cardinal-heading preferences.
+    </description>
+  </class>
+</library>

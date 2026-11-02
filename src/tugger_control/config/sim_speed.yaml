@@ -1,0 +1,38 @@
+# ==================================================
+# AMR V1 — EDITABLE SIMULATION SPEED PROFILE
+# ==================================================
+#
+# Change these values whenever you want.
+#
+# FAST_SIM:
+#   cruising_speed: 1.6
+#
+# REALISTIC:
+#   cruising_speed: 0.2
+#
+# IMPORTANT:
+#   Speeds are meters/second in SIMULATED time.
+#   High-speed settings are for Gazebo experiments only.
+#
+# Rebuild and restart Terminal 2 after changing
+# controller parameters.
+# ==================================================
+
+four_ws_controller:
+  ros__parameters:
+    max_linear_speed: 1.8
+    max_acceleration: 1.6
+    max_deceleration: 2.5
+    max_steering_rate: 2.2
+    max_lateral_acceleration: 1.2
+
+# Follower-specific settings.
+# This section is read by our route launcher, not
+# passed directly to the ROS controller.
+
+follower:
+  cruising_speed: 1.6
+  lookahead: 0.65
+  max_lateral_acceleration: 1.2
+  max_tracking_error: 0.35
+  max_seconds: 900

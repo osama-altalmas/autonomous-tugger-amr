@@ -1,0 +1,14 @@
+{
+  "status": "ROUTE_FOUND",
+  "start": "HOME",
+  "goal": "TEST_A",
+  "stations": [
+    "HOME",
+    "TEST_A"
+  ],
+  "route_ids": [
+    "HOME_to_TEST_A"
+  ],
+  "length_m": 3.0,
+  "execution_approved": false
+}

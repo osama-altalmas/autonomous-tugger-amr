@@ -5,7 +5,7 @@ slam_toolbox:
     odom_frame: odom
     map_frame: map
     base_frame: base_footprint
-    scan_topic: /front_left/scan
+    scan_topic: /front_left/scan_slam
 
     use_sim_time: true
 

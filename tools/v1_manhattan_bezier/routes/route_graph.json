@@ -1,0 +1,42 @@
+{
+  "version": "AMR_V1_PHASE3",
+  "mode": "STATIC_MAP_ONLY",
+  "validation": "CONSERVATIVE_RECTANGULAR_SWEEP",
+  "map_sha256": "7455e51ecdfb1f4c853776f69cabaf7981283228b0ee0fdb09fe1a0b435d2d29",
+  "footprint": {
+    "half_length_m": 0.8,
+    "half_width_m": 0.63,
+    "extra_margin_m": 0.025
+  },
+  "stations": {
+    "HOME": [
+      0.025,
+      0.025
+    ],
+    "TEST_A": [
+      0.025,
+      3.025
+    ]
+  },
+  "routes": {
+    "HOME_to_TEST_A": {
+      "from": "HOME",
+      "to": "TEST_A",
+      "file": "HOME_to_TEST_A.json",
+      "length_m": 3.0,
+      "poses": 121,
+      "max_curvature": 0.0,
+      "validated": true
+    },
+    "TEST_A_to_HOME": {
+      "from": "TEST_A",
+      "to": "HOME",
+      "file": "TEST_A_to_HOME.json",
+      "length_m": 3.0,
+      "poses": 121,
+      "max_curvature": 0.0,
+      "validated": true
+    }
+  },
+  "failures": {}
+}

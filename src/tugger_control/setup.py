@@ -3,6 +3,8 @@ import os
 from glob import glob
 
 package_name = 'tugger_control'
+route_files = glob('../../tools/v1_manhattan_bezier/routes/*.json')
+docking_files = glob('../../tools/v1_manhattan_bezier/phase14/routes_refined/*__REFINED.json')
 
 setup(
     name=package_name,
@@ -15,15 +17,23 @@ setup(
         ),
         (
             'share/' + package_name,
-            ['package.xml']
+            ['package.xml', 'plugin.xml']
         ),
         (
             os.path.join('share', package_name, 'config'),
-            glob('config/*.yaml')
+            glob('config/*.yaml') + glob('config/*.json')
         ),
         (
             os.path.join('share', package_name, 'launch'),
             glob('launch/*.launch.py')
+        ),
+        (
+            os.path.join('share', package_name, 'routes'),
+            route_files,
+        ),
+        (
+            os.path.join('share', package_name, 'docking'),
+            docking_files,
         ),
     ],
     install_requires=['setuptools'],
@@ -36,7 +46,11 @@ setup(
         'console_scripts': [
             'four_ws_controller = tugger_control.four_ws_controller:main',
             'four_ws_odometry = tugger_control.four_ws_odometry:main',
+            'qr_docking_vision = tugger_control.qr_docking_vision:main',
             'imu_orientation_plotter = tugger_control.imu_orientation_plotter:main',
+        ],
+        'rqt_gui_py.plugin': [
+            'tugger_control = tugger_control.operator_panel:OperatorPanel',
         ],
     },
 )

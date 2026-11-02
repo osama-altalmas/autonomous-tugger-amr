@@ -1,0 +1,10 @@
+{
+  "HOME": {
+    "position": [0.025, 0.025],
+    "type": "home"
+  },
+  "TEST_A": {
+    "position": [0.025, 3.025],
+    "type": "pickup"
+  }
+}

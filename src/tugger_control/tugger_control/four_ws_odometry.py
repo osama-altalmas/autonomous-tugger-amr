@@ -21,11 +21,9 @@ class FourWSOdometry(Node):
         self.wheelbase = float(
             self.get_parameter('wheelbase').value
         )
-
         self.track_width = float(
             self.get_parameter('track_width').value
         )
-
         self.wheel_radius = float(
             self.get_parameter('wheel_radius').value
         )
@@ -50,7 +48,7 @@ class FourWSOdometry(Node):
         )
 
         self.get_logger().info(
-            '4WS ICR wheel odometry started '
+            '4WS linked-axle wheel odometry started '
             f'(L={self.wheelbase:.3f} m, '
             f'W={self.track_width:.3f} m, '
             f'R={self.wheel_radius:.3f} m)'
@@ -69,27 +67,13 @@ class FourWSOdometry(Node):
             'rear_right_wheel_joint',
         ]
 
-        if not all(
-            name in joint_index
-            for name in required_joints
-        ):
+        if not all(name in joint_index for name in required_joints):
             return
 
-        rl_steer_index = joint_index[
-            'rear_left_steering_joint'
-        ]
-
-        rr_steer_index = joint_index[
-            'rear_right_steering_joint'
-        ]
-
-        rl_wheel_index = joint_index[
-            'rear_left_wheel_joint'
-        ]
-
-        rr_wheel_index = joint_index[
-            'rear_right_wheel_joint'
-        ]
+        rl_steer_index = joint_index['rear_left_steering_joint']
+        rr_steer_index = joint_index['rear_right_steering_joint']
+        rl_wheel_index = joint_index['rear_left_wheel_joint']
+        rr_wheel_index = joint_index['rear_right_wheel_joint']
 
         if len(msg.position) <= max(
             rl_steer_index,
@@ -103,15 +87,19 @@ class FourWSOdometry(Node):
         ):
             return
 
-        # Actual rear steering angles.
         delta_rl = msg.position[rl_steer_index]
         delta_rr = msg.position[rr_steer_index]
 
-        # Actual rear wheel angular velocities.
+        # Mechanical linkage means these should be equal.
+        # Average measured positions to reduce small simulation/controller
+        # tracking differences.
+        rear_angle = 0.5 * (
+            delta_rl + delta_rr
+        )
+
         omega_rl_wheel = msg.velocity[rl_wheel_index]
         omega_rr_wheel = msg.velocity[rr_wheel_index]
 
-        # Signed rolling speeds at each rear wheel.
         speed_rl = (
             omega_rl_wheel *
             self.wheel_radius
@@ -122,70 +110,33 @@ class FourWSOdometry(Node):
             self.wheel_radius
         )
 
-        # ----------------------------------------------------
-        # Reconstruct body twist from rear-wheel kinematics.
+        # Recover body longitudinal velocity from both rear wheels.
         #
-        # Wheel velocity at body position (x_i, y_i):
+        # With common rear steering angle:
         #
-        #   vx_i = vx - wz * y_i
-        #   vy_i =      wz * x_i
+        # s_rl*cos(delta_r) = v - wz*W/2
+        # s_rr*cos(delta_r) = v + wz*W/2
         #
-        # A rolling wheel with steering angle delta_i has:
-        #
-        #   vx_i = s_i * cos(delta_i)
-        #   vy_i = s_i * sin(delta_i)
-        #
-        # Rear axle:
-        #
-        #   x_i = -L / 2
-        #
-        # ----------------------------------------------------
-
-        rear_x = -0.5 * self.wheelbase
-
-        # First estimate yaw rate from the lateral component.
-        wz_rl = (
-            speed_rl *
-            math.sin(delta_rl) /
-            rear_x
-        )
-
-        wz_rr = (
-            speed_rr *
-            math.sin(delta_rr) /
-            rear_x
-        )
-
-        angular_velocity = 0.5 * (
-            wz_rl + wz_rr
-        )
-
-        # Correct longitudinal estimates for each wheel's
-        # lateral position:
-        #
-        # vx_i = vx - wz*y_i
-        # therefore:
-        # vx = vx_i + wz*y_i
-        #
-        # RL: y = +W/2
-        # RR: y = -W/2
-
-        vx_from_rl = (
-            speed_rl * math.cos(delta_rl)
-            + angular_velocity *
-            (0.5 * self.track_width)
-        )
-
-        vx_from_rr = (
-            speed_rr * math.cos(delta_rr)
-            - angular_velocity *
-            (0.5 * self.track_width)
-        )
-
+        # Averaging eliminates the yaw-rate contribution.
         linear_velocity = 0.5 * (
-            vx_from_rl +
-            vx_from_rr
-        )
+            speed_rl + speed_rr
+        ) * math.cos(rear_angle)
+
+        # Symmetric counter-phase 4WS:
+        #
+        # delta_front = -delta_rear
+        #
+        # wz / v = 2*tan(delta_front)/L
+        #        = -2*tan(delta_rear)/L
+        if abs(self.wheelbase) > 1e-9:
+            angular_velocity = (
+                -2.0 *
+                linear_velocity *
+                math.tan(rear_angle) /
+                self.wheelbase
+            )
+        else:
+            angular_velocity = 0.0
 
         current_time = self.get_clock().now()
 
@@ -203,11 +154,7 @@ class FourWSOdometry(Node):
         if dt <= 0.0 or dt > 0.5:
             return
 
-        # Midpoint integration.
-        delta_yaw = (
-            angular_velocity *
-            dt
-        )
+        delta_yaw = angular_velocity * dt
 
         yaw_mid = (
             self.yaw +
@@ -246,16 +193,11 @@ class FourWSOdometry(Node):
         angular_velocity
     ):
 
-        half_yaw = (
-            0.5 * self.yaw
-        )
+        half_yaw = 0.5 * self.yaw
 
         odom = Odometry()
 
-        odom.header.stamp = (
-            current_time.to_msg()
-        )
-
+        odom.header.stamp = current_time.to_msg()
         odom.header.frame_id = 'odom'
         odom.child_frame_id = 'base_footprint'
 
@@ -263,25 +205,13 @@ class FourWSOdometry(Node):
         odom.pose.pose.position.y = self.y
         odom.pose.pose.position.z = 0.0
 
-        odom.pose.pose.orientation.z = (
-            math.sin(half_yaw)
-        )
+        odom.pose.pose.orientation.z = math.sin(half_yaw)
+        odom.pose.pose.orientation.w = math.cos(half_yaw)
 
-        odom.pose.pose.orientation.w = (
-            math.cos(half_yaw)
-        )
-
-        odom.twist.twist.linear.x = (
-            linear_velocity
-        )
-
+        odom.twist.twist.linear.x = linear_velocity
         odom.twist.twist.linear.y = 0.0
+        odom.twist.twist.angular.z = angular_velocity
 
-        odom.twist.twist.angular.z = (
-            angular_velocity
-        )
-
-        # Basic non-zero covariance for EKF input.
         odom.pose.covariance[0] = 0.02
         odom.pose.covariance[7] = 0.02
         odom.pose.covariance[35] = 0.05
@@ -293,18 +223,16 @@ class FourWSOdometry(Node):
         self.odom_pub.publish(odom)
 
 
-def main(args=None):
 
+def main(args=None):
     rclpy.init(args=args)
 
     node = FourWSOdometry()
 
     try:
         rclpy.spin(node)
-
     except KeyboardInterrupt:
         pass
-
     finally:
         node.destroy_node()
         rclpy.shutdown()

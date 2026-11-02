@@ -34,7 +34,7 @@ def generate_launch_description():
     world_file = os.path.join(
         gazebo_pkg,
         'worlds',
-        'tugger_test.sdf'
+        'tugger_warehouse.sdf'
     )
 
     robot_description = ParameterValue(
@@ -46,7 +46,13 @@ def generate_launch_description():
     )
 
     # Allow Gazebo to resolve package://tugger_description/... mesh URIs.
-    gazebo_resource_path = os.path.dirname(description_pkg)
+    gazebo_resource_path = os.pathsep.join([
+        os.path.dirname(description_pkg),
+        # `model://tugger_gazebo/...` needs the directory that contains the
+        # package directory, not the package directory itself.
+        os.path.dirname(gazebo_pkg),
+        gazebo_pkg,
+    ])
 
     set_gazebo_resource_path = SetEnvironmentVariable(
         name='GZ_SIM_RESOURCE_PATH',
@@ -141,7 +147,24 @@ def generate_launch_description():
             '/front_camera/image_raw@sensor_msgs/msg/Image[gz.msgs.Image',
             '/front_camera/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
             '/rear_camera/image_raw@sensor_msgs/msg/Image[gz.msgs.Image',
-            '/rear_camera/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo'
+            '/rear_camera/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
+            '/downward_camera/image_raw@sensor_msgs/msg/Image[gz.msgs.Image',
+            '/downward_camera/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo'
+        ],
+        output='screen'
+    )
+
+    # The detachable-joint Gazebo systems use Empty messages for cargo pickup
+    # and release.  The RQt panel publishes the ROS endpoints below.
+    cargo_attachment_bridge = Node(
+        package='ros_gz_bridge',
+        executable='parameter_bridge',
+        name='cargo_attachment_bridge',
+        arguments=[
+            '/cargo/station_0/attach@std_msgs/msg/Empty[gz.msgs.Empty',
+            '/cargo/station_0/detach@std_msgs/msg/Empty[gz.msgs.Empty',
+            '/cargo/station_3/attach@std_msgs/msg/Empty[gz.msgs.Empty',
+            '/cargo/station_3/detach@std_msgs/msg/Empty[gz.msgs.Empty',
         ],
         output='screen'
     )
@@ -189,6 +212,23 @@ def generate_launch_description():
         output='screen'
     )
 
+
+    lift_controller_spawner = Node(
+        package='controller_manager',
+        executable='spawner',
+        arguments=[
+            'lift_controller',
+            '--controller-manager', '/controller_manager',
+            '--param-file',
+            os.path.join(
+                gazebo_pkg,
+                'config',
+                'controllers.yaml'
+            )
+        ],
+        output='screen'
+    )
+
     return LaunchDescription([
         set_gazebo_resource_path,
         robot_state_publisher,
@@ -197,8 +237,10 @@ def generate_launch_description():
         imu_bridge,
         lidar_bridge,
         camera_bridge,
+        cargo_attachment_bridge,
         spawn_robot,
         joint_state_broadcaster_spawner,
         steering_controller_spawner,
-        traction_controller_spawner
+        traction_controller_spawner,
+        lift_controller_spawner
     ])

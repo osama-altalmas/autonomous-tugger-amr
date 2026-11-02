@@ -8,6 +8,9 @@ controller_manager:
     steering_controller:
       type: forward_command_controller/ForwardCommandController
 
+    lift_controller:
+      type: forward_command_controller/ForwardCommandController
+
     traction_controller:
       type: forward_command_controller/ForwardCommandController
 
@@ -28,3 +31,10 @@ traction_controller:
       - rear_left_wheel_joint
       - rear_right_wheel_joint
     interface_name: velocity
+
+
+lift_controller:
+  ros__parameters:
+    joints:
+      - lift_joint
+    interface_name: position

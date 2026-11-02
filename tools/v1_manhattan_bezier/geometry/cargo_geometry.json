@@ -1,0 +1,588 @@
+{
+  "source_world": "src/tugger_gazebo/worlds/tugger_warehouse.sdf",
+  "source_robot": "src/tugger_description/urdf/tugger.urdf.xacro",
+  "robot_chassis_box_m": [
+    0.88,
+    0.58,
+    0.15
+  ],
+  "navigation_padding_used_for_docking": false,
+  "physical_docking_margin_m": 0.02,
+  "stations": {
+    "cargo_dropoff_northwest": {
+      "center": [
+        -17.5,
+        7.0,
+        0.0015,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "stand_collisions": [],
+      "leg_collisions": [
+        {
+          "name": "leg_0_0_collision",
+          "pose": [
+            -18.06,
+            6.4399999999999995,
+            0.14,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "size": [
+            0.08,
+            0.08,
+            0.28
+          ]
+        },
+        {
+          "name": "leg_0_1_collision",
+          "pose": [
+            -18.06,
+            7.5600000000000005,
+            0.14,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "size": [
+            0.08,
+            0.08,
+            0.28
+          ]
+        },
+        {
+          "name": "leg_1_0_collision",
+          "pose": [
+            -16.94,
+            6.4399999999999995,
+            0.14,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "size": [
+            0.08,
+            0.08,
+            0.28
+          ]
+        },
+        {
+          "name": "leg_1_1_collision",
+          "pose": [
+            -16.94,
+            7.5600000000000005,
+            0.14,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "size": [
+            0.08,
+            0.08,
+            0.28
+          ]
+        }
+      ],
+      "entries": {
+        "east": {
+          "predock_pose": [
+            -16.5,
+            7.0,
+            3.14159
+          ],
+          "leg_clearance_pass": true,
+          "first_collision": null,
+          "checked_against": "base_link_chassis_and_stand_legs",
+          "full_robot_envelope_verified": false,
+          "floor_map_verified": false,
+          "height_clearance_verified": false,
+          "execution_approved": false
+        },
+        "north": {
+          "predock_pose": [
+            -17.5,
+            8.0,
+            -1.5708
+          ],
+          "leg_clearance_pass": true,
+          "first_collision": null,
+          "checked_against": "base_link_chassis_and_stand_legs",
+          "full_robot_envelope_verified": false,
+          "floor_map_verified": false,
+          "height_clearance_verified": false,
+          "execution_approved": false
+        },
+        "west": {
+          "predock_pose": [
+            -18.5,
+            7.0,
+            -0.0
+          ],
+          "leg_clearance_pass": true,
+          "first_collision": null,
+          "checked_against": "base_link_chassis_and_stand_legs",
+          "full_robot_envelope_verified": false,
+          "floor_map_verified": false,
+          "height_clearance_verified": false,
+          "execution_approved": false
+        },
+        "south": {
+          "predock_pose": [
+            -17.5,
+            6.0,
+            1.5708
+          ],
+          "leg_clearance_pass": true,
+          "first_collision": null,
+          "checked_against": "base_link_chassis_and_stand_legs",
+          "full_robot_envelope_verified": false,
+          "floor_map_verified": false,
+          "height_clearance_verified": false,
+          "execution_approved": false
+        }
+      }
+    },
+    "cargo_dropoff_southeast": {
+      "center": [
+        17.5,
+        -7.0,
+        0.0015,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "stand_collisions": [],
+      "leg_collisions": [
+        {
+          "name": "leg_0_0_collision",
+          "pose": [
+            16.94,
+            -7.5600000000000005,
+            0.14,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "size": [
+            0.08,
+            0.08,
+            0.28
+          ]
+        },
+        {
+          "name": "leg_0_1_collision",
+          "pose": [
+            16.94,
+            -6.4399999999999995,
+            0.14,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "size": [
+            0.08,
+            0.08,
+            0.28
+          ]
+        },
+        {
+          "name": "leg_1_0_collision",
+          "pose": [
+            18.06,
+            -7.5600000000000005,
+            0.14,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "size": [
+            0.08,
+            0.08,
+            0.28
+          ]
+        },
+        {
+          "name": "leg_1_1_collision",
+          "pose": [
+            18.06,
+            -6.4399999999999995,
+            0.14,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "size": [
+            0.08,
+            0.08,
+            0.28
+          ]
+        }
+      ],
+      "entries": {
+        "east": {
+          "predock_pose": [
+            18.5,
+            -7.0,
+            3.14159
+          ],
+          "leg_clearance_pass": true,
+          "first_collision": null,
+          "checked_against": "base_link_chassis_and_stand_legs",
+          "full_robot_envelope_verified": false,
+          "floor_map_verified": false,
+          "height_clearance_verified": false,
+          "execution_approved": false
+        },
+        "north": {
+          "predock_pose": [
+            17.5,
+            -6.0,
+            -1.5708
+          ],
+          "leg_clearance_pass": true,
+          "first_collision": null,
+          "checked_against": "base_link_chassis_and_stand_legs",
+          "full_robot_envelope_verified": false,
+          "floor_map_verified": false,
+          "height_clearance_verified": false,
+          "execution_approved": false
+        },
+        "west": {
+          "predock_pose": [
+            16.5,
+            -7.0,
+            -0.0
+          ],
+          "leg_clearance_pass": true,
+          "first_collision": null,
+          "checked_against": "base_link_chassis_and_stand_legs",
+          "full_robot_envelope_verified": false,
+          "floor_map_verified": false,
+          "height_clearance_verified": false,
+          "execution_approved": false
+        },
+        "south": {
+          "predock_pose": [
+            17.5,
+            -8.0,
+            1.5708
+          ],
+          "leg_clearance_pass": true,
+          "first_collision": null,
+          "checked_against": "base_link_chassis_and_stand_legs",
+          "full_robot_envelope_verified": false,
+          "floor_map_verified": false,
+          "height_clearance_verified": false,
+          "execution_approved": false
+        }
+      }
+    },
+    "cargo_station_0": {
+      "center": [
+        -17.5,
+        -7.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "stand_collisions": [
+        {
+          "name": "tabletop_collision",
+          "pose": [
+            -17.5,
+            -7.0,
+            0.295,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "size": [
+            1.3,
+            1.3,
+            0.03
+          ]
+        }
+      ],
+      "leg_collisions": [
+        {
+          "name": "leg_0_0_collision",
+          "pose": [
+            -18.06,
+            -7.5600000000000005,
+            0.14,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "size": [
+            0.08,
+            0.08,
+            0.28
+          ]
+        },
+        {
+          "name": "leg_0_1_collision",
+          "pose": [
+            -18.06,
+            -6.4399999999999995,
+            0.14,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "size": [
+            0.08,
+            0.08,
+            0.28
+          ]
+        },
+        {
+          "name": "leg_1_0_collision",
+          "pose": [
+            -16.94,
+            -7.5600000000000005,
+            0.14,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "size": [
+            0.08,
+            0.08,
+            0.28
+          ]
+        },
+        {
+          "name": "leg_1_1_collision",
+          "pose": [
+            -16.94,
+            -6.4399999999999995,
+            0.14,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "size": [
+            0.08,
+            0.08,
+            0.28
+          ]
+        }
+      ],
+      "entries": {
+        "east": {
+          "predock_pose": [
+            -16.5,
+            -7.0,
+            3.14159
+          ],
+          "leg_clearance_pass": true,
+          "first_collision": null,
+          "checked_against": "base_link_chassis_and_stand_legs",
+          "full_robot_envelope_verified": false,
+          "floor_map_verified": false,
+          "height_clearance_verified": false,
+          "execution_approved": false
+        },
+        "north": {
+          "predock_pose": [
+            -17.5,
+            -6.0,
+            -1.5708
+          ],
+          "leg_clearance_pass": true,
+          "first_collision": null,
+          "checked_against": "base_link_chassis_and_stand_legs",
+          "full_robot_envelope_verified": false,
+          "floor_map_verified": false,
+          "height_clearance_verified": false,
+          "execution_approved": false
+        },
+        "west": {
+          "predock_pose": [
+            -18.5,
+            -7.0,
+            -0.0
+          ],
+          "leg_clearance_pass": true,
+          "first_collision": null,
+          "checked_against": "base_link_chassis_and_stand_legs",
+          "full_robot_envelope_verified": false,
+          "floor_map_verified": false,
+          "height_clearance_verified": false,
+          "execution_approved": false
+        },
+        "south": {
+          "predock_pose": [
+            -17.5,
+            -8.0,
+            1.5708
+          ],
+          "leg_clearance_pass": true,
+          "first_collision": null,
+          "checked_against": "base_link_chassis_and_stand_legs",
+          "full_robot_envelope_verified": false,
+          "floor_map_verified": false,
+          "height_clearance_verified": false,
+          "execution_approved": false
+        }
+      }
+    },
+    "cargo_station_3": {
+      "center": [
+        17.5,
+        7.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "stand_collisions": [
+        {
+          "name": "tabletop_collision",
+          "pose": [
+            17.5,
+            7.0,
+            0.295,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "size": [
+            1.3,
+            1.3,
+            0.03
+          ]
+        }
+      ],
+      "leg_collisions": [
+        {
+          "name": "leg_0_0_collision",
+          "pose": [
+            16.94,
+            6.4399999999999995,
+            0.14,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "size": [
+            0.08,
+            0.08,
+            0.28
+          ]
+        },
+        {
+          "name": "leg_0_1_collision",
+          "pose": [
+            16.94,
+            7.5600000000000005,
+            0.14,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "size": [
+            0.08,
+            0.08,
+            0.28
+          ]
+        },
+        {
+          "name": "leg_1_0_collision",
+          "pose": [
+            18.06,
+            6.4399999999999995,
+            0.14,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "size": [
+            0.08,
+            0.08,
+            0.28
+          ]
+        },
+        {
+          "name": "leg_1_1_collision",
+          "pose": [
+            18.06,
+            7.5600000000000005,
+            0.14,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "size": [
+            0.08,
+            0.08,
+            0.28
+          ]
+        }
+      ],
+      "entries": {
+        "east": {
+          "predock_pose": [
+            18.5,
+            7.0,
+            3.14159
+          ],
+          "leg_clearance_pass": true,
+          "first_collision": null,
+          "checked_against": "base_link_chassis_and_stand_legs",
+          "full_robot_envelope_verified": false,
+          "floor_map_verified": false,
+          "height_clearance_verified": false,
+          "execution_approved": false
+        },
+        "north": {
+          "predock_pose": [
+            17.5,
+            8.0,
+            -1.5708
+          ],
+          "leg_clearance_pass": true,
+          "first_collision": null,
+          "checked_against": "base_link_chassis_and_stand_legs",
+          "full_robot_envelope_verified": false,
+          "floor_map_verified": false,
+          "height_clearance_verified": false,
+          "execution_approved": false
+        },
+        "west": {
+          "predock_pose": [
+            16.5,
+            7.0,
+            -0.0
+          ],
+          "leg_clearance_pass": true,
+          "first_collision": null,
+          "checked_against": "base_link_chassis_and_stand_legs",
+          "full_robot_envelope_verified": false,
+          "floor_map_verified": false,
+          "height_clearance_verified": false,
+          "execution_approved": false
+        },
+        "south": {
+          "predock_pose": [
+            17.5,
+            6.0,
+            1.5708
+          ],
+          "leg_clearance_pass": true,
+          "first_collision": null,
+          "checked_against": "base_link_chassis_and_stand_legs",
+          "full_robot_envelope_verified": false,
+          "floor_map_verified": false,
+          "height_clearance_verified": false,
+          "execution_approved": false
+        }
+      }
+    }
+  },
+  "execution_approved": false
+}

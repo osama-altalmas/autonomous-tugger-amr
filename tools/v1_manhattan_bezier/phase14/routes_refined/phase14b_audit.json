@@ -1,0 +1,90 @@
+{
+  "reports": [
+    {
+      "station": "cargo_station_0",
+      "predocking_pose": [
+        -16.5,
+        -7.0,
+        3.141592653589793
+      ],
+      "final_docking_pose": [
+        -17.5,
+        -7.0,
+        3.141592653589793
+      ],
+      "segment_1_length_m": 22.664233758568805,
+      "segment_2_length_m": 1.0,
+      "leg_collisions": 0,
+      "tabletop_underside_m": 0.27999999999999997,
+      "lowered_lift_top_m": 0.23750000000000002,
+      "nominal_vertical_clearance_m": 0.042499999999999954,
+      "static_clearance_passed": true,
+      "execution_approved": false
+    },
+    {
+      "station": "cargo_station_3",
+      "predocking_pose": [
+        17.5,
+        6.0,
+        1.5707963267948966
+      ],
+      "final_docking_pose": [
+        17.5,
+        7.0,
+        1.5707963267948966
+      ],
+      "segment_1_length_m": 23.044856846603185,
+      "segment_2_length_m": 1.0,
+      "leg_collisions": 0,
+      "tabletop_underside_m": 0.27999999999999997,
+      "lowered_lift_top_m": 0.23750000000000002,
+      "nominal_vertical_clearance_m": 0.042499999999999954,
+      "static_clearance_passed": true,
+      "execution_approved": false
+    },
+    {
+      "station": "cargo_dropoff_northwest",
+      "predocking_pose": [
+        -16.5,
+        7.0,
+        3.141592653589793
+      ],
+      "final_docking_pose": [
+        -17.5,
+        7.0,
+        3.141592653589793
+      ],
+      "segment_1_length_m": 22.664233758568805,
+      "segment_2_length_m": 1.0,
+      "leg_collisions": 0,
+      "tabletop_underside_m": null,
+      "lowered_lift_top_m": 0.23750000000000002,
+      "nominal_vertical_clearance_m": null,
+      "static_clearance_passed": true,
+      "execution_approved": false
+    },
+    {
+      "station": "cargo_dropoff_southeast",
+      "predocking_pose": [
+        17.5,
+        -6.0,
+        -1.5707963267948966
+      ],
+      "final_docking_pose": [
+        17.5,
+        -7.0,
+        -1.5707963267948966
+      ],
+      "segment_1_length_m": 23.09483454495516,
+      "segment_2_length_m": 1.0,
+      "leg_collisions": 0,
+      "tabletop_underside_m": null,
+      "lowered_lift_top_m": 0.23750000000000002,
+      "nominal_vertical_clearance_m": null,
+      "static_clearance_passed": true,
+      "execution_approved": false
+    }
+  ],
+  "failures": [],
+  "execution_approved": false
+}

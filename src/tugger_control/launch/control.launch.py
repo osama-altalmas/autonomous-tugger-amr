@@ -4,6 +4,7 @@ from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 
 import os
+import yaml
 
 
 def generate_launch_description():
@@ -18,12 +19,21 @@ def generate_launch_description():
         'ekf.yaml'
     )
 
+    speed_config = os.path.join(
+        tugger_control_share,
+        'config',
+        'sim_speed.yaml'
+    )
+
     four_ws_controller = Node(
         package='tugger_control',
         executable='four_ws_controller',
         name='four_ws_controller',
         output='screen',
         parameters=[
+            yaml.safe_load(
+                open(speed_config, encoding='utf-8')
+            )['four_ws_controller']['ros__parameters'],
             {'use_sim_time': True}
         ]
     )
@@ -52,8 +62,17 @@ def generate_launch_description():
         ]
     )
 
+    qr_docking_vision = Node(
+        package='tugger_control',
+        executable='qr_docking_vision',
+        name='qr_docking_vision',
+        output='screen',
+        parameters=[{'use_sim_time': True, 'qr_grid_size_m': 0.064}],
+    )
+
     return LaunchDescription([
         four_ws_controller,
         four_ws_odometry,
         ekf,
+        qr_docking_vision,
     ])

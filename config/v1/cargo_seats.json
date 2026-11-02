@@ -1,0 +1,14 @@
+{
+  "DEMO_SEAT": {
+    "center": [0.025, 3.025],
+    "yaw": 0.0,
+    "approach_distance_m": 1.0,
+    "allowed_entries": [
+      "north",
+      "south",
+      "east",
+      "west"
+    ],
+    "description": "Demonstration coordinates only"
+  }
+}

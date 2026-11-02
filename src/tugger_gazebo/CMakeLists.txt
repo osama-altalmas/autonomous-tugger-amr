@@ -8,6 +8,7 @@ install(
     launch
     worlds
     config
+    media
   DESTINATION share/${PROJECT_NAME}
 )
 

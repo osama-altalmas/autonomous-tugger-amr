@@ -1,0 +1,54 @@
+{
+  "world": "tugger_test",
+  "world_file": "/home/osama/Autonomous_Tugger_Project/autonomous_tugger_ws/src/tugger_gazebo/worlds/tugger_warehouse.sdf",
+  "resolution_m": 0.05,
+  "robot_length_m": 1.0,
+  "robot_width_m": 0.66,
+  "safety_margin_m": 0.3,
+  "conservative_clearance_radius_m": 0.899,
+  "collision_boxes": 197,
+  "unsupported_collisions": [],
+  "longitudinal_free_segments": {
+    "-7.0": [
+      [
+        -18.97,
+        -18.87
+      ],
+      [
+        -16.12,
+        18.98
+      ]
+    ],
+    "0.0": [
+      [
+        -19.98,
+        18.98
+      ]
+    ],
+    "7.0": [
+      [
+        -18.97,
+        -18.87
+      ],
+      [
+        -16.12,
+        18.98
+      ]
+    ]
+  },
+  "transverse_free_segments": {
+    "-6.5": [
+      [
+        -11.47,
+        11.48
+      ]
+    ],
+    "4.5": [
+      [
+        -11.47,
+        11.48
+      ]
+    ]
+  },
+  "note": "Free segments are geometric candidates only. Turning feasibility and swept-footprint validation are not yet performed."
+}
