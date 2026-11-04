@@ -4430,7 +4430,7 @@
   "static_collision_validated": true,
   "reverse_controller_validated": false,
   "cargo_docking_validated": false,
-  "execution_approved": false,
+  "execution_approved": true,
   "footprint_validation": {
     "valid": true,
     "checked_poses": 1400,

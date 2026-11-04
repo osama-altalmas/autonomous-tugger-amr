@@ -87,6 +87,13 @@ def detect_red_alignment_frame(image):
     if min(width, height) < 20.0 or max(width, height) / min(width, height) > 1.25:
         return None
     corners = cv2.boxPoints(rectangle)
+    # A clipped frame cannot provide reliable square dimensions or centre.
+    # Reject it instead of allowing a partial contour to steer the robot.
+    image_height, image_width = image.shape[:2]
+    if (np.any(corners[:, 0] < 3) or np.any(corners[:, 1] < 3) or
+            np.any(corners[:, 0] >= image_width - 3) or
+            np.any(corners[:, 1] >= image_height - 3)):
+        return None
     # Stable clockwise ordering: top-left, top-right, bottom-right, bottom-left.
     by_y = corners[corners[:, 1].argsort()]
     top = by_y[:2][by_y[:2, 0].argsort()]
@@ -100,9 +107,10 @@ def downward_camera_planar_error(translation):
 
     The downward camera link's X axis points toward the floor.  OpenCV reports
     depth on its Z axis, which is camera height and must never become a motion
-    target.  The visible-image axes map to link Z (robot forward) and link Y
-    (robot lateral), respectively.
+    target. Gazebo's camera link uses X forward, Y left, Z up; OpenCV optical
+    axes are X right, Y down, Z forward. With the +90 degree pitch mounting,
+    optical X is base -Y and optical Y is base -X.
     """
     camera_x, camera_y, camera_z = (float(value) for value in translation)
     del camera_z
-    return camera_y, camera_x
+    return -camera_y, -camera_x

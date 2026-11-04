@@ -45,6 +45,38 @@ def _tangent_headings(positions):
     return headings
 
 
+def validate_planner_motion(poses, alignment_tolerance_deg=30.0):
+    """Reject planner paths that cannot be represented by one leading end.
+
+    The GUI currently adapts a path to a single forward or reverse heading
+    convention. A Reeds–Shepp path can change direction; losing its original
+    orientations would turn that into an entirely different trajectory.
+    ``poses`` contains planner (x, y, body yaw) samples in route order.
+    """
+    samples = [tuple(float(value) for value in pose) for pose in poses]
+    if len(samples) < 2 or any(len(pose) != 3 or not all(
+            math.isfinite(value) for value in pose) for pose in samples):
+        raise ValueError('Planner path must contain finite x, y, yaw samples')
+    if not 0 < alignment_tolerance_deg < 90:
+        raise ValueError('Invalid planner heading tolerance')
+    limit = math.cos(math.radians(alignment_tolerance_deg))
+    directions = set()
+    for first, second in zip(samples, samples[1:]):
+        dx, dy = second[0] - first[0], second[1] - first[1]
+        distance = math.hypot(dx, dy)
+        if distance < 1e-4:
+            continue
+        projection = (dx * math.cos(first[2]) + dy * math.sin(first[2])) / distance
+        if abs(projection) < limit:
+            raise ValueError('Planner path heading is inconsistent with travel direction')
+        directions.add(1 if projection > 0 else -1)
+        if len(directions) > 1:
+            raise ValueError('Planner path changes direction; cannot adapt as a single leading end')
+    if not directions:
+        raise ValueError('Planner path has no measurable travel')
+    return directions.pop()
+
+
 def prepare_dynamic_path(positions, robot_yaw, angular_tolerance_deg=20.0):
     """Select the leading end and produce execution-only body headings.
 

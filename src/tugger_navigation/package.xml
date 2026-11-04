@@ -16,6 +16,7 @@
   <depend>nav2_costmap_2d</depend>
   <depend>nav2_smac_planner</depend>
   <depend>nav2_ros_common</depend>
+  <exec_depend>nav2_common</exec_depend>
   <depend>nav_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>visualization_msgs</depend>

@@ -12,6 +12,12 @@
       <render_engine>ogre2</render_engine>
     </plugin>
     <plugin filename="gz-sim-imu-system" name="gz::sim::systems::Imu" />
+    <plugin filename="gz-sim-pose-publisher-system" name="gz::sim::systems::PosePublisher">
+      <publish_model_pose>true</publish_model_pose>
+      <publish_nested_model_pose>true</publish_nested_model_pose>
+      <update_frequency>30</update_frequency>
+    </plugin>
+    <plugin filename="tugger_collision_scene" name="tugger_gazebo::CollisionScene" />
     <light type="directional" name="sun">
       <cast_shadows>false</cast_shadows>
       <pose>0 0 10 0 0 0</pose>
@@ -69,7 +75,7 @@
         </visual>
       </link>
     </model>
-    <!-- Unique, high-contrast QR fiducials at HOME and the four docking centres.
+    <!-- Unique, high-contrast QR fiducials at HOME and the docking centres.
          `model://` is resolved through GZ_SIM_RESOURCE_PATH; the old
          file://media URI was not an absolute file URI and rendered black. -->
     <model name="qr_home"><static>true</static><pose>0 0 0.004 0 0 0</pose><link name="link"><visual name="red_alignment_frame"><cast_shadows>false</cast_shadows><geometry><plane><normal>0 0 1</normal><size>0.12 0.12</size></plane></geometry><material><ambient>0.90 0.02 0.02 1</ambient><diffuse>0.90 0.02 0.02 1</diffuse></material></visual><visual name="qr"><pose>0 0 0.001 0 0 0</pose><cast_shadows>false</cast_shadows><geometry><plane><normal>0 0 1</normal><size>0.10 0.10</size></plane></geometry><material><ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse><pbr><metal><albedo_map>model://tugger_gazebo/media/qr/home.png</albedo_map><roughness>0.8</roughness><metalness>0.0</metalness></metal></pbr></material></visual></link></model>

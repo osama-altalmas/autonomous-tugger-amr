@@ -16,16 +16,20 @@ def bounded_qr_correction(lateral_m, forward_m, yaw_rad, *,
     values = (lateral_m, forward_m, yaw_rad)
     if not all(math.isfinite(value) for value in values):
         return {'state': 'STOP', 'reason': 'Nonfinite QR observation'}
-    if abs(lateral_m) <= position_tolerance and abs(forward_m) <= position_tolerance and \
+    if math.hypot(lateral_m, forward_m) <= position_tolerance and \
             abs(yaw_rad) <= yaw_tolerance:
         return {'state': 'ALIGNED', 'linear_x': 0.0, 'angular_z': 0.0}
-    # Signed body motion lets the 4WS controller converge from either side;
-    # its reversal guard still decelerates through zero.
+    if abs(forward_m) < 0.002:
+        return {'state': 'STOP', 'reason':
+                'target requires a lateral or heading maneuver outside the verified correction envelope'}
+    # Signed body motion requests either direction; the 4WS controller's
+    # reversal guard decelerates through zero. Convergence is not guaranteed.
     scale = min(1.0, max(abs(lateral_m), abs(forward_m)) / 0.10)
     linear_x = max(-max_speed, min(max_speed, forward_m * 0.5)) * scale
-    # Positive lateral error means the frame is to robot-left.  Positive yaw
-    # curves a positive-speed 4WS tugger toward that side.
-    angular_z = max(-max_turn, min(max_turn, 2.0 * lateral_m - yaw_rad))
+    # For a target behind the robot, yaw must reverse to reduce lateral error:
+    # marker lateral velocity is approximately -yaw_rate * marker_forward.
+    direction = 1.0 if forward_m > 0.0 else -1.0
+    angular_z = max(-max_turn, min(max_turn, direction * 2.0 * lateral_m - yaw_rad))
     return {
         'state': 'CORRECT', 'linear_x': linear_x, 'angular_z': angular_z,
         'reason': 'Bounded QR alignment proposal; requires motion-arbiter approval',

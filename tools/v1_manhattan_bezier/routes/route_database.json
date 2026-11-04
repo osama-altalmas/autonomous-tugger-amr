@@ -314,7 +314,7 @@
           "departure_heading_error_deg": 180.0
         }
       ],
-      "execution_approved": false,
+      "execution_approved": true,
       "route_file": "HOME__TO__cargo_dropoff_northwest.json",
       "length_m": 21.6388,
       "source_entrance": "home",
@@ -347,7 +347,7 @@
           "reason": "Curvature 61.359 exceeds 2.500"
         }
       ],
-      "execution_approved": false,
+      "execution_approved": true,
       "route_file": "HOME__TO__cargo_dropoff_southeast.json",
       "length_m": 22.0694,
       "source_entrance": "home",
@@ -382,7 +382,7 @@
           "departure_heading_error_deg": 180.0
         }
       ],
-      "execution_approved": false,
+      "execution_approved": true,
       "route_file": "HOME__TO__cargo_station_0.json",
       "length_m": 21.6388,
       "source_entrance": "home",
@@ -415,7 +415,7 @@
           "departure_heading_error_deg": 0.0
         }
       ],
-      "execution_approved": false,
+      "execution_approved": true,
       "route_file": "HOME__TO__cargo_station_3.json",
       "length_m": 22.0694,
       "source_entrance": "home",
@@ -450,7 +450,7 @@
           "departure_heading_error_deg": 180.0
         }
       ],
-      "execution_approved": false,
+      "execution_approved": true,
       "route_file": "cargo_dropoff_northwest__TO__HOME.json",
       "length_m": 21.6388,
       "source_entrance": "east",
@@ -520,7 +520,7 @@
           "reason": "Curvature 61.359 exceeds 2.500"
         }
       ],
-      "execution_approved": false,
+      "execution_approved": true,
       "route_file": "cargo_dropoff_northwest__TO__cargo_dropoff_southeast.json",
       "length_m": 44.2787,
       "source_entrance": "south",
@@ -597,7 +597,7 @@
           "departure_heading_error_deg": 180.0
         }
       ],
-      "execution_approved": false,
+      "execution_approved": true,
       "route_file": "cargo_dropoff_northwest__TO__cargo_station_0.json",
       "length_m": 10.0,
       "source_entrance": "south",
@@ -670,7 +670,7 @@
           "departure_heading_error_deg": 180.0
         }
       ],
-      "execution_approved": false,
+      "execution_approved": true,
       "route_file": "cargo_dropoff_northwest__TO__cargo_station_3.json",
       "length_m": 31.0,
       "source_entrance": "east",
@@ -702,7 +702,7 @@
           "reason": "Curvature 61.359 exceeds 2.500"
         }
       ],
-      "execution_approved": false,
+      "execution_approved": true,
       "route_file": "cargo_dropoff_southeast__TO__HOME.json",
       "length_m": 22.0694,
       "source_entrance": "north",
@@ -778,7 +778,7 @@
           "departure_heading_error_deg": 0.0
         }
       ],
-      "execution_approved": false,
+      "execution_approved": true,
       "route_file": "cargo_dropoff_southeast__TO__cargo_dropoff_northwest.json",
       "length_m": 44.1388,
       "source_entrance": "north",
@@ -855,7 +855,7 @@
           "departure_heading_error_deg": 180.0
         }
       ],
-      "execution_approved": false,
+      "execution_approved": true,
       "route_file": "cargo_dropoff_southeast__TO__cargo_station_0.json",
       "length_m": 31.0,
       "source_entrance": "west",
@@ -926,7 +926,7 @@
           "departure_heading_error_deg": 0.0
         }
       ],
-      "execution_approved": false,
+      "execution_approved": true,
       "route_file": "cargo_dropoff_southeast__TO__cargo_station_3.json",
       "length_m": 10.0,
       "source_entrance": "north",
@@ -961,7 +961,7 @@
           "departure_heading_error_deg": 180.0
         }
       ],
-      "execution_approved": false,
+      "execution_approved": true,
       "route_file": "cargo_station_0__TO__HOME.json",
       "length_m": 21.6388,
       "source_entrance": "east",
@@ -1034,7 +1034,7 @@
           "departure_heading_error_deg": 180.0
         }
       ],
-      "execution_approved": false,
+      "execution_approved": true,
       "route_file": "cargo_station_0__TO__cargo_dropoff_northwest.json",
       "length_m": 10.0,
       "source_entrance": "north",
@@ -1105,7 +1105,7 @@
           "departure_heading_error_deg": 180.0
         }
       ],
-      "execution_approved": false,
+      "execution_approved": true,
       "route_file": "cargo_station_0__TO__cargo_dropoff_southeast.json",
       "length_m": 31.0,
       "source_entrance": "east",
@@ -1177,7 +1177,7 @@
           "departure_heading_error_deg": 180.0
         }
       ],
-      "execution_approved": false,
+      "execution_approved": true,
       "route_file": "cargo_station_0__TO__cargo_station_3.json",
       "length_m": 44.269,
       "source_entrance": "north",
@@ -1209,7 +1209,7 @@
           "reason": "Curvature 61.359 exceeds 2.500"
         }
       ],
-      "execution_approved": false,
+      "execution_approved": true,
       "route_file": "cargo_station_3__TO__HOME.json",
       "length_m": 22.0694,
       "source_entrance": "south",
@@ -1284,7 +1284,7 @@
           "departure_heading_error_deg": 180.0
         }
       ],
-      "execution_approved": false,
+      "execution_approved": true,
       "route_file": "cargo_station_3__TO__cargo_dropoff_northwest.json",
       "length_m": 31.0,
       "source_entrance": "west",
@@ -1353,7 +1353,7 @@
           "reason": "Curvature 61.359 exceeds 2.500"
         }
       ],
-      "execution_approved": false,
+      "execution_approved": true,
       "route_file": "cargo_station_3__TO__cargo_dropoff_southeast.json",
       "length_m": 10.0,
       "source_entrance": "south",
@@ -1430,7 +1430,7 @@
           "departure_heading_error_deg": 180.0
         }
       ],
-      "execution_approved": false,
+      "execution_approved": true,
       "route_file": "cargo_station_3__TO__cargo_station_0.json",
       "length_m": 44.2787,
       "source_entrance": "south",
@@ -1439,7 +1439,7 @@
       "departure_transition_validated": false
     }
   },
-  "execution_approved": false,
+  "execution_approved": true,
   "notes": [
     "Routes connect warehouse staging poses",
     "Cargo approach and lift are not included",

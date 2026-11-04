@@ -30,6 +30,7 @@ def generate_launch_description():
         executable='four_ws_controller',
         name='four_ws_controller',
         output='screen',
+        remappings=[('/cmd_vel', '/tugger/guarded_cmd_vel')],
         parameters=[
             yaml.safe_load(
                 open(speed_config, encoding='utf-8')
@@ -70,9 +71,16 @@ def generate_launch_description():
         parameters=[{'use_sim_time': True, 'qr_grid_size_m': 0.064}],
     )
 
+    sim_motion_gate = Node(
+        package='tugger_control', executable='sim_motion_gate',
+        name='tugger_sim_motion_gate', output='screen',
+        parameters=[{'use_sim_time': True}],
+    )
+
     return LaunchDescription([
         four_ws_controller,
         four_ws_odometry,
         ekf,
         qr_docking_vision,
+        sim_motion_gate,
     ])

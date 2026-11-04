@@ -7,6 +7,7 @@ consume it only after the image path is verified in Gazebo.
 """
 
 import math
+import time
 
 import cv2
 import numpy as np
@@ -17,6 +18,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import Float64MultiArray, String
 
+from tugger_control.visual_square_pose import checked_square_pose
 from tugger_control.docking_markers import (
     MARKER_IDS,
     QR_GRID_SIZE_M,
@@ -39,6 +41,7 @@ class QrDockingVision(Node):
         self._detector = cv2.QRCodeDetector()
         self._camera_matrix = None
         self._distortion = None
+        self._last_frame_pose_warning_at = 0.0
         self._pose_pub = self.create_publisher(PoseStamped, '/qr_docking/pose', 10)
         self._frame_pose_pub = self.create_publisher(
             PoseStamped, '/qr_docking/frame_pose', 10)
@@ -77,15 +80,24 @@ class QrDockingVision(Node):
 
     def _publish_frame_pose(self, corners, header):
         """Publish the red-frame centre in the camera frame for alignment."""
-        half = RED_FRAME_SIZE_M / 2.0
-        object_points = np.array([
-            [-half, half, 0.0], [half, half, 0.0],
-            [half, -half, 0.0], [-half, -half, 0.0],
-        ], dtype=np.float64)
-        ok, _rotation, translation = cv2.solvePnP(
-            object_points, corners, self._camera_matrix, self._distortion,
-            flags=cv2.SOLVEPNP_IPPE_SQUARE)
-        if not ok:
+        try:
+            _rotation, translation, _rmse = checked_square_pose(
+                corners,
+                self._camera_matrix,
+                self._distortion,
+                RED_FRAME_SIZE_M,
+            )
+
+        except (ValueError, cv2.error) as exc:
+            # Never publish an invalid red-frame pose.
+            now = time.monotonic()
+
+            if now - self._last_frame_pose_warning_at >= 2.0:
+                self.get_logger().warning(
+                    f'Red-frame pose rejected: {exc}'
+                )
+                self._last_frame_pose_warning_at = now
+
             return
         pose = PoseStamped()
         forward, lateral = downward_camera_planar_error(translation)

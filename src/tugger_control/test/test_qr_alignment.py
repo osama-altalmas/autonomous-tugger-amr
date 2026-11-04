@@ -8,6 +8,11 @@ def test_qr_alignment_declares_completion_inside_the_dock_gate():
     assert result['state'] == 'ALIGNED'
 
 
+def test_qr_alignment_uses_circular_position_tolerance():
+    assert bounded_qr_correction(0.015, 0.015, 0.0)['state'] == 'CORRECT'
+    assert bounded_qr_correction(0.012, 0.016, 0.0)['state'] == 'ALIGNED'
+
+
 def test_qr_alignment_is_bounded_and_slow():
     result = bounded_qr_correction(0.1, 0.2, 0.2)
     assert result['state'] == 'CORRECT'
@@ -22,9 +27,17 @@ def test_qr_alignment_can_make_a_bounded_reverse_correction():
 
 
 def test_positive_lateral_error_commands_a_positive_turn_toward_the_frame():
-    result = bounded_qr_correction(0.05, 0.0, 0.0)
+    result = bounded_qr_correction(0.05, 0.05, 0.0)
     assert result['state'] == 'CORRECT'
     assert result['angular_z'] > 0.0
+
+
+def test_reverse_lateral_correction_reverses_yaw_command():
+    assert bounded_qr_correction(0.05, -0.05, 0.0)['angular_z'] < 0.0
+
+
+def test_pure_sideways_target_stops_instead_of_requesting_impossible_motion():
+    assert bounded_qr_correction(0.03, 0.0, 0.0)['state'] == 'STOP'
 
 
 def test_qr_alignment_stops_for_an_invalid_observation():

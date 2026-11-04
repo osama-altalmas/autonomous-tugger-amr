@@ -2,6 +2,9 @@
 
 import json
 import math
+import time
+from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
 from pathlib import Path
 
 import rclpy
@@ -9,7 +12,9 @@ from action_msgs.msg import GoalStatus
 from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
 from geometry_msgs.msg import PoseStamped, TwistStamped
 from nav_msgs.msg import Path as NavPath
+from nav_msgs.msg import Odometry
 from nav2_msgs.action import ComputePathToPose, FollowPath
+from nav2_msgs.srv import IsPathValid
 from python_qt_binding.QtCore import QTimer
 from python_qt_binding.QtWidgets import (
     QCheckBox, QGridLayout, QGroupBox, QLabel, QMessageBox, QPushButton,
@@ -18,24 +23,51 @@ from python_qt_binding.QtWidgets import (
 from qt_gui.plugin import Plugin
 from rclpy.action import ActionClient
 from rclpy.node import Node
-from std_msgs.msg import Empty, Float64MultiArray, String
+from rclpy.parameter import Parameter
+from sensor_msgs.msg import JointState
+from std_msgs.msg import Bool, Empty, Float64MultiArray, String
 from tf2_ros import Buffer, TransformListener
 
-from tugger_control.direction_policy import prepare_dynamic_path
+from tugger_control.direction_policy import prepare_dynamic_path, validate_planner_motion
+from tugger_control.cargo_policy import check_destination, confirmed_cargo
+from tugger_control.cargo_operation import CargoOperation
+from tugger_control.loaded_motion_guard import decode_scene, scene_expected_counts
 from tugger_control.mission_planning import plan_is_current, select_destination_plan
-from tugger_control.qr_alignment import bounded_qr_correction
+from tugger_control.station_departure import plan_station_departure
+from tugger_control.precision_scene_clearance import sampled_precision_clearance
+from tugger_control.visual_maneuver_executor import VisualManeuverExecutor
+from tugger_control.visual_maneuver_planner import marker_visible, replan_visual_maneuver
+from tugger_control.clearance_2_5d import collision_pairs
+from tugger_control.visual_scene_clearance import PreparedVisualClearance
+from tugger_control.visual_heading_gate import relative_qr_heading_consistent
+from tugger_control.visual_marker_guard import FixedMarkerGuard
 from tugger_control.docking_markers import expected_marker
 from tugger_control.saved_route_repository import (
     PrecisionDockingRepository,
     SavedRouteRepository,
+)
+from tugger_control.warehouse_clearance import (
+    lift_sweep_clear, loaded_path_clear, robot_boxes, validate_modeled_geometry,
 )
 
 
 LIFT_DOWN_M = 0.0
 LIFT_UP_M = 0.065
 QR_CONFIRMATION_MAX_AGE_S = 0.5
-QR_ALIGNMENT_TIMEOUT_S = 2.0
+QR_ALIGNMENT_TIMEOUT_S = 3.0
+# Four-wheel lateral parking uses multiple slow arcs and stationary checkpoints.
+QR_ALIGNMENT_MAX_DURATION_S = 200.0
+QR_ALIGNMENT_POSITION_TOLERANCE_M = 0.010
+QR_ALIGNMENT_HEADING_TOLERANCE_RAD = math.radians(1.0)
+QR_VISUAL_MAX_PLAN_FAILURES = 3
 QR_ALIGNMENT_STABLE_FRAMES = 3
+QR_ALIGNMENT_MAX_OBSERVATION_AGE_S = 0.5
+# A visual primitive is only a short proposal.  If the measured marker has
+# moved materially from the snapshot used to create that proposal, stop at
+# the next safe cycle and replan from fresh camera/TF feedback.
+QR_VISUAL_REPLAN_MARKER_DELTA_M = 0.006
+QR_STATIONARY_MAX_SPEED_M_S = 0.005
+QR_STATIONARY_MAX_YAW_RATE_RAD_S = 0.02
 
 
 def _yaw(quaternion):
@@ -49,17 +81,33 @@ def _yaw(quaternion):
 class OperatorBridge(Node):
     """ROS work layer.  Every action result is delivered asynchronously."""
 
-    def __init__(self, report, plan_ready, execution_done):
+    def __init__(self, report, plan_ready, execution_done, approach_provider=None,
+                 cargo_clearance_guard=None):
         super().__init__('tugger_operator_panel')
+        # The Gazebo scene, TF and payload feedback all use simulation time.
+        # Without this, comparing their timestamps to wall time fails closed.
+        self.set_parameters([Parameter('use_sim_time', value=True)])
         self._report = report
         self._plan_ready = plan_ready
         self._execution_done = execution_done
+        self._approach_provider = approach_provider
+        self._cargo_clearance_guard = cargo_clearance_guard or self._modeled_lift_clearance
+        self._cargo_task = None
+        self._loaded_control_ready = False
+        self._loaded_guard_seen_at = None
+        self._collision_scene = None
+        self._scene_sequence = 0
+        self._last_guard_status = None
         self._tf = Buffer()
         self._listener = TransformListener(self._tf, self)
         self._planner = ActionClient(self, ComputePathToPose, '/compute_path_to_pose')
         self._follower = ActionClient(self, FollowPath, '/follow_path')
+        self._dock_follower = ActionClient(self, FollowPath, '/docking/follow_path')
+        self._path_validator = self.create_client(IsPathValid, '/is_path_valid')
         self._path_pub = self.create_publisher(NavPath, '/mission/planned_path', 10)
-        self._precision_cmd_pub = self.create_publisher(TwistStamped, '/cmd_vel', 10)
+        self._precision_cmd_pub = self.create_publisher(
+            TwistStamped, '/tugger/precision_cmd_vel', 10)
+        self._motion_owner_pub = self.create_publisher(String, '/tugger/motion_owner', 10)
         self._lift_pub = self.create_publisher(
             Float64MultiArray, '/lift_controller/commands', 10)
         self._attach = {
@@ -70,9 +118,43 @@ class OperatorBridge(Node):
             0: self.create_publisher(Empty, '/cargo/station_0/detach', 10),
             3: self.create_publisher(Empty, '/cargo/station_3/detach', 10),
         }
+        self._cargo_states = {0: None, 3: None}
+        self._cargo_seen_at = {0: None, 3: None}
+        self._lift_position = None
+        self._lift_seen_at = None
+        self._cargo_poses = {0: None, 3: None}
+        self._cargo_pose_seen_at = {0: None, 3: None}
+        self._cargo_pose_subscriptions = [
+            self.create_subscription(
+                PoseStamped, f'/tugger/cargo/station_{station}/ground_truth_pose',
+                lambda message, station=station: self._cargo_pose(station, message), 10)
+            for station in (0, 3)
+        ]
+        self._cargo_state_subscriptions = [
+            self.create_subscription(
+                String, f'/cargo/station_{station}/state',
+                lambda message, station=station: self._cargo_state(station, message), 10)
+            for station in (0, 3)
+        ]
         self._active_follow = None
+        self._follow_goal_pending = False
         self._pending_path = None
         self._pending_pose = None
+        self._pending_alignment_station = None
+        self._pending_destination = None
+        self._pending_execution_approved = False
+        self._queued_precision_poses = None
+        self._queued_precision_station = None
+        self._stage_validation_pending = False
+        self._dock_precision_mode = False
+        self._dock_pending = None
+        self._departure_pending = None
+        self._pending_departure = None
+        self._departure_active = False
+        self._departure_target = None
+        self._departure_exit_pose = None
+        self._motion_armed = False
+        self._cancel_requested = False
         self._plan_generation = 0
         self.docked_station = None
         self._precision_station = None
@@ -86,21 +168,474 @@ class OperatorBridge(Node):
         self._qr_aligned_frames = 0
         self._qr_alignment_started_at = None
         self._red_frame_seen_at = None
+        self._red_frame_stamp = None
         self._red_frame_aligned = False
         self._red_frame_reported = False
         self._red_frame_error = (float('inf'), float('inf'))
         self._last_red_frame_state_report_at = None
+        self._alignment_odom = None
+        self._alignment_odom_stamp = None
+        # Planning is deliberately outside the ROS/Qt callback thread.  The
+        # worker receives immutable pose/scene snapshots and can never publish
+        # a command; its result is consumed by _qr_alignment_watchdog.
+        self._visual_plan_pool = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix='visual-maneuver-plan')
+        self._visual_plan_lock = Lock()
+        self._visual_plan_future = None
+        self._visual_plan_generation = 0
+        self._visual_plan_result = None
+        self._visual_plan_error = None
+        self._visual_plan_origin = None
+        self._visual_plan_marker = None
+        self._visual_plan_generation_at_submit = 0
+        self._visual_latest_marker = None
+        self._visual_latest_camera_stamp = None
+        self._visual_executor = None
+        self._visual_replan_requested = False
+        self._visual_plan_failures = 0
+        self._visual_marker_guard = None
+        self._visual_camera_outliers = 0
+        # Heading comes from the approved precision approach (not a guessed
+        # zero-yaw marker pose). The QR vision's red-frame quaternion is identity.
+        self._precision_handoff_yaw = None
+        self._alignment_target_yaw = None
+        self._qr_heading_angle = None
+        self._qr_heading_stamp = None
+        self._qr_heading_reference = None
         self.create_subscription(String, '/qr_docking/id', self._qr_id, 10)
+        self.create_subscription(PoseStamped, '/qr_docking/pose',
+                                 self._qr_heading_pose, 10)
+        self.create_subscription(Bool, '/tugger/loaded_guard/ready', self._guard_ready, 10)
+        self.create_subscription(String, '/tugger/precision_guard/ready', self._dock_guard_ready, 10)
+        self.create_subscription(String, '/tugger/loaded_guard/status', self._guard_status, 10)
+        self.create_subscription(String, '/tugger/collision_scene', self._scene_update, 10)
+        self.create_subscription(JointState, '/joint_states', self._joint_state, 10)
+        self.create_subscription(Odometry, '/wheel/odom', self._alignment_odometry, 10)
         self.create_subscription(
             PoseStamped, '/qr_docking/frame_pose', self._red_frame_pose, 10)
         self.create_timer(0.1, self._qr_alignment_watchdog)
+        self.create_timer(0.1, self._advance_cargo_operation)
+        self.create_timer(0.1, self._publish_motion_owner)
+        self.create_timer(0.1, self._dock_wait_watchdog)
+
+    def _guard_ready(self, message):
+        self._loaded_control_ready = bool(message.data)
+        self._loaded_guard_seen_at = self.get_clock().now()
+
+    def _dock_wait_watchdog(self):
+        if self._departure_pending is not None:
+            started = self._departure_pending['started']
+            if (self.get_clock().now() - started).nanoseconds / 1e9 > 5.0:
+                self._departure_pending = None
+                self._departure_target = None
+                self._report('Loaded departure blocked: no fresh scene/guard handshake within 5 s.')
+                self._execution_done(False, GoalStatus.STATUS_ABORTED)
+        if self._dock_pending is None:
+            return
+        started = self._dock_pending[4]
+        if (self.get_clock().now() - started).nanoseconds / 1e9 > 5.0:
+            self._dock_pending = None
+            self._stage_validation_pending = False
+            self._dock_precision_mode = False
+            self._queued_precision_poses = None
+            self._report('Precision segment blocked: docking guard did not become ready. Robot stopped.')
+            self._execution_done(False, GoalStatus.STATUS_ABORTED)
+
+    def _dock_guard_ready(self, message):
+        if message.data == 'DOCK_DEPART' and self._departure_pending is not None:
+            self._departure_pending['guard_seen_at'] = self.get_clock().now()
+            self._on_departure_guard_ready()
+            return
+        if message.data != 'DOCK_NAV' or self._dock_pending is None:
+            return
+        generation, station, path, start_pose, _ = self._dock_pending
+        if generation != self._plan_generation or not self._stage_validation_pending:
+            return
+        try:
+            if not self._motion_armed or self._cancel_requested:
+                raise ValueError('simulator commands are disarmed or cancelled')
+            if self._confirmed_cargo() is not None:
+                raise ValueError('unloaded docking guard cannot move attached cargo')
+            if not plan_is_current(start_pose, self._robot_pose())['current']:
+                raise ValueError('robot pose changed while validating precision approach')
+            if not self._dock_follower.server_is_ready():
+                raise ValueError('independent docking controller is unavailable')
+            self._dock_pending = None
+            self._stage_validation_pending = False
+            self._queued_precision_poses = None
+            self._precision_station = station
+            self._report(f'{station}: simulator precision guard ready; starting segment 2.')
+            self._follow(path)
+        except Exception as exc:
+            self._dock_pending = None
+            self._stage_validation_pending = False
+            self._dock_precision_mode = False
+            self._queued_precision_poses = None
+            self._report(f'Precision segment blocked: {exc}. Robot stopped.')
+            self._execution_done(False, GoalStatus.STATUS_ABORTED)
+
+
+    def _on_departure_guard_ready(self):
+        """Wait for a new scene after DOCK_DEPART authorization."""
+        pending = self._departure_pending
+        if pending is None or pending['generation'] != self._plan_generation:
+            return
+        if pending.get('awaiting_fresh_scene'):
+            return
+        pending['awaiting_fresh_scene'] = True
+        pending['scene_sequence_at_guard'] = getattr(self, '_scene_sequence', 0)
+        self._report(
+            'Loaded departure guard ready; awaiting a new live collision scene.'
+        )
+
+    def _validate_departure_on_fresh_scene(self):
+        """Authorize only against a newly consumed, still-fresh scene."""
+        pending = self._departure_pending
+
+        if (
+            pending is None
+            or pending['generation'] != self._plan_generation
+            or not pending.get('awaiting_fresh_scene')
+            or getattr(self, '_scene_sequence', 0)
+                <= pending['scene_sequence_at_guard']
+        ):
+            return
+
+        try:
+            if not self._motion_armed or self._cancel_requested:
+                raise ValueError('simulator commands disarmed or cancelled')
+
+            guard_seen = pending.get('guard_seen_at')
+            if (
+                guard_seen is None
+                or not 0 <= (
+                    self.get_clock().now() - guard_seen
+                ).nanoseconds / 1e9 <= 0.3
+            ):
+                return
+
+            if self._collision_scene is None:
+                return
+
+            stamp = json.loads(self._collision_scene).get('stamp')
+            now = self.get_clock().now().nanoseconds / 1e9
+
+            if (
+                not isinstance(stamp, (float, int))
+                or not math.isfinite(stamp)
+                or not 0 <= now - stamp <= 0.4
+            ):
+                return
+
+            if not plan_is_current(
+                pending['start_pose'],
+                self._robot_pose(),
+                position_tolerance_m=0.10
+            )['current']:
+                raise ValueError(
+                    'robot pose changed during departure guard handshake'
+                )
+
+            if self._confirmed_cargo() != pending['cargo_id']:
+                raise ValueError('attached cargo state changed')
+
+            if not self._dock_follower.server_is_ready():
+                raise ValueError('independent docking controller unavailable')
+
+            # Preserve the full loaded robot/cargo collision check.
+            self._modeled_loaded_path_clearance(
+                pending['poses'], pending['cargo_id']
+            )
+
+            # The scene must still be fresh after the calculation.
+            age = self.get_clock().now().nanoseconds / 1e9 - stamp
+            if not 0 <= age <= 0.4:
+                return
+
+            self._departure_pending = None
+            self._departure_active = True
+
+            self._report(
+                'Loaded departure: fresh scene and clearance passed; '
+                'starting guarded departure.'
+            )
+            self._follow(pending['path'])
+
+        except ValueError as exc:
+            if str(exc) == (
+                'Simulator scene is stale or from a future clock epoch'
+            ):
+                return
+            self._fail_loaded_departure(exc)
+
+        except Exception as exc:
+            self._fail_loaded_departure(exc)
+
+    def _fail_loaded_departure(self, exc):
+        self._departure_pending = None
+        self._departure_active = False
+        self._departure_target = None
+        self._report(f'Loaded departure blocked: {exc}. Robot stopped.')
+        self._execution_done(False, GoalStatus.STATUS_ABORTED)
+
+    def _prepare_loaded_departure(self, station, cargo_id, current_pose,
+                                  destination, candidates, station_targets):
+        """Prepare a loaded exit from the station's own staged approach path."""
+        if self._approach_provider is None:
+            raise ValueError('No configured station approach is available for departure')
+        if not self._loaded_guard_is_ready():
+            raise ValueError('Live simulator collision-scene guard is not ready')
+        approach_meta, approach_poses = self._approach_provider(station)
+        if approach_meta.get('execution_approved') is not True:
+            raise ValueError('Station departure source approach is not execution-approved')
+        if not any(route.get('execution_approved') is True and
+                   route.get('_database_execution_approved') is True
+                   for _, route, _ in candidates):
+            raise ValueError('No approved outgoing route exists for this destination')
+        decision = plan_station_departure(current_pose, approach_poses)
+        samples = self._modeled_loaded_path_clearance(decision['poses'], cargo_id)
+        # Leaving the station is neither an arriving precision segment nor a
+        # camera-alignment action. Clear stale state from the completed pickup.
+        self._precision_station = None
+        self._camera_handoff_station = None
+        self._queued_precision_poses = None
+        self._queued_precision_station = None
+        self._dock_precision_mode = False
+        path = NavPath()
+        path.header.frame_id = 'map'
+        path.header.stamp = self.get_clock().now().to_msg()
+        for pose in decision['poses']:
+            path.poses.append(self._pose(pose))
+        self._pending_departure = {
+            'path': path, 'poses': decision['poses'], 'start_pose': current_pose,
+            'cargo_id': cargo_id, 'station': station,
+        }
+        self._departure_target = (destination, candidates, station_targets)
+        self._departure_exit_pose = tuple(decision['staging_pose'])
+        self._pending_execution_approved = True
+        self._pending_pose = current_pose
+        self._pending_destination = destination
+        self._path_pub.publish(path)
+        self._plan_ready(
+            f'{station}: LOADED DEPARTURE preview to staging '
+            f'({decision["length_m"]:.2f} m, {decision["leading_end"]}-leading, '
+            f'{samples} loaded-clearance samples). Press RUN to depart; '
+            f'the destination route will be replanned after the exit.', False)
+
+    def _complete_loaded_departure(self):
+        """Return command ownership to STOP before planning from actual exit."""
+        self._departure_active = False
+        target = self._departure_target
+        self._departure_target = None
+        if target is None or not self._motion_armed or self._cancel_requested:
+            self._report('Loaded departure ended without a valid continuation.')
+            self._execution_done(False, GoalStatus.STATUS_ABORTED)
+            return
+        try:
+            current = self._robot_pose()
+            if not plan_is_current(
+                    self._departure_exit_pose, current,
+                    position_tolerance_m=0.15)['current']:
+                raise ValueError('robot did not reach the expected free-space staging pose')
+            cargo = self._confirmed_cargo()
+            if cargo is None:
+                raise ValueError('cargo attachment was lost during departure')
+            # Validation includes the measured final pose and the attached cargo.
+            end = (current[0] + 0.01 * math.cos(current[2]),
+                   current[1] + 0.01 * math.sin(current[2]), current[2])
+            self._modeled_loaded_path_clearance([current, end], cargo)
+        except Exception as exc:
+            self._report(f'Loaded departure completed but navigation handoff blocked: {exc}')
+            self._execution_done(False, GoalStatus.STATUS_ABORTED)
+            return
+        self.docked_station = None
+        self._report('Loaded departure completed at staging. Checking next destination '
+                     'from the measured pose; a new RUN authorization will be required.')
+        self.execute_destination(*target)
+
+    def _loaded_guard_is_ready(self):
+        if not self._loaded_control_ready or self._loaded_guard_seen_at is None:
+            return False
+        age = (self.get_clock().now() - self._loaded_guard_seen_at).nanoseconds / 1e9
+        return 0 <= age <= 0.3
+
+    def _scene_update(self, message):
+        self._collision_scene = message.data
+        self._scene_sequence = getattr(self, '_scene_sequence', 0) + 1
+        if self._departure_pending is not None:
+            self._validate_departure_on_fresh_scene()
+
+    def _guard_status(self, message):
+        if message.data == self._last_guard_status:
+            return
+        self._last_guard_status = message.data
+        if message.data not in ('ready', 'stopped', 'unloaded motion'):
+            self._report(f'MOTION GUARD: {message.data}.')
+
+    def _publish_motion_owner(self):
+        owner = 'STOP'
+        if self._motion_armed and not self._cancel_requested:
+            if self._departure_pending is not None or self._departure_active:
+                owner = 'DOCK_DEPART'
+            elif self._qr_alignment_active:
+                owner = 'DOCK_CAMERA' if self._dock_precision_mode else 'PRECISION'
+            elif self._dock_precision_mode and (self._stage_validation_pending or
+                                                self._follow_goal_pending or
+                                                self._active_follow is not None):
+                owner = 'DOCK_NAV'
+            elif self._follow_goal_pending or self._active_follow is not None:
+                owner = 'NAV'
+        message = String()
+        message.data = owner
+        self._motion_owner_pub.publish(message)
 
     def _qr_id(self, message):
+        if (self._qr_alignment_active and
+                message.data != expected_marker(self._qr_alignment_station)):
+            self._qr_heading_reference = None
         self._qr_identity = message.data
         self._qr_seen_at = self.get_clock().now()
         if (self._qr_alignment_active and
                 message.data == expected_marker(self._qr_alignment_station)):
             self._qr_expected_seen_at = self._qr_seen_at
+
+    def _qr_heading_pose(self, message):
+        """Record QR image yaw only if its stamped image and frame are valid."""
+        if not self._qr_alignment_active:
+            return
+        stamp = message.header.stamp.sec + message.header.stamp.nanosec / 1e9
+        age = self.get_clock().now().nanoseconds / 1e9 - stamp
+        if message.header.frame_id != 'downward_camera_link' or not 0 <= age <= 0.5:
+            return
+        yaw = _yaw(message.pose.orientation)
+        if math.isfinite(yaw) and (self._qr_heading_stamp is None or
+                                   stamp > self._qr_heading_stamp):
+            self._qr_heading_angle = yaw
+            self._qr_heading_stamp = stamp
+
+    def _qr_heading_agrees(self, pose, frame_stamp):
+        """Require a fresh QR yaw to track the map yaw from a stable reference."""
+        if (self._qr_heading_stamp is None or self._qr_heading_angle is None or
+                not 0 <= frame_stamp - self._qr_heading_stamp <= 0.25):
+            return False
+        if self._qr_heading_reference is None:
+            self._qr_heading_reference = (self._qr_heading_angle, pose[2])
+            return True
+        return relative_qr_heading_consistent(
+            self._qr_heading_angle, self._qr_heading_reference[0],
+            pose[2], self._qr_heading_reference[1])
+
+    def _cargo_state(self, station, message):
+        """Report observed simulator attachment transitions, not commands."""
+        state = message.data.strip().lower()
+        if station not in self._cargo_states:
+            return
+        if state in ('attach_rejected', 'detach_rejected'):
+            self._report(f'CARGO {state.upper()}: simulator rejected the request for station {station}.')
+            if self._cargo_task is not None and self._cargo_task.cargo_id == station:
+                self._advance_cargo_operation(rejection=state)
+            return
+        if state not in ('attached', 'detached'):
+            return
+        self._cargo_seen_at[station] = self.get_clock().now()
+        if self._cargo_states[station] == state:
+            self._advance_cargo_operation()
+            return
+        self._cargo_states[station] = state
+        label = '1' if station == 0 else '3'
+        self._report(f'CARGO JOINT {state.upper()}: Station {label} cargo (simulator joint state).')
+        self._advance_cargo_operation()
+
+    def _joint_state(self, message):
+        """Observe the lift; publishing a lift command is not confirmation."""
+        try:
+            index = message.name.index('lift_joint')
+            position = float(message.position[index])
+            if not math.isfinite(position):
+                return
+        except (ValueError, IndexError, TypeError):
+            return
+        self._lift_position = position
+        self._lift_seen_at = self.get_clock().now()
+        self._advance_cargo_operation()
+
+    def _cargo_pose(self, station, message):
+        """Record simulator-only payload pose observations for clearance."""
+        if station not in self._cargo_poses or message.header.frame_id != 'map':
+            return
+        pose = message.pose
+        values = (pose.position.x, pose.position.y, pose.position.z, _yaw(pose.orientation))
+        if not all(math.isfinite(value) for value in values):
+            return
+        self._cargo_poses[station] = values
+        self._cargo_pose_seen_at[station] = self.get_clock().now()
+
+    def _modeled_lift_clearance(self, station, cargo_id, operation):
+        """Check a fresh simulator collision scene and current payload poses."""
+        now = self.get_clock().now()
+        for key in (0, 3):
+            seen = self._cargo_pose_seen_at[key]
+            if seen is None or not 0 <= (now - seen).nanoseconds / 1e9 <= 1.0:
+                self._report('Cargo clearance blocked: simulator payload pose is stale or missing.')
+                return False
+        try:
+            world = Path(get_package_share_directory('tugger_gazebo')) / 'worlds/tugger_warehouse.sdf'
+            robot = Path(get_package_share_directory('tugger_description')) / 'urdf/tugger.urdf.xacro'
+            validate_modeled_geometry(world, robot)
+            if self._collision_scene is None:
+                raise ValueError('live simulator collision scene is unavailable')
+            scene = decode_scene(self._collision_scene, now.nanoseconds / 1e9,
+                                 expected_counts=scene_expected_counts(world))
+            obstacles = [box for model, box in scene if model not in
+                         ('cargo_station_0_stand', 'cargo_station_3_stand')]
+            other = 3 if cargo_id == 0 else 0
+            target = LIFT_UP_M if operation == 'pickup' else LIFT_DOWN_M
+            clear, hit = lift_sweep_clear(
+                self._robot_pose(), self._cargo_poses[cargo_id], self._cargo_poses[other],
+                obstacles, self._lift_position, target)
+            if not clear:
+                self._report(f'Modeled cargo lift clearance failed: {hit}.')
+            return clear
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            self._report(f'Cargo clearance unavailable: {exc}.')
+            return False
+
+    def _modeled_loaded_path_clearance(self, poses, cargo_id):
+        """Sample the known world with current payload geometry; not a sensor safety layer."""
+        now = self.get_clock().now()
+        for key in (0, 3):
+            seen = self._cargo_pose_seen_at[key]
+            if seen is None or not 0 <= (now - seen).nanoseconds / 1e9 <= 1.0:
+                raise ValueError('simulator payload pose is stale or missing')
+        if (self._lift_seen_at is None or
+                not 0 <= (now - self._lift_seen_at).nanoseconds / 1e9 <= 1.0 or
+                not 0.060 <= self._lift_position <= 0.070):
+            raise ValueError('raised lift feedback is stale or outside its tolerance')
+        world = Path(get_package_share_directory('tugger_gazebo')) / 'worlds/tugger_warehouse.sdf'
+        robot = Path(get_package_share_directory('tugger_description')) / 'urdf/tugger.urdf.xacro'
+        validate_modeled_geometry(world, robot)
+        current = self._robot_pose()
+        other = 3 if cargo_id == 0 else 0
+        if self._collision_scene is None:
+            raise ValueError('live simulator collision scene is unavailable')
+        scene = decode_scene(self._collision_scene, now.nanoseconds / 1e9,
+                             expected_counts=scene_expected_counts(world))
+        obstacles = [box for model, box in scene if model not in
+                     ('cargo_station_0_stand', 'cargo_station_3_stand')]
+        clear, sample, hit = loaded_path_clear(
+            [current] + list(poses), current, self._cargo_poses[cargo_id],
+            self._cargo_poses[other], obstacles, self._lift_position)
+        if not clear:
+            raise ValueError(f'modeled loaded path intersects {hit} at sample {sample}')
+        return sample
+
+    def _confirmed_cargo(self):
+        now = self.get_clock().now()
+        ages = {
+            station: ((now - seen).nanoseconds / 1e9 if seen is not None else None)
+            for station, seen in self._cargo_seen_at.items()
+        }
+        return confirmed_cargo(self._cargo_states, ages)
 
     def _expected_qr_is_fresh(self, station):
         if self._qr_seen_at is None:
@@ -127,24 +662,125 @@ class OperatorBridge(Node):
             z + qw * tz + (qx * ty - qy * tx),
         )
 
+    def _hold_visual_alignment(self, reason):
+        """Stop immediately and request a new measured plan after reacquisition."""
+        self._qr_aligned_frames = 0
+        self._red_frame_aligned = False
+        self._visual_executor = None
+        self._visual_replan_requested = True
+        # Invalidate an already-submitted plan after any hold.
+        self._visual_plan_generation += 1
+        with self._visual_plan_lock:
+            old_future = self._visual_plan_future
+            self._visual_plan_future = None
+        if old_future is not None:
+            old_future.cancel()
+        self._publish_precision_stop()
+        # Avoid GUI floods from repeated camera observations.
+        now = self.get_clock().now()
+        previous = getattr(self, '_last_visual_hold_report_at', None)
+        if previous is None or (now - previous).nanoseconds / 1e9 > 1.0:
+            self._last_visual_hold_report_at = now
+            self._report(f'Visual alignment HOLD (zero velocity): {reason}.')
+
+    def _alignment_heading_error(self, pose=None):
+        """Map TF heading against the approved final docking orientation."""
+        reference = self._alignment_target_yaw
+        if reference is None or not math.isfinite(reference):
+            raise ValueError('no approved station-frame heading for final alignment')
+        if pose is None:
+            pose = self._robot_pose()
+        return math.atan2(math.sin(reference - pose[2]),
+                          math.cos(reference - pose[2]))
+
     def _red_frame_pose(self, message):
-        """Use the red docking-frame centre for final positional control."""
+        """Fresh red-frame centre + station yaw gate; no blind camera recovery."""
         if not self._qr_alignment_active:
             return
         station = self._qr_alignment_station
-        self._red_frame_seen_at = self.get_clock().now()
-        if message.header.frame_id != 'base_footprint':
-            self._stop_qr_alignment(
-                f'red-frame pose must be base_footprint, got {message.header.frame_id}')
+        now = self.get_clock().now()
+        stamp = message.header.stamp.sec + message.header.stamp.nanosec / 1e9
+        age = now.nanoseconds / 1e9 - stamp
+        if not math.isfinite(stamp) or not 0 <= age <= QR_ALIGNMENT_MAX_OBSERVATION_AGE_S:
+            self._hold_visual_alignment('invalid/stale red-frame timestamp')
             return
-        marker_x = message.pose.position.x
-        marker_y = message.pose.position.y
-        proposal = bounded_qr_correction(marker_y, marker_x, 0.0)
+        if self._red_frame_stamp is not None and stamp <= self._red_frame_stamp:
+            self._hold_visual_alignment('repeated red-frame observation')
+            return
+        if message.header.frame_id != 'base_footprint':
+            self._stop_qr_alignment('red-frame geometry has an incorrect coordinate frame')
+            return
+        self._red_frame_stamp = stamp
+        self._red_frame_seen_at = now
+        # Camera publishes frame pose BEFORE the QR ID from each image. Hold
+        # for its subsequent identified frame; never drive from anonymous red.
+        if not self._expected_qr_is_fresh(station):
+            self._hold_visual_alignment('waiting for the expected QR identity')
+            return
+        marker_x, marker_y = float(message.pose.position.x), float(message.pose.position.y)
+        if not all(math.isfinite(v) for v in (marker_x, marker_y)):
+            self._hold_visual_alignment('invalid frame geometry')
+            return
+        try:
+            map_pose = self._robot_pose()
+            heading_error = self._alignment_heading_error(map_pose)
+        except Exception as exc:
+            self._stop_qr_alignment(f'station heading unavailable: {exc}')
+            return
+        if not self._qr_heading_agrees(map_pose, stamp):
+            self._hold_visual_alignment('QR relative yaw missing or disagrees with map TF')
+            return
+        if self._visual_marker_guard is None:
+            self._visual_marker_guard = FixedMarkerGuard(
+                map_pose, (marker_x, marker_y))
+        integrity, reason = self._visual_marker_guard.check(
+            map_pose, (marker_x, marker_y), self._alignment_target_yaw)
+        if integrity == 'ABORT':
+            self._stop_qr_alignment(reason)
+            return
+        if integrity == 'HOLD':
+            self._visual_camera_outliers += 1
+            self._hold_visual_alignment(reason)
+            if self._visual_camera_outliers >= 3:
+                self._stop_qr_alignment('three inconsistent camera measurements')
+            return
+        self._visual_camera_outliers = 0
         self._red_frame_error = (marker_x, marker_y)
-        self._report_red_frame_state(marker_x, marker_y, proposal['state'])
-        if proposal['state'] == 'ALIGNED':
-            self._qr_aligned_frames += 1
+        self._visual_latest_marker = (marker_x, marker_y)
+        self._visual_latest_camera_stamp = stamp
+        # Do not continue executing a primitive sequence against an old
+        # camera target.  The marker naturally moves as the robot moves, but
+        # a larger change means that the measured target has materially
+        # changed since the accepted plan.  Holding here also guarantees that
+        # the next plan starts only after the robot is stationary.
+        if (self._visual_executor is not None and
+                self._visual_plan_marker is not None and
+                math.hypot(marker_x - self._visual_plan_marker[0],
+                           marker_y - self._visual_plan_marker[1]) >
+                QR_VISUAL_REPLAN_MARKER_DELTA_M):
+            self._hold_visual_alignment(
+                'camera target changed during maneuver; replanning')
+            return
+        radial_error = math.hypot(marker_x, marker_y)
+        anchor_error = math.hypot(
+            map_pose[0] - self._visual_marker_guard.marker[0],
+            map_pose[1] - self._visual_marker_guard.marker[1])
+        # Cancel the old arc sequence near the target before settling.
+        if (radial_error <= 0.012 and anchor_error <= 0.015 and
+                self._visual_executor is not None):
+            self._visual_executor = None
+            self._visual_replan_requested = True
             self._publish_precision_stop()
+            self._qr_aligned_frames = 0
+            return
+        if (radial_error <= QR_ALIGNMENT_POSITION_TOLERANCE_M and
+                anchor_error <= QR_ALIGNMENT_POSITION_TOLERANCE_M and
+                abs(heading_error) <= QR_ALIGNMENT_HEADING_TOLERANCE_RAD):
+            self._publish_precision_stop()
+            if not self._alignment_is_stationary(now):
+                self._qr_aligned_frames = 0
+                return
+            self._qr_aligned_frames += 1
             if self._qr_aligned_frames >= QR_ALIGNMENT_STABLE_FRAMES:
                 self._red_frame_aligned = True
                 self._complete_red_frame_alignment()
@@ -152,12 +788,218 @@ class OperatorBridge(Node):
         self._qr_aligned_frames = 0
         self._red_frame_aligned = False
         self._red_frame_reported = False
-        command = TwistStamped()
-        command.header.stamp = self.get_clock().now().to_msg()
-        command.header.frame_id = 'base_footprint'
-        command.twist.linear.x = proposal['linear_x']
-        command.twist.angular.z = proposal['angular_z']
-        self._precision_cmd_pub.publish(command)
+        self._report_red_frame_state(marker_x, marker_y, 'CORRECT')
+        self._visual_alignment_step(now)
+
+    def _visual_alignment_step(self, now):
+        """Guard against scene, camera and odometry loss before each command."""
+        self._poll_visual_plan()
+        if (not self._motion_armed or self._cancel_requested):
+            self._stop_qr_alignment('motion disarmed or cancelled')
+            return
+        if not self._expected_qr_is_fresh(self._qr_alignment_station):
+            self._hold_visual_alignment('QR identity expired')
+            return
+        if not self._loaded_guard_is_ready():
+            self._stop_qr_alignment('collision-scene guard is not ready')
+            return
+        if self._visual_executor is None:
+            if self._visual_plan_future is None and self._visual_replan_requested:
+                if self._alignment_is_stationary(now):
+                    self._request_visual_plan()
+                else:
+                    self._publish_precision_stop()
+            else:
+                self._publish_precision_stop()
+            return
+        try:
+            pose = self._robot_pose()
+            speed = self._alignment_odom[0] if self._alignment_odom is not None else float('nan')
+            stamp = self._alignment_odom_stamp
+            if not self._visual_clearance_current(pose):
+                self._stop_qr_alignment('live footprint clearance failed')
+                return
+            if (stamp is None or not 0 <= now.nanoseconds / 1e9 - stamp <=
+                    QR_ALIGNMENT_MAX_OBSERVATION_AGE_S):
+                self._hold_visual_alignment('odometry stale; waiting to replan')
+                return
+            result = self._visual_executor.update(
+                pose, speed, now.nanoseconds / 1e9, stamp,
+                self._visual_latest_camera_stamp, identity_ok=True,
+                clearance_ok=True, visible=True)
+        except Exception as exc:
+            self._hold_visual_alignment(f'executor feedback unavailable: {exc}')
+            return
+        if result['state'] in ('STOP', 'WAIT_STOP', 'DONE'):
+            self._publish_precision_stop()
+        if result['state'] == 'STOP':
+            reason = result.get('reason', 'executor stopped')
+
+            if reason == 'odometry diverged from planned primitive':
+                self._stop_qr_alignment(
+                    '4WS tracking diverged; diagnostic stop without replanning'
+                )
+            else:
+                self._hold_visual_alignment(reason)
+        elif result['state'] == 'DONE':
+            # A completed maneuver is NOT alignment success. Recheck real
+            # stationary camera position and map heading before cargo pickup.
+            self._visual_executor = None
+            self._visual_replan_requested = True
+        elif result['state'] == 'MOVING':
+            command = TwistStamped()
+            command.header.stamp = self.get_clock().now().to_msg()
+            command.header.frame_id = 'base_footprint'
+            command.twist.linear.x = result['linear_x']
+            command.twist.angular.z = result['angular_z']
+            self._precision_cmd_pub.publish(command)
+
+    def _request_visual_plan(self):
+        """Snapshot fresh geometry and run only motion-free search in a worker."""
+        marker = self._visual_latest_marker
+        self._publish_precision_stop()
+        if marker is None:
+            return
+        try:
+            now = self.get_clock().now().nanoseconds / 1e9
+            pose = self._robot_pose()
+            heading_error = self._alignment_heading_error(pose)
+            if not self._loaded_guard_is_ready():
+                raise ValueError('scene guard heartbeat is stale')
+            if self._collision_scene is None:
+                raise ValueError('simulator collision scene unavailable')
+            world = Path(get_package_share_directory('tugger_gazebo')) / 'worlds' / 'tugger_warehouse.sdf'
+            scene = decode_scene(self._collision_scene, now,
+                                 expected_counts=scene_expected_counts(world))
+            lift = self._lift_position
+            if (lift is None or not -0.005 <= lift <= 0.005 or
+                    self._lift_seen_at is None or not 0 <=
+                    (self.get_clock().now() - self._lift_seen_at).nanoseconds / 1e9 <= 1.0):
+                raise ValueError('fresh lowered lift feedback required')
+            generation = self._visual_plan_generation
+            marker_x, marker_y = marker
+            obstacle_snapshot = tuple(box for _, box in scene)
+            # Indexed collision broad-phase retains EXACT oriented-box SAT
+            # collision behaviour, without checking all 68 boxes every time.
+            prepared = PreparedVisualClearance(obstacle_snapshot, lift, margin=0.01)
+            c, s = math.cos(pose[2]), math.sin(pose[2])
+
+            def clearance(local_pose):
+                world_pose = (pose[0] + c * local_pose[0] - s * local_pose[1],
+                              pose[1] + s * local_pose[0] + c * local_pose[1],
+                              math.atan2(math.sin(pose[2] + local_pose[2]),
+                                         math.cos(pose[2] + local_pose[2])))
+                return prepared(world_pose)
+
+            future = self._visual_plan_pool.submit(
+                replan_visual_maneuver, (0.0, 0.0, 0.0),
+                (marker_x, marker_y, heading_error), clearance,
+                max_depth=8, beam_width=400, time_budget=3.0,
+                position_tolerance=QR_ALIGNMENT_POSITION_TOLERANCE_M,
+                heading_tolerance=QR_ALIGNMENT_HEADING_TOLERANCE_RAD,
+                require_full_visibility=False)
+            with self._visual_plan_lock:
+                self._visual_plan_future = future
+                self._visual_plan_error = None
+                self._visual_plan_result = None
+                self._visual_plan_origin = pose
+                self._visual_plan_marker = marker
+                self._visual_plan_generation_at_submit = generation
+            self._visual_replan_requested = False
+            self._report('Visual 4WS plan queued from fresh TF, QR and scene snapshot.')
+        except Exception as exc:
+            self._stop_qr_alignment(f'visual plan preflight failed: {exc}')
+
+    def _poll_visual_plan(self):
+        with self._visual_plan_lock:
+            future = self._visual_plan_future
+            if future is None or not future.done():
+                return
+            self._visual_plan_future = None
+            try:
+                plan = future.result()
+                error = None
+            except Exception as exc:
+                plan, error = None, str(exc)
+        if self._visual_plan_generation_at_submit != self._visual_plan_generation:
+            return
+        if plan is None:
+            self._visual_plan_failures += 1
+            if self._visual_plan_failures >= QR_VISUAL_MAX_PLAN_FAILURES:
+                self._stop_qr_alignment(
+                    error or 'guarded 4WS search has no feasible camera maneuver; '
+                    'Nav2 must deliver closer before visual alignment')
+            else:
+                self._hold_visual_alignment(
+                    f'plan unavailable ({self._visual_plan_failures}/'
+                    f'{QR_VISUAL_MAX_PLAN_FAILURES})')
+            return
+        camera_stamp = self._visual_latest_camera_stamp
+        now_seconds = self.get_clock().now().nanoseconds / 1e9
+        if (self._visual_latest_marker is None or camera_stamp is None or
+                not 0 <= now_seconds - camera_stamp <= QR_ALIGNMENT_MAX_OBSERVATION_AGE_S or
+                not self._expected_qr_is_fresh(self._qr_alignment_station)):
+            self._hold_visual_alignment('plan expired while QR was unobserved')
+            return
+        try:
+            current = self._robot_pose()
+        except Exception:
+            self._hold_visual_alignment('TF missing after planning')
+            return
+        if (self._visual_plan_origin is None or
+                math.hypot(current[0] - self._visual_plan_origin[0],
+                           current[1] - self._visual_plan_origin[1]) > 0.01 or
+                abs(math.atan2(math.sin(current[2] - self._visual_plan_origin[2]),
+                               math.cos(current[2] - self._visual_plan_origin[2]))) > 0.02 or
+                self._visual_plan_marker is None or
+                math.hypot(self._visual_latest_marker[0] - self._visual_plan_marker[0],
+                           self._visual_latest_marker[1] - self._visual_plan_marker[1]) > 0.01):
+            self._hold_visual_alignment('robot or marker moved during planning')
+            return
+        if not self._visual_clearance_current(current):
+            self._stop_qr_alignment('scene changed or clearance lost since planning')
+            return
+        if not self._alignment_is_stationary(self.get_clock().now()):
+            self._hold_visual_alignment('robot moved before plan acceptance')
+            return
+        self._visual_plan_failures = 0
+        self._visual_executor = VisualManeuverExecutor(
+            plan, speed=0.005, segment_timeout=20.0)
+        self._report(f'Visual 4WS plan accepted ({len(plan)} bounded primitives).')
+
+    def _visual_clearance_current(self, pose):
+        """Recheck exact current pose against a *fresh* live scene."""
+        try:
+            now = self.get_clock().now().nanoseconds / 1e9
+            if not self._loaded_guard_is_ready():
+                return False
+            world = Path(get_package_share_directory('tugger_gazebo')) / 'worlds' / 'tugger_warehouse.sdf'
+            scene = decode_scene(self._collision_scene, now,
+                                 expected_counts=scene_expected_counts(world))
+            lift = self._lift_position
+            return (lift is not None and -0.005 <= lift <= 0.005 and
+                    PreparedVisualClearance((box for _, box in scene), lift)(pose))
+        except Exception:
+            return False
+
+    def _alignment_odometry(self, message):
+        """Retain measured velocity, not the requested velocity, for completion."""
+        if message.header.frame_id != 'odom' or message.child_frame_id != 'base_footprint':
+            return
+        velocity = message.twist.twist
+        values = (float(velocity.linear.x), float(velocity.linear.y), float(velocity.angular.z))
+        stamp = message.header.stamp.sec + message.header.stamp.nanosec / 1e9
+        if all(math.isfinite(value) for value in values):
+            self._alignment_odom, self._alignment_odom_stamp = values, stamp
+
+    def _alignment_is_stationary(self, now):
+        if self._alignment_odom is None or self._alignment_odom_stamp is None:
+            return False
+        age = now.nanoseconds / 1e9 - self._alignment_odom_stamp
+        vx, vy, yaw_rate = self._alignment_odom
+        return (0.0 <= age <= QR_ALIGNMENT_MAX_OBSERVATION_AGE_S and
+                math.hypot(vx, vy) <= QR_STATIONARY_MAX_SPEED_M_S and
+                abs(yaw_rate) <= QR_STATIONARY_MAX_YAW_RATE_RAD_S)
 
     def _report_red_frame_state(self, forward_m, lateral_m, state):
         """Show the camera's final-position estimate without flooding the GUI."""
@@ -170,7 +1012,9 @@ class OperatorBridge(Node):
         status = 'CENTERED' if state == 'ALIGNED' else 'CORRECTING'
         self._report(
             f'RED FRAME {status}: forward error={forward_m:.3f} m, '
-            f'lateral error={lateral_m:.3f} m; tolerance=0.020 m.')
+            f'lateral error={lateral_m:.3f} m; '
+            f'distance={math.hypot(forward_m, lateral_m):.3f} m; '
+            f'position tolerance={QR_ALIGNMENT_POSITION_TOLERANCE_M:.3f} m.')
 
     def _complete_red_frame_alignment(self):
         """Report final success after the red-frame positional gate passes."""
@@ -179,47 +1023,223 @@ class OperatorBridge(Node):
         station = self._qr_alignment_station
         marker_x, marker_y = self._red_frame_error
         self._qr_alignment_active = False
+        self._dock_precision_mode = False
         self.docked_station = station
         self._publish_precision_stop()
         self._report(
-            f'MISSION SUCCESS: red frame centered for {station}; '
+            f'PRECISION POSITION REACHED: red frame centered for {station}; '
             f'forward error={marker_x:.3f} m, lateral error={marker_y:.3f} m '
-            f'within 20 mm for '
-            f'{QR_ALIGNMENT_STABLE_FRAMES} frames.')
-        self._execution_done(True, GoalStatus.STATUS_SUCCEEDED)
+            f'within 10 mm and heading within 1 degree for '
+            f'{QR_ALIGNMENT_STABLE_FRAMES} stationary frames.')
+        if station == 'HOME':
+            self._execution_done(True, GoalStatus.STATUS_SUCCEEDED)
+            return
+        self._start_cargo_operation(station)
+
+    def _start_cargo_operation(self, station):
+        """Begin a cargo operation only with fresh telemetry and clearance."""
+        pickup = {'cargo_station_0': 0, 'cargo_station_3': 3}
+        dropoff = {'cargo_dropoff_northwest': 0, 'cargo_dropoff_southeast': 3}
+        try:
+            if not self._motion_armed or station not in pickup and station not in dropoff:
+                raise ValueError('armed, known cargo destination is required')
+            if not self._loaded_guard_is_ready():
+                raise ValueError('loaded planner and controller clearance are not ready')
+            if not self._expected_qr_is_fresh(station):
+                raise ValueError('expected destination QR identity is missing or stale')
+            cargo = self._confirmed_cargo()
+            check_destination(station, cargo)
+            now = self.get_clock().now()
+            if (self._lift_seen_at is None or
+                    not 0 <= (now - self._lift_seen_at).nanoseconds / 1e9 <= 1.0):
+                raise ValueError('lift position feedback is missing or stale')
+            is_pickup = station in pickup
+            cargo_id = pickup[station] if is_pickup else dropoff[station]
+            pose_seen = self._cargo_pose_seen_at[cargo_id]
+            if (pose_seen is None or self._cargo_poses[cargo_id] is None or
+                    not 0 <= (now - pose_seen).nanoseconds / 1e9 <= 1.0):
+                raise ValueError('simulator cargo pose is missing or stale')
+            if is_pickup and abs(self._lift_position) > 0.005:
+                raise ValueError('pickup requires the lift to be down')
+            if not is_pickup and not 0.060 <= self._lift_position <= 0.070:
+                raise ValueError('drop-off requires confirmed raised cargo')
+            if self._cargo_clearance_guard is None or not self._cargo_clearance_guard(
+                    station, cargo_id, 'pickup' if is_pickup else 'dropoff'):
+                raise ValueError('height-aware cargo operation clearance is unavailable')
+            self._cargo_task = CargoOperation(
+                'pickup' if is_pickup else 'dropoff', cargo_id,
+                now.nanoseconds / 1e9, self._cargo_poses[cargo_id][2])
+            self._report(f'{station}: starting confirmed cargo operation.')
+            if is_pickup:
+                self._report('Allowing the vehicle to settle before requesting attachment.')
+            else:
+                self.lift(LIFT_DOWN_M)
+        except (ValueError, TypeError) as exc:
+            self._report(f'MISSION INCOMPLETE: cargo operation blocked: {exc}.')
+            self._execution_done(False, GoalStatus.STATUS_ABORTED)
+
+    def _advance_cargo_operation(self, rejection=None):
+        task = self._cargo_task
+        if task is None:
+            return
+        now = self.get_clock().now()
+        now_seconds = now.nanoseconds / 1e9
+        state_seen = self._cargo_seen_at[task.cargo_id]
+        lift_seen = self._lift_seen_at
+        attachment = rejection
+        if (attachment is None and state_seen is not None and
+                task.phase_started <= state_seen.nanoseconds / 1e9 <= now_seconds and
+                now_seconds - state_seen.nanoseconds / 1e9 <= 2.0):
+            attachment = self._cargo_states[task.cargo_id]
+        lift = None
+        if (lift_seen is not None and
+                task.phase_started <= lift_seen.nanoseconds / 1e9 <= now_seconds and
+                now_seconds - lift_seen.nanoseconds / 1e9 <= 1.0):
+            lift = self._lift_position
+        cargo_height = None
+        pose_seen = self._cargo_pose_seen_at[task.cargo_id]
+        if (pose_seen is not None and self._cargo_poses[task.cargo_id] is not None and
+                task.phase_started <= pose_seen.nanoseconds / 1e9 <= now_seconds and
+                now_seconds - pose_seen.nanoseconds / 1e9 <= 1.0):
+            cargo_height = self._cargo_poses[task.cargo_id][2]
+        command = None
+        if task.phase in ('WAIT_RAISE', 'WAIT_LOWER') and self._motion_armed:
+            try:
+                if (now_seconds - task.phase_started > 1.5 and
+                        (attachment is None or lift is None or cargo_height is None)):
+                    task.result, command = 'feedback_stale_during_lift', 'FAILED'
+                elif not self._cargo_clearance_guard(
+                        self.docked_station, task.cargo_id, task.operation):
+                    task.result, command = 'clearance_lost_during_lift', 'FAILED'
+            except Exception as exc:
+                self._report(f'Cargo clearance check failed during lift: {exc}')
+                task.result, command = 'clearance_unavailable_during_lift', 'FAILED'
+        if command is None:
+            command = task.observe(now_seconds, attachment=attachment, lift=lift,
+                                   cargo_height=cargo_height, armed=self._motion_armed)
+        if command in ('ATTACH', 'RAISE', 'DETACH'):
+            try:
+                if not self._expected_qr_is_fresh(self.docked_station):
+                    task.result = 'destination_qr_stale'
+                    command = 'FAILED'
+                elif not self._cargo_clearance_guard(
+                        self.docked_station, task.cargo_id, task.operation):
+                    task.result = 'clearance_lost'
+                    command = 'FAILED'
+            except Exception as exc:
+                self._report(f'Cargo clearance check failed: {exc}')
+                task.result = 'clearance_unavailable'
+                command = 'FAILED'
+        if command == 'ATTACH':
+            self.cargo(task.cargo_id, True)
+        elif command == 'RAISE':
+            self.lift(LIFT_UP_M)
+        elif command == 'DETACH':
+            self.cargo(task.cargo_id, False)
+        elif command == 'SUCCEEDED':
+            self._cargo_task = None
+            label = 'ATTACHED AND LIFTED' if task.operation == 'pickup' else 'LOWERED AND DETACHED'
+            self._report(f'CARGO {label}: simulator cargo pose and joint feedback confirmed.')
+            self._execution_done(True, GoalStatus.STATUS_SUCCEEDED)
+        elif command == 'FAILED':
+            self._cargo_task = None
+            if (self._lift_seen_at is not None and
+                    0 <= (now - self._lift_seen_at).nanoseconds / 1e9 <= 1.0):
+                self.lift(self._lift_position)
+            else:
+                self._report('LIFT STOP UNCONFIRMED: position feedback is stale; '
+                             'the previous position command may still be active.')
+            self._report(f'MISSION INCOMPLETE: cargo operation failed: {task.result}.')
+            self._execution_done(False, GoalStatus.STATUS_ABORTED)
 
     def _stop_qr_alignment(self, reason):
         if not self._qr_alignment_active:
             return
         self._qr_alignment_active = False
+        self._dock_precision_mode = False
+        self._visual_plan_generation += 1
+        with self._visual_plan_lock:
+            future = self._visual_plan_future
+            self._visual_plan_future = None
+        if future is not None:
+            future.cancel()
+        self._visual_executor = None
+        self._visual_replan_requested = False
+        self._alignment_target_yaw = None
         self._publish_precision_stop()
         self._report(f'PRECISION ALIGNMENT FAILED: {reason}. Robot stopped.')
         self._execution_done(False, GoalStatus.STATUS_ABORTED)
 
     def _start_qr_alignment(self, station):
+        # HOME has a unique, explicit 0-rad final orientation. Cargo targets
+        # must use the selected approved precision segment, never the yaw of
+        # an arbitrary entrance or the identity quaternion of the red frame.
+        target_yaw = (0.0 if station == 'HOME' else self._precision_handoff_yaw)
+        if target_yaw is None or not math.isfinite(target_yaw):
+            self._report(f'PRECISION ALIGNMENT BLOCKED for {station}: no approved final heading.')
+            self._execution_done(False, GoalStatus.STATUS_ABORTED)
+            return
+        self._alignment_target_yaw = target_yaw
+        self._qr_heading_angle = None
+        self._qr_heading_stamp = None
+        self._qr_heading_reference = None
         self._qr_alignment_active = True
         self._qr_alignment_station = station
         self._qr_aligned_frames = 0
         self._qr_seen_at = None
         self._qr_expected_seen_at = None
         self._red_frame_seen_at = None
+        self._red_frame_stamp = None
         self._red_frame_aligned = False
         self._red_frame_reported = False
         self._red_frame_error = (float('inf'), float('inf'))
         self._last_red_frame_state_report_at = None
         self._qr_alignment_started_at = self.get_clock().now()
+        self._visual_plan_generation += 1
+        with self._visual_plan_lock:
+            future = self._visual_plan_future
+            self._visual_plan_future = None
+        if future is not None:
+            future.cancel()
+        self._visual_plan_result = None
+        self._visual_plan_error = None
+        self._visual_plan_origin = None
+        self._visual_plan_marker = None
+        self._visual_latest_marker = None
+        self._visual_latest_camera_stamp = None
+        self._visual_executor = None
+        self._visual_replan_requested = True
+        self._visual_plan_failures = 0
+        self._visual_marker_guard = None
+        self._visual_camera_outliers = 0
+        self._last_visual_hold_report_at = None
         self._report(
             f'NAV2 COARSE APPROACH COMPLETE. Red-frame alignment now owns final '
-            f'motion for {station}: centering within 20 mm.  QR '
+            f'motion for {station}: 10 mm centre and 1 degree yaw. QR '
             f'{expected_marker(station)} remains an identity observation.')
 
     def _qr_alignment_watchdog(self):
         if not self._qr_alignment_active:
             return
+        self._poll_visual_plan()
+        if not self._qr_alignment_active:
+            return
+        self._publish_precision_stop() if (self._visual_executor is None or
+                                            not self._expected_qr_is_fresh(self._qr_alignment_station)) else None
+        if ((self.get_clock().now() - self._qr_alignment_started_at).nanoseconds / 1e9 >
+                QR_ALIGNMENT_MAX_DURATION_S):
+            self._stop_qr_alignment('alignment timed out without stationary confirmation')
+            return
         reference = self._red_frame_seen_at or self._qr_alignment_started_at
         age = (self.get_clock().now() - reference).nanoseconds / 1e9
+        if age > QR_ALIGNMENT_MAX_OBSERVATION_AGE_S:
+            self._hold_visual_alignment('camera frame missing; stopping for reacquisition')
         if age > QR_ALIGNMENT_TIMEOUT_S:
-            self._stop_qr_alignment('red-frame observation became stale')
+            self._stop_qr_alignment('red-frame camera not reacquired within 3 s')
+            return
+        expected = self._qr_expected_seen_at or self._qr_alignment_started_at
+        if (self.get_clock().now() - expected).nanoseconds / 1e9 > QR_ALIGNMENT_TIMEOUT_S:
+            self._stop_qr_alignment('expected QR identity not reacquired within 3 s')
 
     def _pose(self, values):
         pose = PoseStamped()
@@ -251,12 +1271,34 @@ class OperatorBridge(Node):
         self._plan_generation += 1
         self._pending_path = None
         self._pending_pose = None
+        self._pending_alignment_station = None
+        self._pending_destination = None
+        self._pending_execution_approved = False
+        self._queued_precision_poses = None
+        self._queued_precision_station = None
+        self._stage_validation_pending = False
+        self._dock_precision_mode = False
+        self._dock_pending = None
+        self._pending_departure = None
+        self._departure_pending = None
+        self._departure_target = None
+        self._departure_exit_pose = None
+        self._precision_handoff_yaw = None
         return self._plan_generation
 
     def execute_saved_route(self, label, saved_poses, precision_station=None,
-                            camera_handoff_station=None):
+                            camera_handoff_station=None, next_precision=None,
+                            mission_destination=None, execution_approved=False):
         """Dispatch an offline-generated route, with only a short live connector."""
+        if (self._follow_goal_pending or self._stage_validation_pending or
+                self._departure_pending is not None or self._departure_active or
+                self._active_follow is not None or self._qr_alignment_active or
+                self._cargo_task is not None):
+            self._report('Planning blocked: cancel the active mission first.')
+            return
         generation = self._begin_preflight()
+        self._pending_destination = mission_destination
+        self._pending_execution_approved = execution_approved is True
         try:
             x, y, yaw = self._robot_pose()
         except Exception as exc:
@@ -288,6 +1330,9 @@ class OperatorBridge(Node):
         self._precision_station = precision_station
         self._camera_handoff_station = (
             camera_handoff_station or precision_station)
+        if next_precision is not None:
+            self._queued_precision_station = camera_handoff_station
+            self._queued_precision_poses = next_precision
         if self._camera_handoff_station:
             self.docked_station = None
         # Nav2 commonly returns an empty path when a goal is only centimetres
@@ -317,41 +1362,155 @@ class OperatorBridge(Node):
         future.add_done_callback(
             lambda result, token=generation: self._on_connector_goal(result, token))
 
+    def _recover_loaded_dock_station(self, cargo, pose):
+        """Recover a loaded dock from live feedback after GUI restart."""
+        if self._approach_provider is None:
+            return
+
+        station = f'cargo_station_{cargo}'
+        _, approach = self._approach_provider(station)
+
+        if not approach or len(approach[-1]) < 2:
+            raise ValueError('Configured pickup approach unavailable')
+
+        distance = math.hypot(
+            pose[0] - approach[-1][0],
+            pose[1] - approach[-1][1])
+
+        if distance > 0.20:
+            return  # Robot is no longer at the pickup dock.
+
+        now = self.get_clock().now()
+        seen = self._lift_seen_at
+
+        if (seen is None or
+                not 0 <= (now - seen).nanoseconds / 1e9 <= 1.0 or
+                self._lift_position is None or
+                not 0.060 <= self._lift_position <= 0.070):
+            raise ValueError(
+                'Cannot recover loaded dock: lift feedback stale or invalid')
+
+        try:
+            plan_station_departure(pose, approach)
+        except ValueError as exc:
+            raise ValueError(
+                f'Cannot recover loaded dock geometry: {exc}') from exc
+
+        self.docked_station = station
+        self._report(
+            f'{station}: recovered docked state from fresh cargo/lift '
+            'feedback and measured robot pose after GUI restart.')
+
     def execute_destination(self, destination, candidates, station_targets):
         """Select a destination from the live pose without guessing a route."""
+        if (self._follow_goal_pending or self._stage_validation_pending or
+                self._departure_pending is not None or self._departure_active or
+                self._active_follow is not None or self._qr_alignment_active or
+                self._cargo_task is not None):
+            self._report('Planning blocked: cancel the active mission first.')
+            return
         generation = self._begin_preflight()
         try:
+            cargo = self._confirmed_cargo()
+            check_destination(destination, cargo)
             pose = self._robot_pose()
+            # Recover dock identity after restarting only the GUI.
+            if cargo is not None and self.docked_station is None:
+                self._recover_loaded_dock_station(cargo, pose)
+            # Depart a loaded dock using its own height-aware path first.
+            # Never ask the ordinary 2D Nav2 global planner to start beneath
+            # the stand where the static costmap marks the station occupied.
+            if cargo is not None and self.docked_station is not None:
+                if self.docked_station != f'cargo_station_{cargo}':
+                    raise ValueError('Loaded departure station does not match attached cargo')
+                self._prepare_loaded_departure(
+                    self.docked_station, cargo, pose,
+                    destination, candidates, station_targets)
+                return
             decision = select_destination_plan(
                 destination, candidates, pose, destination_poses=station_targets)
         except (Exception, ValueError) as exc:
             self._report(f'Destination selection rejected: {exc}')
             return
+        approach = None
+        approach_approved = True
+        if destination != 'HOME':
+            try:
+                if self._approach_provider is None:
+                    raise ValueError('No precision approach repository is configured')
+                if decision['mode'] in ('SAVED_REJOIN', 'SHORT_CONNECTOR'):
+                    entry = decision['poses'][-1]
+                elif station_targets:
+                    entry = min(station_targets, key=lambda point: math.hypot(
+                        point[0] - pose[0], point[1] - pose[1]))
+                else:
+                    raise ValueError('No station entrance is configured')
+                metadata, approach = self._approach_provider(destination, entry)
+                approach_approved = metadata.get('execution_approved') is True
+                if metadata.get('source') == 'isolated_entrance_candidate':
+                    self._report(
+                        f'{destination}: selected a statically sampled entrance '
+                        'candidate; Gazebo behavior remains unverified.')
+            except (OSError, ValueError, KeyError) as exc:
+                self._report(f'{destination}: precision approach unavailable: {exc}')
+                return
         if decision['mode'] == 'ALREADY_AT_DESTINATION':
-            self._report(f'{destination}: already at destination; no plan was sent.')
+            if destination == 'HOME':
+                self._pending_pose = pose
+                self._pending_alignment_station = destination
+                self._pending_destination = destination
+                self._pending_execution_approved = True
+                self._report(
+                    'HOME: already near the target; press RUN to perform '
+                    'camera-guided final alignment. Preview only.')
+                return
+            gap = math.hypot(pose[0] - approach[0][0], pose[1] - approach[0][1])
+            if gap > 0.25:
+                self._report(f'{destination}: no validated precision approach from this entrance.')
+                return
+            self.execute_saved_route(
+                f'{destination} precision approach', approach,
+                precision_station=destination, mission_destination=destination,
+                execution_approved=approach_approved)
             return
         if decision['mode'] != 'LIVE_RECOVERY_REQUIRED':
             route = decision['route']
+            if approach is not None and math.hypot(
+                    decision['poses'][-1][0] - approach[0][0],
+                    decision['poses'][-1][1] - approach[0][1]) > 0.03:
+                self._report(
+                    f'{destination}: selected route ends at an entrance without '
+                    'a matching validated precision approach. No plan was sent.')
+                return
             label = f'{route["source"]} → {destination} ({decision["mode"]})'
             self._report(
                 f'{label}: rejoin pose {decision["rejoin_index"]}; '
                 f'gap {decision["gap_m"]:.2f} m; '
                 f'leading end {decision["direction"]["leading_end"]}.')
             self.execute_saved_route(
-                label, decision['poses'], camera_handoff_station=destination)
+                label, decision['poses'], camera_handoff_station=destination,
+                next_precision=approach, mission_destination=destination,
+                execution_approved=(
+                    route.get('_database_execution_approved') is True and
+                    route.get('execution_approved') is True and approach_approved))
             return
         if not station_targets:
             self._report(f'{destination}: no station entry is available for live recovery.')
             return
-        target = min(station_targets, key=lambda point: math.hypot(
-            point[0] - pose[0], point[1] - pose[1]))
+        target = approach[0] if approach is not None else min(
+            station_targets, key=lambda point: math.hypot(
+                point[0] - pose[0], point[1] - pose[1]))
         self._report(
             f'{destination}: no safe saved-route rejoin; planning live recovery '
             f'to a facility entry point.')
         self._route_label = f'Live recovery → {destination}'
+        self._pending_destination = destination
+        self._pending_execution_approved = approach_approved
         self._saved_poses = []
         self._precision_station = None
         self._camera_handoff_station = destination
+        self._queued_precision_poses = approach
+        self._queued_precision_station = destination if approach is not None else None
         self._recovery_only = True
         if not self._planner.server_is_ready():
             self._report('Nav2 planner is unavailable; live recovery remains preview-only.')
@@ -399,6 +1558,14 @@ class OperatorBridge(Node):
             if response.status != GoalStatus.STATUS_SUCCEEDED or len(connector.poses) < 2:
                 self._report('No safe short connector to the selected saved route.')
                 return
+            planner_poses = [[p.pose.position.x, p.pose.position.y,
+                              _yaw(p.pose.orientation)] for p in connector.poses]
+            planner_sign = validate_planner_motion(planner_poses)
+            selected = prepare_dynamic_path(
+                [(pose[0], pose[1]) for pose in planner_poses], self._robot_yaw())
+            if planner_sign != selected['body_velocity_sign']:
+                self._report('Planner direction disagrees with live heading; no plan was sent.')
+                return
             connector_poses = [[p.pose.position.x, p.pose.position.y, 0.0]
                                for p in connector.poses]
             length = self._path_length(connector_poses)
@@ -438,24 +1605,73 @@ class OperatorBridge(Node):
             pose.pose.orientation.z = math.sin(heading / 2.0)
             pose.pose.orientation.w = math.cos(heading / 2.0)
             path.poses.append(pose)
+        try:
+            cargo = self._confirmed_cargo()
+            clearance_note = 'Unloaded footprint checked; cargo-height clearance does not apply.'
+            if cargo is not None:
+                modeled_poses = [(p[0], p[1], heading)
+                                 for p, heading in zip(poses, prepared['body_headings'])]
+                samples = self._modeled_loaded_path_clearance(modeled_poses, cargo)
+                self._report(f'Modeled loaded path clearance passed {samples} samples; '
+                             'the simulator scene will be rechecked before RUN.')
+                clearance_note = 'Loaded 2.5D scene sampled; runtime guard required.'
+        except Exception as exc:
+            self._report(f'Loaded path check failed: {exc}. RUN is not enabled.')
+            return
         self._path_pub.publish(path)
-        self._pending_path = path
-        self._pending_pose = preview_pose
-        self._plan_ready(
+        summary = (
             f'{self._route_label}: saved route has {len(poses)} poses; '
             f'connector {connector_length:.2f} m; '
             f'initial leading end {prepared["leading_end"]}; '
-            f'body motion {prepared["body_motion_direction"]}; '
-            'press RUN to dispatch this exact checked path.',
-            False)
+            f'body motion {prepared["body_motion_direction"]}. {clearance_note}')
+        if not self._path_validator.service_is_ready():
+            self._report('Path validation service unavailable; RUN is not enabled.')
+            return
+        request = IsPathValid.Request()
+        request.path = path
+        request.consider_unknown_as_obstacle = True
+        self._report(f'{summary} Checking the path against the global costmap.')
+        future = self._path_validator.call_async(request)
+        token = self._plan_generation if generation is None else generation
+        future.add_done_callback(
+            lambda response, expected=token: self._on_path_validated(
+                response, expected, path, preview_pose, summary))
+
+    def _on_path_validated(self, future, generation, path, preview_pose, summary):
+        """Make a preview runnable only after Nav2 validates the current costmap."""
+        if generation != self._plan_generation:
+            return
+        try:
+            result = future.result()
+            if not result.success or not result.is_valid:
+                self._report('Path validation failed or reported an obstacle; RUN is not enabled.')
+                return
+        except Exception as exc:
+            self._report(f'Path validation failed: {exc}; RUN is not enabled.')
+            return
+        self._pending_path = path
+        self._pending_pose = preview_pose
+        self._plan_ready(
+            f'{summary} Global costmap check passed; press RUN to dispatch '
+            'this path.', False)
 
     def run_selected_mission(self, armed):
         """Run only the exact path previously previewed by the operator."""
         if not armed:
             self._report('RUN blocked: arm simulator commands first.')
             return
-        if self._pending_path is None:
+        if (self._follow_goal_pending or self._stage_validation_pending or
+                self._departure_pending is not None or self._departure_active or
+                self._active_follow is not None or self._qr_alignment_active or
+                self._cargo_task is not None):
+            self._report('RUN blocked: a navigation or precision alignment is already active.')
+            return
+        if (self._pending_path is None and self._pending_alignment_station is None and
+                self._pending_departure is None):
             self._report('RUN blocked: select and validate a mission first.')
+            return
+        if not self._pending_execution_approved:
+            self._report('RUN blocked: a selected saved or precision route is not execution-approved.')
             return
         try:
             check = plan_is_current(self._pending_pose, self._robot_pose())
@@ -469,55 +1685,280 @@ class OperatorBridge(Node):
                 f'{math.degrees(check["yaw_error_rad"]):.1f} deg). '
                 'Check/plan the destination again.')
             return
+        try:
+            cargo = self._confirmed_cargo()
+            if self._pending_destination is not None:
+                check_destination(self._pending_destination, cargo)
+            if cargo is not None and not self._loaded_guard_is_ready():
+                self._report('RUN blocked: loaded controller clearance monitoring is not ready.')
+                return
+            if cargo is not None and self._pending_path is not None:
+                poses = [(p.pose.position.x, p.pose.position.y, _yaw(p.pose.orientation))
+                         for p in self._pending_path.poses]
+                self._modeled_loaded_path_clearance(poses, cargo)
+        except (ValueError, TypeError, OSError) as exc:
+            self._report(f'RUN blocked: {exc}.')
+            return
+        if self._pending_departure is not None:
+            pending = self._pending_departure
+            try:
+                if self._confirmed_cargo() != pending['cargo_id']:
+                    raise ValueError('cargo attachment changed since departure preview')
+                if not self._loaded_guard_is_ready():
+                    raise ValueError('loaded scene guard is not ready')
+                self._modeled_loaded_path_clearance(pending['poses'], pending['cargo_id'])
+                if not self._dock_follower.server_is_ready():
+                    raise ValueError('independent docking controller unavailable')
+            except Exception as exc:
+                self._report(f'RUN blocked: loaded departure preflight: {exc}')
+                return
+            self._pending_departure = None
+            self._pending_pose = None
+            self._motion_armed = True
+            self._cancel_requested = False
+            pending['generation'] = self._plan_generation
+            pending['started'] = self.get_clock().now()
+            self._departure_pending = pending
+            self._report('Loaded departure RUN accepted; waiting for DOCK_DEPART guard.')
+            return
+        if self._pending_alignment_station is not None:
+            station = self._pending_alignment_station
+            self._pending_alignment_station = None
+            self._pending_pose = None
+            self.docked_station = None
+            self._motion_armed = True
+            self._cancel_requested = False
+            self._start_qr_alignment(station)
+            return
         if not self._follower.server_is_ready():
             self._report('FollowPath server is unavailable; plan remains preview-only.')
             return
         path = self._pending_path
         self._pending_path = None
         self._pending_pose = None
+        self._motion_armed = True
+        self._cancel_requested = False
         self._follow(path)
 
     def _follow(self, path):
-        if not self._follower.server_is_ready():
+        # Save the exact selected final precision orientation before handing
+        # command ownership to Nav2. A later station handoff uses this heading.
+        if (self._precision_station and self._camera_handoff_station ==
+                self._precision_station and path.poses):
+            self._precision_handoff_yaw = _yaw(path.poses[-1].pose.orientation)
+        follower = (self._dock_follower if self._dock_precision_mode or
+                    self._departure_active else self._follower)
+        if not follower.server_is_ready():
             self._report('FollowPath server is unavailable; plan remains preview-only.')
             return
         goal = FollowPath.Goal()
         goal.path = path
         goal.controller_id = (
             'PrecisionFollowPath'
-            if self._precision_station else 'FollowPath')
+            if self._precision_station or self._departure_active else 'FollowPath')
         goal.goal_checker_id = (
             'precision_goal_checker'
             if self._precision_station else 'goal_checker')
-        future = self._follower.send_goal_async(goal)
-        future.add_done_callback(self._on_follow_goal)
+        try:
+            self._follow_goal_pending = True
+            future = follower.send_goal_async(goal)
+            future.add_done_callback(self._on_follow_goal)
+        except Exception as exc:
+            self._follow_goal_pending = False
+            self._report(f'FollowPath request failed: {exc}')
+            if self._departure_active:
+                self._departure_active = False
+                self._departure_target = None
+                self._execution_done(False, GoalStatus.STATUS_ABORTED)
 
     def _on_follow_goal(self, future):
+        self._follow_goal_pending = False
         try:
             self._active_follow = future.result()
             if not self._active_follow.accepted:
+                self._active_follow = None
                 self._report('Nav2 rejected the trajectory; the robot remains stopped.')
+                if self._departure_active:
+                    self._departure_active = False
+                    self._departure_target = None
+                    self._execution_done(False, GoalStatus.STATUS_ABORTED)
                 return
+            if not self._motion_armed or self._cancel_requested:
+                self._active_follow.cancel_goal_async()
+                self._report('Nav2 goal cancelled because simulator commands were disarmed.')
             self._report('Nav2 trajectory accepted.')
             result = self._active_follow.get_result_async()
             result.add_done_callback(self._on_follow_result)
         except Exception as exc:
             self._report(f'FollowPath request failed: {exc}')
+            if self._departure_active:
+                self._departure_active = False
+                self._departure_target = None
+                self._execution_done(False, GoalStatus.STATUS_ABORTED)
 
     def _on_follow_result(self, future):
         try:
             status = future.result().status
+            if self._cancel_requested:
+                self._active_follow = None
+                self._queued_precision_poses = None
+                self._departure_active = False
+                self._departure_target = None
+                self._execution_done(False, GoalStatus.STATUS_CANCELED)
+                return
             succeeded = status == GoalStatus.STATUS_SUCCEEDED
+            if self._departure_active:
+                self._active_follow = None
+                if succeeded:
+                    self._complete_loaded_departure()
+                else:
+                    self._departure_active = False
+                    self._departure_target = None
+                    self._execution_done(False, status)
+                return
+            if succeeded and self._queued_precision_poses is not None:
+                self._active_follow = None
+                self._start_precision_segment()
+                return
             if succeeded and self._camera_handoff_station:
                 self._active_follow = None
                 self._start_qr_alignment(self._camera_handoff_station)
                 return
+            self._dock_precision_mode = False
             self._execution_done(succeeded, status)
         except Exception as exc:
             self._report(f'FollowPath result failed: {exc}')
         self._active_follow = None
 
+    def _start_precision_segment(self):
+        """Validate and dispatch segment 2 after segment 1 has stopped."""
+        station = self._queued_precision_station
+        poses = self._queued_precision_poses
+        try:
+            current = self._robot_pose()
+            gap = math.hypot(current[0] - poses[0][0], current[1] - poses[0][1])
+            if gap > 0.25:
+                raise ValueError(f'staging gap {gap:.2f} m exceeds 0.25 m')
+            prepared = prepare_dynamic_path([(p[0], p[1]) for p in poses], current[2])
+            cargo = self._confirmed_cargo()
+            check_destination(station, cargo)
+            if cargo is not None:
+                if not self._loaded_guard_is_ready():
+                    raise ValueError('loaded controller clearance monitoring is not ready')
+                modeled = [(p[0], p[1], heading)
+                           for p, heading in zip(poses, prepared['body_headings'])]
+                self._modeled_loaded_path_clearance(modeled, cargo)
+            path = NavPath()
+            path.header.frame_id = 'map'
+            path.header.stamp = self.get_clock().now().to_msg()
+            for values, heading in zip(poses, prepared['body_headings']):
+                point = self._pose(values)
+                point.pose.orientation.z = math.sin(heading / 2.0)
+                point.pose.orientation.w = math.cos(heading / 2.0)
+                path.poses.append(point)
+            if not self._motion_armed:
+                raise ValueError('simulator commands are disarmed')
+            if cargo is None:
+                if not self._loaded_guard_is_ready():
+                    raise ValueError('simulator scene guard is not ready')
+                if not self._dock_follower.server_is_ready():
+                    raise ValueError('independent docking controller is unavailable')
+                now = self.get_clock().now()
+                if (self._lift_seen_at is None or self._lift_position is None or
+                        not 0 <= (now - self._lift_seen_at).nanoseconds / 1e9 <= 1.0):
+                    raise ValueError('lift feedback is stale or missing')
+                world = Path(get_package_share_directory('tugger_gazebo')) / 'worlds/tugger_warehouse.sdf'
+                robot = Path(get_package_share_directory('tugger_description')) / 'urdf/tugger.urdf.xacro'
+                validate_modeled_geometry(world, robot)
+                if self._collision_scene is None:
+                    raise ValueError('simulator collision scene is unavailable')
+                scene = decode_scene(self._collision_scene, now.nanoseconds / 1e9,
+                                     expected_counts=scene_expected_counts(world))
+                modeled = [(p[0], p[1], heading)
+                           for p, heading in zip(poses, prepared['body_headings'])]
+                clear, sample, hit = sampled_precision_clearance(
+                    [current] + modeled, [box for _, box in scene], self._lift_position)
+                if not clear:
+                    raise ValueError(f'precision scene collision at sample {sample}: {hit}')
+                self._stage_validation_pending = True
+                self._dock_precision_mode = True
+                self._dock_pending = (self._plan_generation, station, path, current,
+                                      self.get_clock().now())
+                self._report(f'{station}: precision scene checked ({sample} samples); '
+                             'waiting for the simulator docking guard.')
+                return
+            if not self._path_validator.service_is_ready():
+                raise ValueError('path validation service unavailable')
+            request = IsPathValid.Request()
+            request.path = path
+            request.consider_unknown_as_obstacle = True
+            self._stage_validation_pending = True
+            token = self._plan_generation
+            self._report(f'{station}: segment 1 complete; validating precision segment 2.')
+            future = self._path_validator.call_async(request)
+            future.add_done_callback(lambda response: self._on_precision_validated(
+                response, token, station, path, current))
+        except Exception as exc:
+            self._stage_validation_pending = False
+            self._queued_precision_poses = None
+            self._report(f'Precision segment blocked: {exc}. Robot stopped.')
+            self._execution_done(False, GoalStatus.STATUS_ABORTED)
+
+    def _on_precision_validated(self, future, generation, station, path, preview_pose):
+        if generation != self._plan_generation or not self._stage_validation_pending:
+            return
+        self._stage_validation_pending = False
+        try:
+            result = future.result()
+            if not result.success:
+                raise ValueError('segment 2 costmap validation service failed')
+            if not result.is_valid:
+                indices = list(result.invalid_pose_indices)
+                if indices and 0 <= indices[0] < len(path.poses):
+                    index = indices[0]
+                    position = path.poses[index].pose.position
+                    raise ValueError(
+                        f'segment 2 global costmap rejected pose {index} '
+                        f'at map x={position.x:.3f}, y={position.y:.3f}; '
+                        'obstacle, unknown space, or footprint conflict')
+                raise ValueError('segment 2 failed the global costmap check; '
+                                 'no valid rejected pose index was returned')
+            if not self._motion_armed:
+                raise ValueError('simulator commands are disarmed')
+            if not plan_is_current(preview_pose, self._robot_pose())['current']:
+                raise ValueError('robot pose changed while validating segment 2')
+            self._queued_precision_poses = None
+            self._precision_station = station
+            self._report(f'{station}: starting precision segment 2 automatically.')
+            self._follow(path)
+        except Exception as exc:
+            self._queued_precision_poses = None
+            self._report(f'Precision segment blocked: {exc}. Robot stopped.')
+            self._execution_done(False, GoalStatus.STATUS_ABORTED)
+
     def cancel_navigation(self):
+        self._cancel_requested = True
+        self._motion_armed = False
+        if self._cargo_task is not None:
+            self._advance_cargo_operation()
+            return
+        if self._follow_goal_pending:
+            self._queued_precision_poses = None
+            self._report('Cancellation requested while waiting for Nav2 goal acceptance.')
+            return
+        if self._departure_pending is not None:
+            self._departure_pending = None
+            self._departure_target = None
+            self._report('Pending loaded departure cancelled; no navigation command sent.')
+            return
+        if self._stage_validation_pending:
+            self._stage_validation_pending = False
+            self._dock_pending = None
+            self._dock_precision_mode = False
+            self._queued_precision_poses = None
+            self._plan_generation += 1
+            self._report('Pending precision segment cancelled; no command sent.')
+            return
         if self._qr_alignment_active:
             self._stop_qr_alignment('operator cancelled precision alignment')
             return
@@ -581,18 +2022,6 @@ class OperatorPanel(Plugin):
         mission_layout.addWidget(cancel, len(buttons) + 2, 0)
         layout.addWidget(mission_box)
 
-        docking_box = QGroupBox('Precision docking (Gazebo candidate routes)')
-        docking_layout = QGridLayout(docking_box)
-        for row, (label, station) in enumerate((
-                ('Dock beneath Station 1 — then attach cargo', 'cargo_station_0'),
-                ('Dock beneath Station 3 — then attach cargo', 'cargo_station_3'),
-        )):
-            button = QPushButton(label)
-            button.clicked.connect(
-                lambda _checked=False, name=station: self._request_precision_docking(name))
-            docking_layout.addWidget(button, row, 0)
-        layout.addWidget(docking_box)
-
         cargo_box = QGroupBox('Cargo and lift (only when armed)')
         cargo_layout = QGridLayout(cargo_box)
         controls = [
@@ -614,7 +2043,9 @@ class OperatorPanel(Plugin):
         self._status.setMinimumHeight(120)
         layout.addWidget(self._status)
         context.add_widget(self._widget)
-        self._bridge = OperatorBridge(self._report, self._planned, self._finished)
+        self._bridge = OperatorBridge(
+            self._report, self._planned, self._finished,
+            approach_provider=self._docking_routes.approach)
         self._timer = QTimer(self._widget)
         self._timer.timeout.connect(self._spin_ros)
         self._timer.start(20)
@@ -630,10 +2061,20 @@ class OperatorPanel(Plugin):
     def _load_docking_routes(self):
         try:
             directory = Path(get_package_share_directory('tugger_control')) / 'docking'
+            gazebo = Path(get_package_share_directory('tugger_gazebo'))
+            description = Path(get_package_share_directory('tugger_description'))
+            candidates = directory / 'entrance_candidates.json'
         except PackageNotFoundError:
             directory = (Path(__file__).resolve().parents[3] / 'tools'
                          / 'v1_manhattan_bezier' / 'phase14' / 'routes_refined')
-        return PrecisionDockingRepository(directory)
+            root = Path(__file__).resolve().parents[3]
+            gazebo = root / 'src/tugger_gazebo'
+            description = root / 'src/tugger_description'
+            candidates = root / 'tools/mission_approaches/entrance_candidates.json'
+        sources = {'world': gazebo / 'worlds/tugger_warehouse.sdf',
+                   'robot': description / 'urdf/tugger.urdf.xacro',
+                   'database': self._routes.directory / 'route_database.json'}
+        return PrecisionDockingRepository(directory, candidates, sources)
 
     def _load_station_entries(self):
         try:
@@ -649,7 +2090,11 @@ class OperatorPanel(Plugin):
         return entries
 
     def _spin_ros(self):
-        rclpy.spin_once(self._bridge, timeout_sec=0.0)
+        deadline = time.monotonic() + 0.008
+        for _ in range(12):
+            rclpy.spin_once(self._bridge, timeout_sec=0.0)
+            if time.monotonic() >= deadline:
+                break
 
     def _report(self, message):
         self._status.append(message)
@@ -666,6 +2111,13 @@ class OperatorPanel(Plugin):
                 self._armed.setChecked(False)
                 self._armed.blockSignals(False)
                 return
+        if hasattr(self, '_bridge'):
+            self._bridge._motion_armed = armed
+            if not armed and (self._bridge._active_follow is not None or
+                              self._bridge._qr_alignment_active or
+                              self._bridge._stage_validation_pending or
+                              self._bridge._cargo_task is not None):
+                self._bridge.cancel_navigation()
         self._report('SIMULATOR COMMANDS ARMED.' if armed else 'Preview-only mode restored.')
 
     def _request_saved_route(self, route_key):

@@ -8,7 +8,7 @@ from launch.substitutions import Command
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
-from ament_index_python.packages import get_package_share_directory
+from ament_index_python.packages import get_package_prefix, get_package_share_directory
 
 
 def generate_launch_description():
@@ -60,6 +60,15 @@ def generate_launch_description():
             gazebo_resource_path,
             os.pathsep,
             os.environ.get('GZ_SIM_RESOURCE_PATH', '')
+        ]
+    )
+
+    set_gazebo_plugin_path = SetEnvironmentVariable(
+        name='GZ_SIM_SYSTEM_PLUGIN_PATH',
+        value=[
+            os.path.join(get_package_prefix('tugger_gazebo'), 'lib'),
+            os.pathsep,
+            os.environ.get('GZ_SIM_SYSTEM_PLUGIN_PATH', '')
         ]
     )
 
@@ -161,10 +170,13 @@ def generate_launch_description():
         executable='parameter_bridge',
         name='cargo_attachment_bridge',
         arguments=[
-            '/cargo/station_0/attach@std_msgs/msg/Empty[gz.msgs.Empty',
-            '/cargo/station_0/detach@std_msgs/msg/Empty[gz.msgs.Empty',
-            '/cargo/station_3/attach@std_msgs/msg/Empty[gz.msgs.Empty',
-            '/cargo/station_3/detach@std_msgs/msg/Empty[gz.msgs.Empty',
+            '/cargo/station_0/attach@std_msgs/msg/Empty]gz.msgs.Empty',
+            '/cargo/station_0/detach@std_msgs/msg/Empty]gz.msgs.Empty',
+            '/cargo/station_3/attach@std_msgs/msg/Empty]gz.msgs.Empty',
+            '/cargo/station_3/detach@std_msgs/msg/Empty]gz.msgs.Empty',
+            '/cargo/station_0/state@std_msgs/msg/String[gz.msgs.StringMsg',
+            '/cargo/station_3/state@std_msgs/msg/String[gz.msgs.StringMsg',
+            '/tugger/collision_scene@std_msgs/msg/String[gz.msgs.StringMsg',
         ],
         output='screen'
     )
@@ -231,6 +243,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         set_gazebo_resource_path,
+        set_gazebo_plugin_path,
         robot_state_publisher,
         gazebo,
         clock_bridge,

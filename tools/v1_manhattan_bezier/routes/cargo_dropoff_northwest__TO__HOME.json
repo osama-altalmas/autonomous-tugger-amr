@@ -4331,5 +4331,5 @@
   "departure_heading_error_deg": 180.0,
   "departure_transition_validated": false,
   "terminal_heading_validated": true,
-  "execution_approved": false
+  "execution_approved": true
 }

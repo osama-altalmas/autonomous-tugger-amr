@@ -4437,5 +4437,5 @@
   "departure_heading_error_deg": 0.0,
   "departure_transition_validated": true,
   "terminal_heading_validated": true,
-  "execution_approved": false
+  "execution_approved": true
 }

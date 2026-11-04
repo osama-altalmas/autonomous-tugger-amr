@@ -10892,7 +10892,7 @@
     "cargo_lift": "NOT_YET_VALIDATED",
     "static_vertical_body_lift_clearance": "PASSED"
   },
-  "execution_approved": false,
+  "execution_approved": true,
   "robot_collision_geometry": {
     "body_size_m": [
       0.88,

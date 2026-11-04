@@ -23,6 +23,10 @@ public:
     publisher_ =
       create_publisher<geometry_msgs::msg::PoseStamped>(
         "/tugger/ground_truth_pose", 10);
+    cargo_0_publisher_ = create_publisher<geometry_msgs::msg::PoseStamped>(
+      "/tugger/cargo/station_0/ground_truth_pose", 10);
+    cargo_3_publisher_ = create_publisher<geometry_msgs::msg::PoseStamped>(
+      "/tugger/cargo/station_3/ground_truth_pose", 10);
 
     bool subscribed = gazebo_node_.Subscribe(
       gazebo_topic_,
@@ -47,7 +51,14 @@ private:
   void onGazeboPose(const gz::msgs::Pose_V & message)
   {
     for (const auto & pose : message.pose()) {
-      if (pose.name() != robot_name_) {
+      rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr target;
+      if (pose.name() == robot_name_) {
+        target = publisher_;
+      } else if (pose.name() == "cargo_station_0_stand") {
+        target = cargo_0_publisher_;
+      } else if (pose.name() == "cargo_station_3_stand") {
+        target = cargo_3_publisher_;
+      } else {
         continue;
       }
 
@@ -65,8 +76,7 @@ private:
       output.pose.orientation.z = pose.orientation().z();
       output.pose.orientation.w = pose.orientation().w();
 
-      publisher_->publish(output);
-      return;
+      target->publish(output);
     }
   }
 
@@ -77,6 +87,8 @@ private:
 
   rclcpp::Publisher<
     geometry_msgs::msg::PoseStamped>::SharedPtr publisher_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr cargo_0_publisher_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr cargo_3_publisher_;
 };
 
 int main(int argc, char ** argv)
