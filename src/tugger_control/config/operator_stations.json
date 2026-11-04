@@ -1,6 +1,6 @@
 {
   "stations": {
-    "HOME": {"candidates": [{"entrance": "home", "pose": [0.025, 0.025, 0.0]}]},
+    "HOME": {"candidates": [{"entrance": "home", "pose": [0.0, 0.0, 0.0]}]},
     "cargo_dropoff_northwest": {"candidates": [
       {"entrance": "east", "pose": [-15.475, 7.025, 3.141592653589793]},
       {"entrance": "north", "pose": [-17.475, 9.025, -1.5707963267948966]},

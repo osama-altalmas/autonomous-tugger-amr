@@ -15,6 +15,7 @@ QR_GRID_SIZE_M = 0.064
 RED_FRAME_SIZE_M = 0.12
 
 MARKER_IDS = frozenset({
+    'TUGGER:HOME',
     'TUGGER:S1',
     'TUGGER:D2',
     'TUGGER:S3',
@@ -22,6 +23,7 @@ MARKER_IDS = frozenset({
 })
 
 STATION_MARKER_IDS = {
+    'HOME': 'TUGGER:HOME',
     'cargo_station_0': 'TUGGER:S1',
     'cargo_dropoff_northwest': 'TUGGER:D2',
     'cargo_station_3': 'TUGGER:S3',
