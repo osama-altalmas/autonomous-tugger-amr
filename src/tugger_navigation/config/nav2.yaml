@@ -66,7 +66,7 @@ controller_server:
 
     progress_checker_plugins: ["progress_checker"]
     goal_checker_plugins: ["goal_checker", "precision_goal_checker"]
-    controller_plugins: ["FollowPath", "PrecisionFollowPath"]
+    controller_plugins: ["FollowPath", "PrecisionFollowPath", "DepartureFollowPath"]
 
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
@@ -91,7 +91,7 @@ controller_server:
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
 
-      max_linear_vel: 0.20
+      max_linear_vel: 1.20
       lookahead_dist: 0.65
       min_lookahead_dist: 0.40
       max_lookahead_dist: 0.90
@@ -120,7 +120,7 @@ controller_server:
     # checker can settle without the warehouse controller's long carry-over.
     PrecisionFollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      max_linear_vel: 0.05
+      max_linear_vel: 0.40
       lookahead_dist: 0.10
       min_lookahead_dist: 0.06
       max_lookahead_dist: 0.14
@@ -138,6 +138,29 @@ controller_server:
       use_cost_regulated_linear_velocity_scaling: true
       regulated_linear_scaling_min_radius: 0.29
       regulated_linear_scaling_min_speed: 0.01
+
+    # Loaded departure uses the independent docking controller, but has a
+    # separate speed profile from the final precision approach.
+    DepartureFollowPath:
+      plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
+      max_linear_vel: 0.50
+      lookahead_dist: 0.35
+      min_lookahead_dist: 0.20
+      max_lookahead_dist: 0.55
+      lookahead_time: 0.8
+      rotate_to_heading_angular_vel: 0.0
+      use_rotate_to_heading: false
+      allow_reversing: true
+      transform_tolerance: 0.2
+      use_velocity_scaled_lookahead_dist: true
+      min_approach_linear_velocity: 0.05
+      approach_velocity_scaling_dist: 0.40
+      use_collision_detection: true
+      max_allowed_time_to_collision_up_to_carrot: 1.0
+      use_regulated_linear_velocity_scaling: true
+      use_cost_regulated_linear_velocity_scaling: true
+      regulated_linear_scaling_min_radius: 0.29
+      regulated_linear_scaling_min_speed: 0.05
 
 
 global_costmap:

@@ -18,7 +18,9 @@ from tf2_ros import Buffer, TransformListener
 
 from tugger_control.cargo_policy import confirmed_cargo
 from tugger_control.loaded_motion_guard import choose_guarded_speed, decode_scene, scene_expected_counts
-from tugger_control.precision_scene_clearance import precision_stopping_envelope
+from tugger_control.motion_math import speed_profile
+from tugger_control.precision_scene_clearance import (
+    choose_precision_speed, precision_approach_speed_limit)
 from tugger_control.warehouse_clearance import validate_modeled_geometry
 
 
@@ -217,34 +219,49 @@ class SimMotionGate(Node):
                 v, omega = float(request.twist.linear.x), float(request.twist.angular.z)
                 if not math.isfinite(v) or not math.isfinite(omega):
                     raise ValueError('nonfinite command')
-                if owner in ('DOCK_NAV', 'DOCK_CAMERA'):
+                if owner in ('DOCK_NAV', 'DOCK_CAMERA', 'PRECISION'):
                     if cargo is not None:
                         raise ValueError('unloaded precision guard cannot move attached cargo')
                     if snapshot is None:
                         raise ValueError(reason)
-                    limited = max(-0.05, min(0.05, v))
-                    clear, hit = precision_stopping_envelope(
+                    # The independent docking controller may approach at 0.4
+                    # m/s in open space. Taper before fixed cargo legs; final
+                    # camera corrections, including HOME, are capped at .05.
+                    approach_limit = (precision_approach_speed_limit(
+                        snapshot[0], snapshot[1]) if owner == 'DOCK_NAV'
+                        else 0.05)
+                    requested_abs = abs(v)
+                    limited, hit = choose_precision_speed(
                         snapshot[0], self._lift, [box for _, box in snapshot[1]],
-                        max(abs(self._speed), abs(self._wheel_speed)), limited)
-                    if not clear:
+                        max(abs(self._speed), abs(self._wheel_speed)), v,
+                        max_speed=approach_limit,
+                        minimum_speed=0.10 if owner == 'DOCK_NAV' else 0.0)
+                    if hit is not None:
                         raise ValueError(f'precision stopping envelope intersects {hit}')
                     omega = omega * limited / v if abs(v) > 1e-6 else 0.0
                     omega_limit = 2.0 * abs(limited) / 0.58
                     omega = max(-omega_limit, min(omega_limit, omega))
                     v = limited
-                    reason = 'precision guarded'
+                    reason = ('precision speed reduced' if
+                              abs(limited) + 1e-6 < min(requested_abs, approach_limit)
+                              else 'precision guarded')
                 if owner == 'DOCK_DEPART' and cargo is None:
                     raise ValueError('loaded departure requires confirmed attached cargo')
                 if cargo is not None:
                     if snapshot is None:
                         raise ValueError(reason)
+                    if owner == 'NAV':
+                        # Loaded route travel uses the same straight/curve
+                        # profile as unloaded travel before clearance checks.
+                        v, omega = speed_profile(v, omega)
                     # Departure shares the independent docking controller but
                     # has its own ownership mode and a stricter speed ceiling.
-                    requested = (max(-0.04, min(0.04, v))
+                    requested = (max(-0.5, min(0.5, v))
                                  if owner == 'DOCK_DEPART' else v)
                     limited, hit = choose_guarded_speed(
                         snapshot[0], self._payloads[cargo], self._lift, cargo,
-                        snapshot[1], max(abs(self._speed), abs(self._wheel_speed)), requested)
+                        snapshot[1], max(abs(self._speed), abs(self._wheel_speed)), requested,
+                        max_speed=0.5 if owner == 'DOCK_DEPART' else 1.2)
                     if hit is not None:
                         raise ValueError(f'loaded stopping envelope intersects {hit}')
                     if abs(limited) + 1e-6 < min(abs(v), 0.1):
@@ -257,9 +274,11 @@ class SimMotionGate(Node):
                         # 45-degree counter-phase 4WS steering at 0.58 m wheelbase.
                         omega_limit = 2.0 * abs(v) / 0.58
                         omega = max(-omega_limit, min(omega_limit, omega))
+                if cargo is None and owner == 'NAV':
+                    v, omega = speed_profile(v, omega)
                 output.twist.linear.x = v
                 output.twist.angular.z = omega
-                if cargo is None and owner not in ('DOCK_NAV', 'DOCK_CAMERA'):
+                if cargo is None and owner not in ('DOCK_NAV', 'DOCK_CAMERA', 'PRECISION'):
                     reason = 'unloaded motion'
         except Exception as exc:
             dock_ready = False

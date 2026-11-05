@@ -66,7 +66,7 @@ def test_unexpected_cargo_or_excess_speed_fails_closed():
     with pytest.raises(ValueError):
         loaded_envelope_clear((0, 0, 0), (0.1, 0, 0.065, 0), 0.065, 0, [], 0, 0)
     with pytest.raises(ValueError):
-        check([], speed=0.3)
+        check([], speed=1.3)
     with pytest.raises(ValueError):
         check([], requested=math.nan)
 
@@ -107,5 +107,5 @@ def test_station_one_departure_has_nonzero_guarded_speed_in_modeled_world():
     obstacles = [(box.name.split('/', 1)[0], box) for box in static_world_boxes(world)]
     speed, hit = choose_guarded_speed(
         (-17.5, -7, 0), (-17.5, -7, 0.065, 0), 0.065, 0,
-        obstacles, 0.0, 0.1)
-    assert hit is None and 0 < speed <= 0.1
+        obstacles, 0.0, 0.5)
+    assert hit is None and 0 < speed <= 0.5

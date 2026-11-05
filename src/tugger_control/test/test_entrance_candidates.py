@@ -49,6 +49,31 @@ def test_operator_enabled_every_database_route_and_precision_candidate():
         assert route['execution_approved'] is True
 
 
+def test_station_one_dropoff_route_starts_at_loaded_departure_staging_pose():
+    database = json.loads((ROUTES / 'route_database.json').read_text())
+    entry = database['routes']['cargo_station_0__TO__cargo_dropoff_northwest']
+    route = json.loads((ROUTES / entry['route_file']).read_text())
+    assert route['source_entrance'] == 'east'
+    assert route['departure_transition_validated'] is True
+    assert route['poses'][0][:2] == pytest.approx([-15.475, -6.975])
+    assert route['source_pose'][:2] == pytest.approx([-15.475, -6.975])
+    assert entry['source_entrance'] == 'east'
+    assert entry['departure_transition_validated'] is True
+
+
+def test_station_three_dropoff_route_starts_at_loaded_departure_staging_pose():
+    database = json.loads((ROUTES / 'route_database.json').read_text())
+    entry = database['routes']['cargo_station_3__TO__cargo_dropoff_southeast']
+    route = json.loads((ROUTES / entry['route_file']).read_text())
+    assert route['source_entrance'] == 'south'
+    assert route['target_entrance'] == 'north'
+    assert route['departure_transition_validated'] is True
+    assert route['poses'][0][:2] == pytest.approx([17.525, 5.025])
+    assert route['source_pose'][:2] == pytest.approx([17.525, 5.025])
+    assert entry['source_entrance'] == 'south'
+    assert entry['departure_transition_validated'] is True
+
+
 def test_known_warehouse_candidate_samples_clear_separate_lower_and_upper_envelopes():
     result = subprocess.run(
         [sys.executable, str(ROOT / 'tools/mission_approaches/audit_candidates.py')],

@@ -1036,11 +1036,11 @@
       ],
       "execution_approved": true,
       "route_file": "cargo_station_0__TO__cargo_dropoff_northwest.json",
-      "length_m": 10.0,
-      "source_entrance": "north",
+      "length_m": 30.1082,
+      "source_entrance": "east",
       "target_entrance": "south",
       "terminal_heading_validated": true,
-      "departure_transition_validated": false
+      "departure_transition_validated": true
     },
     "cargo_station_0__TO__cargo_dropoff_southeast": {
       "source": "cargo_station_0",
@@ -1359,7 +1359,7 @@
       "source_entrance": "south",
       "target_entrance": "north",
       "terminal_heading_validated": true,
-      "departure_transition_validated": false
+      "departure_transition_validated": true
     },
     "cargo_station_3__TO__cargo_station_0": {
       "source": "cargo_station_3",
@@ -1455,5 +1455,6 @@
     "elapsed_seconds": 169.61,
     "complete_mission_execution_approved": false,
     "reverse_routes_added": 2
-  }
+  },
+  "clearance_bias": 0.05
 }

@@ -53,7 +53,8 @@ def sampled_precision_clearance(poses, obstacles, lift, *, margin=0.01):
 
 
 def precision_stopping_envelope(pose, lift, obstacles, current_speed, requested_speed,
-                                *, reaction_s=0.5, deceleration=0.35):
+                                *, reaction_s=0.5, deceleration=2.5,
+                                max_speed=0.4, max_current_speed=None):
     """Conservative simulator-only unloaded stopping envelope, not safety-rated.
 
     The circular expansion bounds translation plus a worst-case 4WS heading
@@ -63,8 +64,12 @@ def precision_stopping_envelope(pose, lift, obstacles, current_speed, requested_
     values = (*pose, lift, current_speed, requested_speed, reaction_s, deceleration)
     if not all(math.isfinite(value) for value in values):
         raise ValueError('Non-finite precision guard input')
+    if max_current_speed is None:
+        max_current_speed = max_speed
+    if not math.isfinite(max_current_speed) or max_current_speed <= 0:
+        raise ValueError('Invalid precision current-speed limit')
     if (len(pose) != 3 or not -0.005 <= lift <= 0.005 or
-            abs(current_speed) > 0.21 or abs(requested_speed) > 0.051 or
+            abs(current_speed) > max_current_speed or abs(requested_speed) > max_speed or
             reaction_s <= 0 or deceleration <= 0):
         raise ValueError('Precision motion outside guarded operating limits')
     obstacles = list(obstacles)
@@ -83,3 +88,67 @@ def precision_stopping_envelope(pose, lift, obstacles, current_speed, requested_
             if boxes_overlap(part, expanded):
                 return False, (part.name, obstacle.name)
     return True, None
+
+
+def choose_precision_speed(pose, lift, obstacles, current_speed, requested_speed,
+                           *, max_speed=0.4, minimum_speed=0.0):
+    """Select the fastest precision speed whose stopping envelope is clear.
+
+    The approach controller is allowed to request 0.4 m/s away from the
+    station, but the final metres may require a lower speed near the cargo
+    legs. Unknown or completely blocked geometry still returns zero/failure.
+    """
+    if (not math.isfinite(requested_speed) or not math.isfinite(max_speed) or
+            not math.isfinite(minimum_speed)):
+        raise ValueError('Invalid precision velocity')
+    if max_speed <= 0 or minimum_speed < 0 or minimum_speed > max_speed:
+        raise ValueError('Invalid precision speed limit')
+    limited = max(-max_speed, min(max_speed, requested_speed))
+    magnitude = abs(limited)
+    fallback_minimum = minimum_speed if magnitude >= minimum_speed else 0.0
+    candidates = sorted({magnitude, *(min(magnitude, value) for value in
+                                      (0.3, 0.2, 0.1, 0.05, 0.02)
+                                      if value >= fallback_minimum), 0.0},
+                        reverse=True)
+    last_hit = None
+    for candidate in candidates:
+        value = math.copysign(candidate, limited) if candidate else 0.0
+        clear, last_hit = precision_stopping_envelope(
+            pose, lift, obstacles, current_speed, value,
+            max_speed=max_speed, max_current_speed=0.4)
+        if clear:
+            return value, None
+    return 0.0, last_hit
+
+
+def precision_approach_speed_limit(pose, obstacles, *, approach_speed=0.4):
+    """Taper the docking approach before the robot enters cargo-leg space.
+
+    The Nav2 docking controller may approach at 0.4 m/s in open space.  Once
+    the actual collision scene places the robot near fixed station legs, the
+    request is capped before the stopping-envelope guard has to reject it.
+    HOME has no ``*_legs`` obstacle, so it keeps the approach limit until the
+    camera controller takes ownership.
+    """
+    if len(pose) != 3 or not all(math.isfinite(value) for value in pose):
+        raise ValueError('Invalid precision approach pose')
+    if not math.isfinite(approach_speed) or approach_speed <= 0:
+        raise ValueError('Invalid precision approach speed')
+    leg_boxes = [(model, box) for model, box in obstacles
+                 if '_legs' in model or '_legs' in box.name]
+    if not leg_boxes:
+        return approach_speed
+
+    def distance_to_box(box):
+        dx = max(abs(pose[0] - box.x) - box.half_x, 0.0)
+        dy = max(abs(pose[1] - box.y) - box.half_y, 0.0)
+        return math.hypot(dx, dy)
+
+    distance = min(distance_to_box(box) for _, box in leg_boxes)
+    if distance <= 0.65:
+        return min(0.10, approach_speed)
+    if distance <= 1.0:
+        return min(0.10, approach_speed)
+    if distance <= 1.4:
+        return min(0.20, approach_speed)
+    return approach_speed

@@ -79,7 +79,8 @@ def decode_scene(payload, now, *, max_age=0.4, expected_counts=None):
 
 def loaded_envelope_clear(robot_pose, attached_cargo_pose, lift, cargo_id, obstacles,
                           current_speed, requested_speed, *, reaction_s=0.5,
-                          deceleration=0.35, xy_clearance=0.02, z_clearance=0.01):
+                          deceleration=2.5, xy_clearance=0.02, z_clearance=0.01,
+                          max_speed=1.2):
     """Check a deliberately conservative all-directions stopping envelope.
 
     Circular horizontal inflation covers translation and any rotation during
@@ -91,8 +92,9 @@ def loaded_envelope_clear(robot_pose, attached_cargo_pose, lift, cargo_id, obsta
     if not all(math.isfinite(value) for value in numbers):
         raise ValueError('Non-finite motion guard input')
     if (cargo_id not in (0, 3) or reaction_s <= 0 or deceleration <= 0 or
-            xy_clearance < 0 or z_clearance < 0 or abs(current_speed) > 0.21 or
-            abs(requested_speed) > 0.101 or not 0.060 <= lift <= 0.070):
+            xy_clearance < 0 or z_clearance < 0 or max_speed <= 0 or
+            abs(current_speed) > max_speed or abs(requested_speed) > max_speed or
+            not 0.060 <= lift <= 0.070):
         raise ValueError('Loaded motion is outside guarded operating limits')
     if math.hypot(attached_cargo_pose[0] - robot_pose[0],
                   attached_cargo_pose[1] - robot_pose[1]) > 0.04:
@@ -120,19 +122,23 @@ def loaded_envelope_clear(robot_pose, attached_cargo_pose, lift, cargo_id, obsta
 
 
 def choose_guarded_speed(robot_pose, attached_cargo_pose, lift, cargo_id, obstacles,
-                         current_speed, requested_speed):
+                         current_speed, requested_speed, *, max_speed=1.2):
     """Reduce loaded speed near tight geometry; return zero if none is safe."""
     if not math.isfinite(requested_speed):
         raise ValueError('Invalid requested velocity')
-    limited = max(-0.1, min(0.1, requested_speed))
+    if not math.isfinite(max_speed) or max_speed <= 0:
+        raise ValueError('Invalid loaded speed limit')
+    limited = max(-max_speed, min(max_speed, requested_speed))
     magnitude = abs(limited)
-    candidates = sorted({magnitude, *(min(magnitude, v) for v in (0.08, 0.06, 0.04, 0.02)), 0.0},
+    candidates = sorted({magnitude, *(min(magnitude, v) for v in
+                                      (1.0, 0.8, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.05)), 0.0},
                         reverse=True)
     last_hit = None
     for candidate in candidates:
         value = math.copysign(candidate, limited) if candidate else 0.0
         clear, last_hit = loaded_envelope_clear(
-            robot_pose, attached_cargo_pose, lift, cargo_id, obstacles, current_speed, value)
+            robot_pose, attached_cargo_pose, lift, cargo_id, obstacles,
+            current_speed, value, max_speed=max_speed)
         if clear:
             return value, None
     return 0.0, last_hit

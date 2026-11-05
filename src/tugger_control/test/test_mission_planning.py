@@ -29,7 +29,7 @@ def test_selects_a_short_connector_for_a_rear_aligned_start():
     assert result['direction']['leading_end'] == 'REAR'
 
 
-def test_requests_live_recovery_when_no_candidate_is_nearby():
+def test_rejects_a_rejoin_that_is_too_far_from_the_saved_route():
     poses = [[0, 0, 0], [1, 0, 0]]
     result = select_destination_plan('station', [('HOME__TO__station', _route(), poses)],
                                      (10.0, 0.0, 0.0))

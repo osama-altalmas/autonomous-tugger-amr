@@ -94,8 +94,8 @@ def gate_fixture():
     gate._owner = 'DOCK_DEPART'
     gate._owner_at = 9.9
     request = Message()
-    request.twist.linear.x = 0.12
-    request.twist.angular.z = 0.06
+    request.twist.linear.x = 0.6
+    request.twist.angular.z = 0.3
     gate._requests = {'NAV': None, 'PRECISION': None, 'DOCK_NAV': request}
     gate._request_at = {'NAV': None, 'PRECISION': None, 'DOCK_NAV': 9.9}
     gate._snapshot = Mock(return_value=((0, 0, 0), []))
@@ -110,8 +110,8 @@ def test_new_loaded_departure_owner_reports_ready_and_limits_speed():
     gate = gate_fixture()
     gate._tick()
     outgoing = gate._output.publish.call_args.args[0]
-    assert outgoing.twist.linear.x == pytest.approx(0.04)
-    assert outgoing.twist.angular.z == pytest.approx(0.02)
+    assert outgoing.twist.linear.x == pytest.approx(0.5)
+    assert outgoing.twist.angular.z == pytest.approx(0.25)
     assert gate._dock_ready.publish.call_args.args[0].data == 'DOCK_DEPART'
 
 
@@ -376,5 +376,5 @@ def test_loaded_departure_yaw_rate_respects_4ws_steering_limit():
     gate._requests['DOCK_NAV'].twist.angular.z = 1.0
     gate._tick()
     output = gate._output.publish.call_args.args[0].twist
-    assert output.linear.x == pytest.approx(0.04)
+    assert output.linear.x == pytest.approx(0.5)
     assert abs(output.angular.z) <= 2 * abs(output.linear.x) / 0.58 + 1e-9

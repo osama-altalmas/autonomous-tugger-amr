@@ -2045,8 +2045,8 @@
     -4.975,
     -1.5707963267948966
   ],
-  "departure_heading_error_deg": 180.0,
-  "departure_transition_validated": false,
+  "departure_heading_error_deg": 0.0,
+  "departure_transition_validated": true,
   "terminal_heading_validated": true,
   "execution_approved": true
 }

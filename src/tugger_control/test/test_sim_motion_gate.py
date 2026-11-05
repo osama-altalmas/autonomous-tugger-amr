@@ -38,8 +38,8 @@ def test_loaded_output_is_speed_limited_and_keeps_curvature():
     item = gate()
     SimMotionGate._tick(item)
     result = item._output.publish.call_args.args[0]
-    assert result.twist.linear.x == pytest.approx(0.1)
-    assert result.twist.angular.z == pytest.approx(0.05)
+    assert result.twist.linear.x == pytest.approx(0.4)
+    assert result.twist.angular.z == pytest.approx(0.2)
     assert item._ready.publish.call_args.args[0].data is True
 
 
@@ -49,8 +49,22 @@ def test_loaded_reverse_keeps_signed_velocity_and_steering_curvature():
     item._requests['NAV'].twist.angular.z = 0.2
     SimMotionGate._tick(item)
     result = item._output.publish.call_args.args[0]
-    assert result.twist.linear.x == pytest.approx(-0.1)
-    assert result.twist.angular.z == pytest.approx(0.05)
+    assert result.twist.linear.x == pytest.approx(-0.4)
+    assert result.twist.angular.z == pytest.approx(0.2)
+
+
+def test_loaded_route_uses_unloaded_straight_and_curve_speed_profile():
+    item = gate()
+    item._requests['NAV'].twist.linear.x = 1.2
+    item._requests['NAV'].twist.angular.z = 0.0
+    SimMotionGate._tick(item)
+    result = item._output.publish.call_args.args[0]
+    assert result.twist.linear.x == pytest.approx(1.2)
+    item._requests['NAV'].twist.angular.z = 0.6
+    SimMotionGate._tick(item)
+    result = item._output.publish.call_args.args[0]
+    assert result.twist.linear.x == pytest.approx(0.6)
+    assert result.twist.angular.z == pytest.approx(0.3)
 
 
 def test_loaded_obstacle_cuts_command_to_zero():
@@ -118,11 +132,11 @@ def test_unloaded_docking_is_speed_limited_and_height_aware():
     item._requests['NAV'].twist.angular.z = 0.02
     SimMotionGate._tick(item)
     result = item._output.publish.call_args.args[0]
-    assert result.twist.linear.x == pytest.approx(-0.05)
-    assert result.twist.angular.z == pytest.approx(0.0125)
+    assert result.twist.linear.x == pytest.approx(-0.08)
+    assert result.twist.angular.z == pytest.approx(0.02)
 
 
-def test_unloaded_docking_stops_for_floor_obstacle_or_stale_scene():
+def test_unloaded_docking_reduces_for_obstacle_and_stops_for_stale_scene():
     obstacle = Box('unexpected', 0.55, 0, 0, 0.02, 0.02, 0, 0.15)
     item = gate([('unexpected', obstacle)])
     item._states = {0: 'detached', 3: 'detached'}
@@ -131,7 +145,7 @@ def test_unloaded_docking_stops_for_floor_obstacle_or_stale_scene():
     item._requests['NAV'].twist.linear.x = 0.05
     item._requests['NAV'].twist.angular.z = 0.0
     SimMotionGate._tick(item)
-    assert item._output.publish.call_args.args[0].twist.linear.x == 0.0
+    assert item._output.publish.call_args.args[0].twist.linear.x == pytest.approx(0.02)
     item._snapshot.side_effect = ValueError('scene feed stale')
     SimMotionGate._tick(item)
     assert item._output.publish.call_args.args[0].twist.linear.x == 0.0
@@ -151,6 +165,20 @@ def test_docking_camera_curvature_is_clamped_to_4ws_limit():
     output = item._output.publish.call_args.args[0]
     assert output.twist.linear.x == pytest.approx(-0.02)
     assert output.twist.angular.z == pytest.approx(2 * .02 / .58)
+
+
+def test_home_camera_owner_is_guarded_as_low_speed_precision_motion():
+    item = gate([('tabletop', Box('tabletop', 0, 0, 0, .65, .65, .28, .31))])
+    item._states = {0: 'detached', 3: 'detached'}
+    item._owner = 'PRECISION'
+    item._lift = item._speed = item._wheel_speed = 0.0
+    item._requests['PRECISION'] = TwistStamped()
+    item._requests['PRECISION'].twist.linear.x = 0.04
+    item._request_at['PRECISION'] = 9.9
+    SimMotionGate._tick(item)
+    output = item._output.publish.call_args.args[0]
+    assert output.twist.linear.x == pytest.approx(.04)
+    assert output.twist.angular.z == 0.0
 
 
 def test_unloaded_docking_rejects_attached_cargo():

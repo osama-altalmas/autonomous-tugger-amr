@@ -4,11 +4,15 @@
 #
 # Change these values whenever you want.
 #
-# FAST_SIM:
-#   cruising_speed: 1.6
+# ROUTE_PROFILE:
+#   straight sections: 1.2 m/s
+#   curves:             0.6 m/s (the motion gate preserves curvature)
+#   docking approach:   0.4 m/s
+#   loaded departure:   0.5 m/s
+#   loaded route:       same 1.2 / 0.6 m/s profile as unloaded travel
 #
-# REALISTIC:
-#   cruising_speed: 0.2
+# FINAL_PROFILE:
+#   straight sections: 1.2 m/s
 #
 # IMPORTANT:
 #   Speeds are meters/second in SIMULATED time.
@@ -20,7 +24,7 @@
 
 four_ws_controller:
   ros__parameters:
-    max_linear_speed: 1.8
+    max_linear_speed: 1.2
     max_acceleration: 1.6
     max_deceleration: 2.5
     max_steering_rate: 2.2
@@ -31,7 +35,7 @@ four_ws_controller:
 # passed directly to the ROS controller.
 
 follower:
-  cruising_speed: 1.6
+  cruising_speed: 1.2
   lookahead: 0.65
   max_lateral_acceleration: 1.2
   max_tracking_error: 0.35

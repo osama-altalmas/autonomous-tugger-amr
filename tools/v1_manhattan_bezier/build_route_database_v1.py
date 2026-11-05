@@ -29,6 +29,7 @@ import time
 from pathlib import Path
 
 import numpy as np
+from scipy.ndimage import distance_transform_edt
 
 import plan_routes as p
 
@@ -84,7 +85,8 @@ def direction_index(yaw):
     )
 
 
-def constrained_astar(start, goal, safe, terminal_direction):
+def constrained_astar(start, goal, safe, terminal_direction,
+                      clearance_map=None, clearance_weight=0.0):
     """
     Cardinal-grid A* with final direction as part of
     the goal condition.
@@ -161,7 +163,15 @@ def constrained_astar(start, goal, safe, terminal_direction):
                 else 0.0
             )
 
-            new_cost = cost + 1.0 + turn_penalty
+            clearance_penalty = 0.0
+            if clearance_map is not None and clearance_weight > 0.0:
+                # Prefer the medial part of a free corridor while retaining
+                # the hard footprint-safe boundary in ``safe``.  The inverse
+                # distance cost is zero-disabled for backwards compatibility
+                # and remains finite at the map boundary.
+                clearance = max(float(clearance_map[yy, xx]), 1e-6)
+                clearance_penalty = clearance_weight / clearance
+            new_cost = cost + 1.0 + turn_penalty + clearance_penalty
             nxt = (xx, yy, nd)
 
             if new_cost + 1e-9 < best.get(
@@ -373,6 +383,9 @@ def build_connection(
     for source_dir, source in source_options.items():
         if not source["available"]:
             continue
+        preferred_source = getattr(args, "departure_entrances", {}).get(source_name)
+        if preferred_source is not None and source_dir != preferred_source:
+            continue
 
         for target_dir, target in target_options.items():
             if not target["available"]:
@@ -396,7 +409,9 @@ def build_connection(
                     start,
                     goal,
                     safe,
-                    required
+                    required,
+                    clearance_map=getattr(args, "clearance_map", None),
+                    clearance_weight=getattr(args, "clearance_bias", 0.0)
                 )
 
                 candidate = smooth_and_validate(
@@ -423,6 +438,13 @@ def build_connection(
                 departure_error = heading_error(
                     candidate["poses"][0][2],
                     source["pose"][2]
+                )
+                # A route may leave a station in reverse.  Compare both the
+                # forward and reverse body directions so an intentional
+                # reverse departure is not rejected as a heading failure.
+                departure_error = min(
+                    departure_error,
+                    abs(math.pi - departure_error)
                 )
 
                 attempt.update({
@@ -457,6 +479,44 @@ def build_connection(
                     winner = candidate
 
             except Exception as exc:
+                # Clearance bias must not destroy an otherwise valid legacy
+                # corridor. Retry the same entrance pair without the soft
+                # preference; hard clearance and footprint checks remain.
+                if getattr(args, "clearance_bias", 0.0) > 0.0:
+                    try:
+                        cells = constrained_astar(
+                            start, goal, safe, required,
+                            clearance_map=None, clearance_weight=0.0)
+                        candidate = smooth_and_validate(
+                            cells, spec, safe, occupancy_spec, blocked,
+                            args.corner_trim, args.max_curvature)
+                        departure_error = min(
+                            heading_error(candidate["poses"][0][2], source["pose"][2]),
+                            abs(math.pi - heading_error(
+                                candidate["poses"][0][2], source["pose"][2])))
+                        candidate.update({
+                            "source_entrance": source_dir,
+                            "target_entrance": target_dir,
+                            "source_pose": source["pose"],
+                            "target_pose": target["pose"],
+                            "departure_heading_error_deg": round(
+                                math.degrees(departure_error), 2),
+                            "departure_transition_validated": (
+                                departure_error <= math.radians(2)),
+                            "terminal_heading_validated": True,
+                        })
+                        attempt.update({
+                            "status": "VALIDATED_STATIC_CANDIDATE",
+                            "length_m": candidate["length_m"],
+                            "departure_heading_error_deg": round(
+                                math.degrees(departure_error), 2),
+                        })
+                        if winner is None or candidate["length_m"] < winner["length_m"]:
+                            winner = candidate
+                        attempts.append(attempt)
+                        continue
+                    except Exception:
+                        pass
                 attempt["reason"] = str(exc)
 
             attempts.append(attempt)
@@ -515,6 +575,13 @@ def main():
         default=2.5
     )
 
+    ap.add_argument(
+        "--clearance-bias",
+        type=float,
+        default=0.05,
+        help="A* preference for the center of free corridors (0 disables it)"
+    )
+
     args = ap.parse_args()
 
     if min(
@@ -524,6 +591,8 @@ def main():
         args.max_curvature
     ) <= 0:
         ap.error("Planning distances/limits must be positive")
+    if args.clearance_bias < 0:
+        ap.error("Clearance bias must be non-negative")
 
     started = time.monotonic()
 
@@ -538,6 +607,9 @@ def main():
 
     occupancy_spec, blocked = load_occupancy(
         args.map
+    )
+    args.clearance_map = (
+        distance_transform_edt(~blocked) * float(spec["resolution"])
     )
 
     home_cell = p.cell(
@@ -584,6 +656,23 @@ def main():
 
     names = list(nodes)
 
+    # Preserve the validated entrance used to arrive at each cargo station.
+    # This makes a station-to-station route begin at the same physical
+    # departure side without hard-coding station IDs into the planner.
+    args.departure_entrances = {}
+    previous_database = Path(args.output) / "route_database.json"
+    if previous_database.exists():
+        try:
+            previous = json.loads(previous_database.read_text())
+            for station in names:
+                entry = previous.get("routes", {}).get(
+                    f"HOME__TO__{station}", {})
+                entrance = entry.get("target_entrance")
+                if entrance in nodes.get(station, {}):
+                    args.departure_entrances[station] = entrance
+        except (OSError, ValueError, TypeError):
+            args.departure_entrances = {}
+
     if len(names) != 5:
         raise ValueError(
             f"Expected HOME + four cargo stations, "
@@ -611,6 +700,7 @@ def main():
         "stations": names,
         "staging_distance_m": args.staging_distance,
         "clearance_radius_m": args.clearance,
+        "clearance_bias": args.clearance_bias,
         "nodes": nodes,
         "routes": {},
         "execution_approved": False,

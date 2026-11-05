@@ -1348,7 +1348,8 @@ class OperatorBridge(Node):
             return
         if gap > 3.0:
             self._report(
-                f'{label}: route start is {gap:.2f} m away; refusing a long dynamic replacement route.')
+                f'{label}: route start is {gap:.2f} m away; refusing a long '
+                'dynamic replacement route.')
             return
         if not self._planner.server_is_ready():
             self._report('Nav2 connector planner is unavailable; no command was sent.')
@@ -1569,12 +1570,12 @@ class OperatorBridge(Node):
             connector_poses = [[p.pose.position.x, p.pose.position.y, 0.0]
                                for p in connector.poses]
             length = self._path_length(connector_poses)
+            if length > 3.0:
+                self._report(f'Connector is {length:.2f} m; refusing a long dynamic route.')
+                return
             if self._recovery_only:
                 self._recovery_only = False
                 self._prepare_saved_execution(connector_poses, length, generation)
-                return
-            if length > 3.0:
-                self._report(f'Connector is {length:.2f} m; refusing a long dynamic route.')
                 return
             if math.hypot(connector_poses[-1][0] - self._saved_poses[0][0],
                           connector_poses[-1][1] - self._saved_poses[0][1]) > 0.15:
@@ -1754,8 +1755,8 @@ class OperatorBridge(Node):
         goal = FollowPath.Goal()
         goal.path = path
         goal.controller_id = (
-            'PrecisionFollowPath'
-            if self._precision_station or self._departure_active else 'FollowPath')
+            'DepartureFollowPath' if self._departure_active else
+            'PrecisionFollowPath' if self._precision_station else 'FollowPath')
         goal.goal_checker_id = (
             'precision_goal_checker'
             if self._precision_station else 'goal_checker')

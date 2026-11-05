@@ -8,6 +8,7 @@ import pytest
 from tugger_control.clearance_2_5d import Box
 from tugger_control.direction_policy import prepare_dynamic_path
 from tugger_control.precision_scene_clearance import (
+    choose_precision_speed, precision_approach_speed_limit,
     precision_stopping_envelope, sampled_precision_clearance,
 )
 from tugger_control.warehouse_clearance import cargo_box, static_world_boxes
@@ -66,6 +67,31 @@ def test_stopping_envelope_distinguishes_elevated_cargo_and_low_obstacle():
     assert not clear and hit[1] == 'obstacle'
 
 
+def test_precision_speed_steps_down_when_fast_envelope_is_blocked(monkeypatch):
+    import tugger_control.precision_scene_clearance as clearance
+
+    def fake_envelope(pose, lift, obstacles, current, requested, **kwargs):
+        return (requested <= 0.1, 'near-leg' if requested > 0.1 else None)
+
+    monkeypatch.setattr(clearance, 'precision_stopping_envelope', fake_envelope)
+    speed, hit = choose_precision_speed((0, 0, 0), 0.0, [Box(
+        'leg', 5, 5, 0, .1, .1, 0, .2)], 0.0, 0.4)
+    assert speed == pytest.approx(0.1)
+    assert hit is None
+
+
+def test_precision_approach_tapers_near_fixed_cargo_legs_but_not_at_home():
+    leg = Box('leg_1_0', 0.68, 0.0, 0.0, 0.04, 0.04, 0.0, 0.28)
+    assert precision_approach_speed_limit((0.0, 0.0, 0.0),
+                                           [('cargo_station_0_legs', leg)]) == pytest.approx(.10)
+    assert precision_approach_speed_limit((0.0, 0.0, 0.0),
+                                           [('cargo_station_0_legs',
+                                             Box('leg_1_0', 1.1, 0.0, 0.0, .04, .04, 0, .28))]) == pytest.approx(.2)
+    assert precision_approach_speed_limit((0.0, 0.0, 0.0),
+                                           [('cargo_station_0_stand',
+                                             Box('table', 0.0, 0.0, 0.0, .65, .65, .28, .31))]) == pytest.approx(.4)
+
+
 @pytest.mark.parametrize('lift,velocity,obstacles', [
     (0.06, 0.03, [Box('far', 5, 5, 0, .1, .1, 0, .2)]),
     (0.0, 0.06, [Box('far', 5, 5, 0, .1, .1, 0, .2)]),
@@ -73,4 +99,5 @@ def test_stopping_envelope_distinguishes_elevated_cargo_and_low_obstacle():
 ])
 def test_stopping_envelope_rejects_invalid_operating_conditions(lift, velocity, obstacles):
     with pytest.raises(ValueError):
-        precision_stopping_envelope((0, 0, 0), lift, obstacles, 0.0, velocity)
+        precision_stopping_envelope((0, 0, 0), lift, obstacles, 0.0, velocity,
+                                    max_speed=0.05)

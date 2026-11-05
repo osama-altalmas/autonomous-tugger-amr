@@ -2,6 +2,27 @@
 import math
 
 
+def speed_profile(v, omega, *, straight_limit=1.2, curve_limit=0.6,
+                  curve_threshold=0.25):
+    """Limit route speed while preserving the requested path curvature.
+
+    ``omega / v`` is the planar curvature commanded by Nav2.  Gentle heading
+    corrections retain the straight-line limit; genuine curves use the lower
+    limit and scale omega with v so the 4WS path does not change.
+    """
+    if not all(math.isfinite(value) for value in (v, omega, straight_limit,
+                                                   curve_limit, curve_threshold)):
+        raise ValueError('Non-finite speed-profile input')
+    if straight_limit <= 0 or curve_limit <= 0 or curve_threshold < 0:
+        raise ValueError('Invalid speed-profile limit')
+    if abs(v) < 1e-6:
+        return 0.0, omega
+    is_curve = abs(omega / v) >= curve_threshold
+    limit = curve_limit if is_curve else straight_limit
+    limited = math.copysign(min(abs(v), limit), v)
+    return limited, omega * limited / v
+
+
 def approach(current, target, rate, dt):
     if rate < 0 or dt < 0:
         raise ValueError('rate and dt must be nonnegative')

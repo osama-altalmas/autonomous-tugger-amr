@@ -74,7 +74,7 @@ cd ~/Autonomous_Tugger_Project_V2/autonomous_tugger_ws
 source /opt/ros/lyrical/setup.bash
 source install/setup.bash
 rviz2 --ros-args -p use_sim_time:=true
-``
+```
 
 ## T8 — Map activation and checks
 
@@ -130,6 +130,27 @@ Normal navigation uses `/follow_path` and `/tugger/nav_cmd_vel`.
 Precision docking uses `/docking/follow_path` and `/tugger/dock_nav_cmd_vel`.
 Both command streams pass through `tugger_sim_motion_gate` before reaching
 the 4WS controller.
+
+Speed profile:
+
+- Normal straight route: Nav2 requests up to **1.2 m/s**.
+- Normal curves: the motion gate caps genuine curves at **0.6 m/s** while
+  preserving the requested curvature.
+- Docking approach: **0.4 m/s** maximum.
+- Final camera correction: remains capped at **0.05 m/s** for 10 mm settling.
+- Loaded departure: uses `DepartureFollowPath` at **0.5 m/s** maximum and
+  remains subject to the loaded stopping-distance guard.
+
+After changing speed or controller configuration, rebuild `tugger_control`
+and `tugger_navigation`, then restart T2 and T5. Do not run a second launch
+instance over an existing one.
+
+```bash
+cd ~/Autonomous_Tugger_Project_V2/autonomous_tugger_ws
+unset AMENT_PREFIX_PATH COLCON_PREFIX_PATH CMAKE_PREFIX_PATH PYTHONPATH
+source /opt/ros/lyrical/setup.bash
+colcon build --packages-select tugger_control tugger_navigation --symlink-install
+```
 
 T2 starts `qr_docking_vision`, `docking_precision_controller`, and
 `tugger_sim_motion_gate`. The docking controller accepts only
