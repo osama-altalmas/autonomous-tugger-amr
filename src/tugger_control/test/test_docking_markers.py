@@ -51,7 +51,12 @@ def test_home_marker_matches_station_geometry_and_configured_home_pose():
     stations = json.loads((Path(__file__).resolve().parents[1] /
                            'config/operator_stations.json').read_text())['stations']
     assert home_xy == [0.0, 0.0]
-    assert stations['HOME']['candidates'][0]['pose'][:2] == home_xy
+    database = json.loads((Path(__file__).resolve().parents[3] /
+                           'tools/v1_manhattan_bezier/routes/route_database.json').read_text())
+    # HOME segment 2 ends on the marker; its entries are the gate staging poses.
+    assert database['station_centers']['HOME'] == home_xy
+    assert [entry['pose'] for entry in stations['HOME']['candidates']] == [
+        node['pose'] for node in database['nodes']['HOME'].values() if node['available']]
     for name in ('red_alignment_frame', 'qr'):
         visual = home.find(f"./link/visual[@name='{name}']")
         local_pose = visual.findtext('pose', '0 0 0 0 0 0')

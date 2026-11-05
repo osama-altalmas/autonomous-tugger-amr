@@ -1,0 +1,20 @@
+{
+  "description": "Mission order. A route leaving a station must start at the gate the previous route in the chain entered it by. Pass-through stops have no stand, so any gate may be used.",
+  "chains": [
+    [
+      "HOME",
+      "cargo_station_0",
+      "cargo_dropoff_northwest",
+      "HOME"
+    ],
+    [
+      "HOME",
+      "cargo_station_3",
+      "cargo_dropoff_southeast",
+      "HOME"
+    ]
+  ],
+  "pass_through": [
+    "HOME"
+  ]
+}

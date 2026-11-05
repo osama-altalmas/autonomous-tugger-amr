@@ -3,8 +3,10 @@
 The 4WS controller listens only to this node's output in the simulation
 launch. This node is experimental software, not a safety-rated device.
 """
+import json
 import math
 import time
+from collections import deque
 from pathlib import Path
 
 import rclpy
@@ -17,11 +19,17 @@ from std_msgs.msg import Bool, Float64MultiArray, String
 from tf2_ros import Buffer, TransformListener
 
 from tugger_control.cargo_policy import confirmed_cargo
+from tugger_control.cargo_policy import CARGO_IDS
 from tugger_control.loaded_motion_guard import choose_guarded_speed, decode_scene, scene_expected_counts
 from tugger_control.motion_math import speed_profile
 from tugger_control.precision_scene_clearance import (
     choose_precision_speed, precision_approach_speed_limit)
 from tugger_control.warehouse_clearance import validate_modeled_geometry
+
+
+# Stay under the 1.2 m/s loaded guard limit. Requesting exactly the limit lets
+# normal speed overshoot fail the guard and stop the robot repeatedly.
+LOADED_ROUTE_REQUEST_LIMIT = 1.15
 
 
 def planar_quaternion(q):
@@ -40,6 +48,39 @@ def planar_quaternion(q):
     return math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
 
 
+def scene_time(payload):
+    """Return the collision scene's own timestamp, or None if absent."""
+    try:
+        stamp = json.loads(payload).get('stamp')
+    except (TypeError, ValueError, AttributeError):
+        return None
+    return float(stamp) if isinstance(stamp, (int, float)) and math.isfinite(stamp) else None
+
+
+def payload_at_time(history, stamp, latest, maximum_gap=0.25):
+    """Return the recorded pose closest to ``stamp``, or ``latest`` if none is near."""
+    if not history:
+        return latest
+    near_stamp, pose = min(history, key=lambda item: abs(item[0] - stamp))
+    return pose if abs(near_stamp - stamp) <= maximum_gap else latest
+
+
+def payload_for_robot_pose(robot_pose, robot_truth, history, latest):
+    """Express cargo beside the estimated robot pose, keeping its true offset.
+
+    The estimated robot pose can lag the simulator at route speed, which looks
+    like cargo shift. The robot and cargo truth poses come from one simulator
+    source, so their difference is the real attachment offset; the 4 cm limit
+    then judges that offset. Without robot truth, the direct comparison applies.
+    """
+    if robot_truth is None or latest is None:
+        return latest
+    stamp, truth_x, truth_y = robot_truth
+    cargo = payload_at_time(history, stamp, latest)
+    return (robot_pose[0] + cargo[0] - truth_x, robot_pose[1] + cargo[1] - truth_y,
+            cargo[2], cargo[3])
+
+
 class SimMotionGate(Node):
     def __init__(self):
         super().__init__('tugger_sim_motion_gate')
@@ -53,8 +94,13 @@ class SimMotionGate(Node):
         self._request_at = {'NAV': None, 'PRECISION': None, 'DOCK_NAV': None}
         self._owner, self._owner_at = 'STOP', None
         self._scene, self._scene_at = None, None
-        self._states, self._states_at = {0: None, 3: None}, {0: None, 3: None}
-        self._payloads, self._payloads_at = {0: None, 3: None}, {0: None, 3: None}
+        self._states = {key: None for key in CARGO_IDS}
+        self._states_at = {key: None for key in CARGO_IDS}
+        self._payloads = {key: None for key in CARGO_IDS}
+        self._payloads_at = {key: None for key in CARGO_IDS}
+        self._payload_history = {key: deque(maxlen=400) for key in CARGO_IDS}
+        self._aligned_payloads = {}
+        self._robot_truth = None
         self._lift, self._lift_at = None, None
         self._speed, self._speed_at = None, None
         self._wheel_speed, self._wheel_speed_at = None, None
@@ -77,11 +123,13 @@ class SimMotionGate(Node):
                             ('PRECISION', '/tugger/precision_cmd_vel')):
             self.create_subscription(TwistStamped, topic,
                                      lambda msg, key=name: self._on_request(key, msg), 10)
-        for station in (0, 3):
+        for station in CARGO_IDS:
             self.create_subscription(String, f'/cargo/station_{station}/state',
                                      lambda msg, key=station: self._on_state(key, msg), 10)
             self.create_subscription(PoseStamped, f'/tugger/cargo/station_{station}/ground_truth_pose',
                                      lambda msg, key=station: self._on_payload(key, msg), 10)
+        self.create_subscription(PoseStamped, '/tugger/ground_truth_pose',
+                                 self._on_robot_truth, 10)
         self.create_subscription(JointState, '/joint_states', self._on_joint, 10)
         self.create_subscription(Float64MultiArray, '/four_ws/motion_state', self._on_motion, 10)
         self.create_subscription(Odometry, '/wheel/odom', self._on_wheel_odom, 10)
@@ -123,8 +171,16 @@ class SimMotionGate(Node):
             if not all(math.isfinite(v) for v in pose):
                 return
             self._payloads[station], self._payloads_at[station] = pose, self._now()
+            stamp = msg.header.stamp.sec + msg.header.stamp.nanosec / 1e9
+            self._payload_history[station].append((stamp, pose))
         except ValueError:
             return
+
+    def _on_robot_truth(self, msg):
+        if msg.header.frame_id != 'map':
+            return
+        stamp = msg.header.stamp.sec + msg.header.stamp.nanosec / 1e9
+        self._robot_truth = (stamp, msg.pose.position.x, msg.pose.position.y)
 
     def _on_joint(self, msg):
         try:
@@ -160,14 +216,20 @@ class SimMotionGate(Node):
                 not self._fresh(self._speed_at, now, 0.3) or
                 not self._fresh(self._wheel_speed_at, now, 0.3)):
             raise ValueError('lift or velocity feedback stale')
-        if not all(self._fresh(self._payloads_at[key], now, 1.0) for key in (0, 3)):
+        if not all(self._fresh(self._payloads_at[key], now, 1.0) for key in CARGO_IDS):
             raise ValueError('cargo pose feedback stale')
-        for key in (0, 3):
+        scene_stamp = scene_time(self._scene)
+        for key in CARGO_IDS:
             model = f'cargo_station_{key}_stand'
             matches = [box for owner, box in obstacles if owner == model]
             if len(matches) != 1:
                 raise ValueError('cargo collision geometry is ambiguous')
-            box, payload = matches[0], self._payloads[key]
+            # Compare with the cargo pose from the scene's own instant; at
+            # route speed a few milliseconds apart already exceeds 4 cm.
+            payload = (self._payloads[key] if scene_stamp is None else payload_at_time(
+                getattr(self, '_payload_history', {}).get(key, ()), scene_stamp,
+                self._payloads[key]))
+            box = matches[0]
             if (math.hypot(box.x - payload[0], box.y - payload[1]) > 0.04 or
                     abs((box.z_min + box.z_max) / 2 - (payload[2] + 0.295)) > 0.025 or
                     min(box.half_x, box.half_y) < 0.64):
@@ -180,6 +242,10 @@ class SimMotionGate(Node):
         if not all(math.isfinite(v) for v in (t.x, t.y, t.z)) or abs(t.z) > 0.03:
             raise ValueError('robot height outside modeled ground plane')
         pose = (t.x, t.y, planar_quaternion(transform.transform.rotation))
+        self._aligned_payloads = {
+            key: payload_for_robot_pose(
+                pose, self._robot_truth, self._payload_history[key], self._payloads[key])
+            for key in CARGO_IDS}
         return pose, obstacles
 
     def _tick(self):
@@ -188,9 +254,9 @@ class SimMotionGate(Node):
         if self._last_time is not None and now < self._last_time:
             self._owner_at = None
             self._request_at = {'NAV': None, 'PRECISION': None, 'DOCK_NAV': None}
-            self._states_at = {0: None, 3: None}
+            self._states_at = {key: None for key in CARGO_IDS}
             self._scene_at = None
-            self._payloads_at = {0: None, 3: None}
+            self._payloads_at = {key: None for key in CARGO_IDS}
             self._lift_at = self._speed_at = None
             self._wheel_speed_at = None
         self._last_time = now
@@ -200,7 +266,7 @@ class SimMotionGate(Node):
         reason, ready, snapshot, dock_ready, owner = 'stopped', False, None, False, 'STOP'
         try:
             ages = {key: now - self._states_at[key] if self._states_at[key] is not None else None
-                    for key in (0, 3)}
+                    for key in CARGO_IDS}
             cargo = confirmed_cargo(self._states, ages)
             try:
                 snapshot = self._snapshot(now)
@@ -253,13 +319,16 @@ class SimMotionGate(Node):
                     if owner == 'NAV':
                         # Loaded route travel uses the same straight/curve
                         # profile as unloaded travel before clearance checks.
-                        v, omega = speed_profile(v, omega)
+                        v, omega = speed_profile(
+                            v, omega, straight_limit=LOADED_ROUTE_REQUEST_LIMIT)
                     # Departure shares the independent docking controller but
                     # has its own ownership mode and a stricter speed ceiling.
                     requested = (max(-0.5, min(0.5, v))
                                  if owner == 'DOCK_DEPART' else v)
                     limited, hit = choose_guarded_speed(
-                        snapshot[0], self._payloads[cargo], self._lift, cargo,
+                        snapshot[0],
+                        getattr(self, '_aligned_payloads', {}).get(cargo, self._payloads[cargo]),
+                        self._lift, cargo,
                         snapshot[1], max(abs(self._speed), abs(self._wheel_speed)), requested,
                         max_speed=0.5 if owner == 'DOCK_DEPART' else 1.2)
                     if hit is not None:

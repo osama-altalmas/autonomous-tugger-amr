@@ -35,6 +35,18 @@ def test_geometry_guard_rejects_changed_wheel_or_lift_model(tmp_path, old, new):
                                   altered)
 
 
+def test_dropoff_allows_measured_joint_sag_but_not_real_penetration():
+    obstacles = static_world_boxes(ROOT / 'src/tugger_gazebo/worlds/tugger_warehouse.sdf')
+    # Values measured in Gazebo while holding cargo at the drop-off.
+    measured = lift_sweep_clear((-17.5, 7.0, 0), (-17.5, 7.0, 0.0643, 0),
+                                (17.5, 7.0, 0, 0), obstacles, 0.065, 0.0)
+    assert measured == (True, None)
+    clear, hit = lift_sweep_clear((-17.5, 7.0, 0), (-17.5, 7.0, 0.055, 0),
+                                  (17.5, 7.0, 0, 0), obstacles, 0.065, 0.0)
+    assert not clear
+    assert hit[0] == 'cargo' and '_legs' in hit[1]
+
+
 def test_pickup_and_paired_dropoff_allow_station_support_contacts():
     validate_modeled_geometry(ROOT / 'src/tugger_gazebo/worlds/tugger_warehouse.sdf',
                               ROOT / 'src/tugger_description/urdf/tugger.urdf.xacro')

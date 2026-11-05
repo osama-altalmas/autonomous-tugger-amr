@@ -79,7 +79,9 @@ def test_known_warehouse_candidate_samples_clear_separate_lower_and_upper_envelo
         [sys.executable, str(ROOT / 'tools/mission_approaches/audit_candidates.py')],
         check=True, capture_output=True, text=True)
     reports = json.loads(result.stdout)
-    assert len(reports) == 8
+    # Eight station entrances plus the two HOME gates.
+    assert len(reports) == 10
+    assert {'HOME__east', 'HOME__west'} <= set(reports)
     assert all(report['passed'] for report in reports.values())
 
 
@@ -100,3 +102,32 @@ def test_repository_selects_the_actual_entrance_and_rejects_changed_world(tmp_pa
     repo.source_files['world'] = changed_world
     with pytest.raises(ValueError, match='source changed: world'):
         repo.approach('cargo_station_0', route['poses'][-1])
+
+
+def _mission_legs():
+    chains = json.loads((ROOT / 'tools/v1_manhattan_bezier/mission_chains.json').read_text())
+    return [chain for chain in chains['chains']]
+
+
+def test_every_mission_chain_leaves_each_station_by_its_entry_gate():
+    database = json.loads((ROUTES / 'route_database.json').read_text())['routes']
+    chains = _mission_legs()
+    assert chains
+    for chain in chains:
+        for before, station, after in zip(chain, chain[1:], chain[2:]):
+            arrived = database[f'{before}__TO__{station}']
+            leaving = database[f'{station}__TO__{after}']
+            assert arrived['target_entrance'] == leaving['source_entrance'], (before, station, after)
+            assert leaving['execution_approved'] is True
+
+
+def test_every_mission_chain_entry_has_a_precision_candidate_for_that_gate():
+    data = json.loads(DATA.read_text())
+    database = json.loads((ROUTES / 'route_database.json').read_text())['routes']
+    for chain in _mission_legs():
+        for before, station in zip(chain, chain[1:]):
+            if station == 'HOME':
+                continue
+            gate = database[f'{before}__TO__{station}']['target_entrance']
+            candidate = data['candidates'][f'{station}__{gate}']
+            assert candidate['execution_approved'] is True

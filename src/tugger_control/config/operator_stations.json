@@ -1,25 +1,136 @@
 {
   "stations": {
-    "HOME": {"candidates": [{"entrance": "home", "pose": [0.0, 0.0, 0.0]}]},
-    "cargo_dropoff_northwest": {"candidates": [
-      {"entrance": "east", "pose": [-15.475, 7.025, 3.141592653589793]},
-      {"entrance": "north", "pose": [-17.475, 9.025, -1.5707963267948966]},
-      {"entrance": "south", "pose": [-17.475, 5.025, 1.5707963267948966]}
-    ]},
-    "cargo_dropoff_southeast": {"candidates": [
-      {"entrance": "north", "pose": [17.525, -4.975, -1.5707963267948966]},
-      {"entrance": "west", "pose": [15.525, -6.975, 0.0]},
-      {"entrance": "south", "pose": [17.525, -8.975, 1.5707963267948966]}
-    ]},
-    "cargo_station_0": {"candidates": [
-      {"entrance": "east", "pose": [-15.475, -6.975, 3.141592653589793]},
-      {"entrance": "north", "pose": [-17.475, -4.975, -1.5707963267948966]},
-      {"entrance": "south", "pose": [-17.475, -8.975, 1.5707963267948966]}
-    ]},
-    "cargo_station_3": {"candidates": [
-      {"entrance": "north", "pose": [17.525, 9.025, -1.5707963267948966]},
-      {"entrance": "west", "pose": [15.525, 7.025, 0.0]},
-      {"entrance": "south", "pose": [17.525, 5.025, 1.5707963267948966]}
-    ]}
+    "HOME": {
+      "candidates": [
+        {
+          "entrance": "east",
+          "pose": [
+            2.025000000000002,
+            0.025000000000000355,
+            3.141592653589793
+          ]
+        },
+        {
+          "entrance": "west",
+          "pose": [
+            -1.9749999999999979,
+            0.025000000000000355,
+            0.0
+          ]
+        }
+      ]
+    },
+    "cargo_dropoff_northwest": {
+      "candidates": [
+        {
+          "entrance": "east",
+          "pose": [
+            -15.475,
+            7.025,
+            3.141592653589793
+          ]
+        },
+        {
+          "entrance": "north",
+          "pose": [
+            -17.475,
+            9.025,
+            -1.5707963267948966
+          ]
+        },
+        {
+          "entrance": "south",
+          "pose": [
+            -17.475,
+            5.025,
+            1.5707963267948966
+          ]
+        }
+      ]
+    },
+    "cargo_dropoff_southeast": {
+      "candidates": [
+        {
+          "entrance": "north",
+          "pose": [
+            17.525,
+            -4.975,
+            -1.5707963267948966
+          ]
+        },
+        {
+          "entrance": "west",
+          "pose": [
+            15.525,
+            -6.975,
+            0.0
+          ]
+        },
+        {
+          "entrance": "south",
+          "pose": [
+            17.525,
+            -8.975,
+            1.5707963267948966
+          ]
+        }
+      ]
+    },
+    "cargo_station_0": {
+      "candidates": [
+        {
+          "entrance": "east",
+          "pose": [
+            -15.475,
+            -6.975,
+            3.141592653589793
+          ]
+        },
+        {
+          "entrance": "north",
+          "pose": [
+            -17.475,
+            -4.975,
+            -1.5707963267948966
+          ]
+        },
+        {
+          "entrance": "south",
+          "pose": [
+            -17.475,
+            -8.975,
+            1.5707963267948966
+          ]
+        }
+      ]
+    },
+    "cargo_station_3": {
+      "candidates": [
+        {
+          "entrance": "north",
+          "pose": [
+            17.525,
+            9.025,
+            -1.5707963267948966
+          ]
+        },
+        {
+          "entrance": "west",
+          "pose": [
+            15.525,
+            7.025,
+            0.0
+          ]
+        },
+        {
+          "entrance": "south",
+          "pose": [
+            17.525,
+            5.025,
+            1.5707963267948966
+          ]
+        }
+      ]
+    }
   }
 }

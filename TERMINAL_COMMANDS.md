@@ -136,7 +136,7 @@ Speed profile:
 - Normal straight route: Nav2 requests up to **1.2 m/s**.
 - Normal curves: the motion gate caps genuine curves at **0.6 m/s** while
   preserving the requested curvature.
-- Docking approach: **0.4 m/s** maximum.
+- Docking approach: Nav2 requests up to **0.35 m/s**; the motion gate limit is **0.4 m/s**.
 - Final camera correction: remains capped at **0.05 m/s** for 10 mm settling.
 - Loaded departure: uses `DepartureFollowPath` at **0.5 m/s** maximum and
   remains subject to the loaded stopping-distance guard.

@@ -7,13 +7,14 @@ classes. It executes the project's actual method bodies, not rewritten logic.
 import ast
 import json
 import math
+from tugger_control.mission_planning import entrance_gate, routes_from_gate
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 
-from tugger_control.cargo_policy import confirmed_cargo
+from tugger_control.cargo_policy import CARGO_IDS, confirmed_cargo
 from tugger_control.loaded_motion_guard import choose_guarded_speed
 from tugger_control.mission_planning import plan_is_current
 from tugger_control.station_departure import plan_station_departure
@@ -69,7 +70,7 @@ def gate_test_class():
                              ('_tick', '_on_owner', '_fresh'), {
         'math': math, 'time': __import__('time'),
         'TwistStamped': Message, 'Bool': Message, 'String': Message,
-        'confirmed_cargo': confirmed_cargo,
+        'confirmed_cargo': confirmed_cargo, 'CARGO_IDS': CARGO_IDS,
         'choose_guarded_speed': choose_guarded_speed,
         'precision_stopping_envelope': Mock(return_value=(True, None)),
     })
@@ -149,13 +150,14 @@ def test_stale_departure_command_never_reaches_controller():
 
 def panel_test_class():
     return methods_in_source('operator_panel.py', 'OperatorBridge',
-                             ('_prepare_loaded_departure', '_on_departure_guard_ready',
+                             ('_prepare_loaded_departure', '_same_gate_routes', '_station_approach', '_on_departure_guard_ready',
                               '_validate_departure_on_fresh_scene',
                               '_fail_loaded_departure', '_scene_update',
                               '_complete_loaded_departure', '_dock_wait_watchdog',
                               '_publish_motion_owner', 'run_selected_mission'), {
         'math': math, 'json': json,
         'NavPath': NavPath,
+        'entrance_gate': entrance_gate, 'routes_from_gate': routes_from_gate,
         'String': Message,
         'plan_station_departure': plan_station_departure,
         'plan_is_current': plan_is_current,
@@ -202,6 +204,7 @@ def panel_fixture():
 def test_departure_preview_preserves_working_pickup_and_requires_explicit_run():
     gui = panel_fixture()
     routes = [('station-to-home', {
+        'source': 'station', 'source_entrance': 'east',
         'execution_approved': True, '_database_execution_approved': True}, [])]
     gui._prepare_loaded_departure('station', 0, (0, 0, 0), 'HOME', routes, [])
     assert gui._pending_departure is not None
@@ -344,6 +347,7 @@ def test_owner_arbitration_favors_loaded_departure_and_stops_when_disarmed():
 def test_run_requires_current_preview_then_waits_for_departure_guard():
     gui = panel_fixture()
     routes = [('station-to-home', {
+        'source': 'station', 'source_entrance': 'east',
         'execution_approved': True, '_database_execution_approved': True}, [])]
     gui._prepare_loaded_departure('station', 0, (0, 0, 0), 'HOME', routes, [])
     gui._follow_goal_pending = False
@@ -364,6 +368,7 @@ def test_departure_preview_rejects_unapproved_source_and_preserves_no_motion():
     gui._approach_provider.return_value = (
         {'execution_approved': False}, [[2, 0, 0], [1, 0, 0], [0, 0, 0]])
     routes = [('station-to-home', {
+        'source': 'station', 'source_entrance': 'east',
         'execution_approved': True, '_database_execution_approved': True}, [])]
     with pytest.raises(ValueError, match='not execution-approved'):
         gui._prepare_loaded_departure('station', 0, (0, 0, 0), 'HOME', routes, [])
@@ -378,3 +383,13 @@ def test_loaded_departure_yaw_rate_respects_4ws_steering_limit():
     output = gate._output.publish.call_args.args[0].twist
     assert output.linear.x == pytest.approx(0.5)
     assert abs(output.angular.z) <= 2 * abs(output.linear.x) / 0.58 + 1e-9
+
+
+def test_departure_is_refused_when_no_route_leaves_by_the_entry_gate():
+    gui = panel_fixture()
+    routes = [('station-to-home', {
+        'source': 'station', 'source_entrance': 'north',
+        'execution_approved': True, '_database_execution_approved': True}, [])]
+    with pytest.raises(ValueError, match='east gate'):
+        gui._prepare_loaded_departure('station', 0, (0, 0, 0), 'HOME', routes, [])
+    assert gui._pending_departure is None
