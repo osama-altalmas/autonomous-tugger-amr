@@ -21,6 +21,39 @@ def _remaining_length(poses, index):
                zip(poses[index:], poses[index + 1:]))
 
 
+def home_alignment_yaw(robot_yaw):
+    """Return the HOME heading for the end the robot arrived with: 0 or pi.
+
+    The controller decides which end leads, so either end may arrive first.
+    HOME checks that the robot is square to the marker, not which end leads.
+    """
+    if not math.isfinite(robot_yaw):
+        raise ValueError('Robot heading must be finite')
+    return 0.0 if math.cos(robot_yaw) >= 0.0 else math.pi
+
+
+def entrance_gate(approach_poses):
+    """Name the gate an approach enters by, from its staging point to the dock."""
+    if len(approach_poses) < 2:
+        raise ValueError('A station approach needs at least two poses')
+    dx = float(approach_poses[0][0]) - float(approach_poses[-1][0])
+    dy = float(approach_poses[0][1]) - float(approach_poses[-1][1])
+    if abs(dx) >= abs(dy):
+        return 'east' if dx > 0 else 'west'
+    return 'north' if dy > 0 else 'south'
+
+
+def routes_from_gate(candidates, station, gate):
+    """Keep only routes leaving ``station`` by the gate the robot entered it by.
+
+    The environment cannot enter by one gate and leave by another. An empty
+    result means no such route exists, and the caller must refuse the mission.
+    """
+    return [candidate for candidate in candidates
+            if candidate[1].get('source') == station and
+            candidate[1].get('source_entrance') == gate]
+
+
 def select_destination_plan(destination, candidates, robot_pose,
                             direct_distance=DIRECT_REJOIN_DISTANCE_M,
                             max_connector_distance=MAX_CONNECTOR_DISTANCE_M,

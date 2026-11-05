@@ -160,6 +160,12 @@ def cargo_box(name, pose, extra_xy=0.03):
                z + 0.28, z + 0.31)
 
 
+# Same band as the lift's "down" check. A measured cargo sits a little below the
+# commanded lift height (0.7 mm in Gazebo), so landing on the support legs must
+# not be reported as penetration.
+SUPPORT_CONTACT_TOLERANCE_M = 0.005
+
+
 def lift_sweep_clear(robot_pose, cargo_pose, other_cargo_pose, static_boxes,
                      lift_position, target_lift, *, margin=0.01):
     """Sample lift travel and allow support-leg contact without penetration.
@@ -184,7 +190,7 @@ def lift_sweep_clear(robot_pose, cargo_pose, other_cargo_pose, static_boxes,
         cargo = cargo_box('cargo', moved)
         for obstacle in obstacles:
             if (('_legs/' in obstacle.name or '_legs::' in obstacle.name) and
-                    cargo.z_min >= obstacle.z_max - 1e-6):
+                    cargo.z_min >= obstacle.z_max - SUPPORT_CONTACT_TOLERANCE_M):
                 continue  # Intended support contact, not penetration.
             if boxes_overlap(cargo, obstacle, margin=margin):
                 return False, (cargo.name, obstacle.name)

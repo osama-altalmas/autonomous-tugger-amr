@@ -11,7 +11,8 @@ from geometry_msgs.msg import TwistStamped
 from rclpy.time import Time
 
 from tugger_control.clearance_2_5d import Box
-from tugger_control.sim_motion_gate import SimMotionGate
+from tugger_control.sim_motion_gate import (
+    SimMotionGate, payload_at_time, payload_for_robot_pose, scene_time)
 
 
 def gate(obstacles=()):
@@ -59,7 +60,8 @@ def test_loaded_route_uses_unloaded_straight_and_curve_speed_profile():
     item._requests['NAV'].twist.angular.z = 0.0
     SimMotionGate._tick(item)
     result = item._output.publish.call_args.args[0]
-    assert result.twist.linear.x == pytest.approx(1.2)
+    # Requests stay under the 1.2 m/s guard limit so overshoot cannot fail it.
+    assert result.twist.linear.x == pytest.approx(1.15)
     item._requests['NAV'].twist.angular.z = 0.6
     SimMotionGate._tick(item)
     result = item._output.publish.call_args.args[0]
@@ -207,6 +209,8 @@ def test_snapshot_rejects_disagreement_between_cargo_pose_and_collision_scene():
     item._lift_at = item._speed_at = 9.9
     item._wheel_speed_at = 9.9
     item._payloads_at = {0: 9.9, 3: 9.9}
+    item._payload_history = {0: [], 3: []}
+    item._robot_truth = None
     item._tf = Mock()
     item._tf.lookup_transform.return_value = SimpleNamespace(
         header=SimpleNamespace(stamp=SimpleNamespace(sec=10, nanosec=0)),
@@ -251,3 +255,39 @@ def test_operator_bridge_uses_simulation_time_for_scene_freshness():
                and any(keyword.arg == 'value' and isinstance(keyword.value, ast.Constant)
                        and keyword.value.value is True for keyword in node.keywords)
                for node in ast.walk(init))
+
+
+def test_payload_is_compared_at_the_robot_pose_time():
+    history = [(9.90, 'old'), (9.95, 'match'), (10.00, 'latest')]
+    assert payload_at_time(history, 9.95, 'latest') == 'match'
+    # Nothing recorded near that time: fall back rather than invent a match.
+    assert payload_at_time(history, 5.0, 'latest') == 'latest'
+    assert payload_at_time([], 9.95, 'latest') == 'latest'
+
+
+def test_real_cargo_shift_still_stops_motion_with_aligned_payload():
+    item = gate()
+    item._aligned_payloads = {0: (0.05, 0.0, 0.065, 0.0)}
+    SimMotionGate._tick(item)
+    result = item._output.publish.call_args.args[0]
+    assert result.twist.linear.x == 0.0
+
+
+def test_estimate_lag_is_not_cargo_shift_but_real_shift_is():
+    cargo = (10.0, 0.0, 0.065, 0.0)
+    history = [(5.0, cargo)]
+    # Estimate lags 6 cm behind the truth; cargo sits exactly on the robot.
+    aligned = payload_for_robot_pose((9.94, 0.0, 0.0), (5.0, 10.0, 0.0), history, cargo)
+    assert aligned[0] == pytest.approx(9.94)
+    # Cargo really is 5 cm off the robot: that offset survives the conversion.
+    aligned = payload_for_robot_pose((9.94, 0.0, 0.0), (5.0, 9.95, 0.0), history, cargo)
+    assert aligned[0] - 9.94 == pytest.approx(0.05)
+    # No truth available: fall back to the stricter direct comparison.
+    assert payload_for_robot_pose((9.94, 0.0, 0.0), None, history, cargo) == cargo
+
+
+def test_scene_time_is_read_from_the_scene_and_absent_values_fall_back():
+    assert scene_time('{"stamp": 12.5, "boxes": []}') == 12.5
+    assert scene_time('{}') is None
+    assert scene_time('not json') is None
+    assert scene_time(None) is None

@@ -7,9 +7,9 @@
 # ROUTE_PROFILE:
 #   straight sections: 1.2 m/s
 #   curves:             0.6 m/s (the motion gate preserves curvature)
-#   docking approach:   0.4 m/s
+#   docking approach:   0.35 m/s (motion gate limit 0.4 m/s)
 #   loaded departure:   0.5 m/s
-#   loaded route:       same 1.2 / 0.6 m/s profile as unloaded travel
+#   loaded route:       1.15 / 0.6 m/s (motion gate limit 1.2 m/s)
 #
 # FINAL_PROFILE:
 #   straight sections: 1.2 m/s

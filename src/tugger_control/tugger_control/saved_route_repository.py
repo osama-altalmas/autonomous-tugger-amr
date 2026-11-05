@@ -66,6 +66,11 @@ class PrecisionDockingRepository:
 
     def approach(self, station, entry_pose=None):
         filename = f'HOME__TO__{station}__REFINED.json'
+        if not (self.directory / filename).exists():
+            # Stops such as HOME have only per-gate candidates, no Phase 14 file.
+            if entry_pose is None:
+                raise ValueError(f'{station}: an entrance is needed to choose its approach')
+            return self._entrance_approach(station, entry_pose)
         route = json.loads((self.directory / filename).read_text(encoding='utf-8'))
         validation = route.get('validation', {})
         if route.get('schema') != 'amr_phase14_two_segment_refined_v1':
@@ -115,7 +120,8 @@ class PrecisionDockingRepository:
         for candidate in data.get('candidates', {}).values():
             if candidate.get('destination') != station:
                 continue
-            if (candidate.get('validation', {}).get('2d_leg_geometry') != 'PASSED' or
+            if (candidate.get('validation', {}).get('2d_leg_geometry') not in
+                    ('PASSED', 'NOT_APPLICABLE_NO_LEGS') or
                     not candidate.get('static_2_5d_sampled_audit', {}).get('passed')):
                 continue
             poses = candidate.get('complete_poses')

@@ -46,6 +46,9 @@ def _bridge():
         _cargo_pose_seen_at={0: None, 3: None},
         get_clock=Mock(return_value=SimpleNamespace(now=Mock(return_value=1))),
         docked_station=None,
+        _pass_through=('HOME',),
+        _station_centers={'HOME': [0.0, 0.0]},
+        _infer_pass_through_dock=Mock(),
     )
 
 
@@ -618,3 +621,93 @@ def test_late_success_after_cancellation_does_not_start_segment_two():
     OperatorBridge._on_follow_result(bridge, future)
     bridge._start_precision_segment.assert_not_called()
     assert bridge._execution_done.call_args.args == (False, GoalStatus.STATUS_CANCELED)
+
+
+def _exit_bridge():
+    bridge = _bridge()
+    bridge._lift_position = 0.0
+    bridge._collision_scene = 'scene'
+    bridge._path_pub = Mock()
+    bridge._plan_ready = Mock()
+    bridge._pose = Mock(return_value=Mock())
+    bridge._approach_provider = Mock(return_value=({}, []))
+    bridge._station_approach = Mock(return_value=[])
+    bridge._same_gate_routes = Mock(return_value=[])
+    bridge._execution_done = Mock()
+    bridge.execute_destination = Mock()
+    bridge._station_exit_active = True
+    bridge._station_exit_target = ('HOME', [], [])
+    bridge._departure_exit_pose = (0.025, 0.025, 0.0)
+    bridge._dock_precision_mode = True
+    bridge._motion_armed = True
+    bridge.docked_station = 'cargo_dropoff_northwest'
+    return bridge
+
+
+def test_station_exit_completion_requires_a_new_plan_from_the_measured_pose():
+    bridge = _exit_bridge()
+    OperatorBridge._complete_station_exit(bridge, True, 4)
+    bridge.execute_destination.assert_called_once_with('HOME', [], [])
+    bridge._execution_done.assert_not_called()
+    assert bridge.docked_station is None
+    assert not bridge._station_exit_active and not bridge._dock_precision_mode
+
+
+def test_failed_station_exit_stops_and_keeps_the_docked_state():
+    bridge = _exit_bridge()
+    OperatorBridge._complete_station_exit(bridge, False, 6)
+    bridge._execution_done.assert_called_once_with(False, 6)
+    bridge.execute_destination.assert_not_called()
+    assert bridge.docked_station == 'cargo_dropoff_northwest'
+
+
+def test_station_exit_is_refused_with_the_lift_raised():
+    bridge = _exit_bridge()
+    bridge._lift_position = 0.065
+    with pytest.raises(ValueError, match='lift'):
+        OperatorBridge._prepare_station_exit(
+            bridge, 'cargo_dropoff_northwest', (0.0, 0.0, 0.0), 'HOME', [], [])
+    assert bridge._pending_path is None
+
+
+def _continue_bridge(started_after):
+    bridge = _bridge()
+    calls = []
+
+    def run(_armed):
+        calls.append(1)
+        if len(calls) >= started_after:
+            bridge._active_follow = object()
+    bridge.run_selected_mission = run
+    bridge._motion_armed = True
+    bridge._mission_started = lambda: OperatorBridge._mission_started(bridge)
+    timers = []
+    bridge.create_timer = lambda _period, callback: timers.append(callback) or Mock()
+    bridge._continue_attempt = lambda attempt: OperatorBridge._continue_attempt(bridge, attempt)
+    return bridge, calls, timers
+
+
+def test_automatic_continuation_retries_a_momentary_block():
+    bridge, calls, timers = _continue_bridge(started_after=2)
+    bridge._continue_attempt(1)
+    assert len(calls) == 1 and len(timers) == 1
+    timers[0]()
+    assert len(calls) == 2 and bridge._active_follow is not None
+
+
+def test_automatic_continuation_gives_up_and_says_so():
+    bridge, calls, timers = _continue_bridge(started_after=99)
+    bridge._continue_attempt(1)
+    while timers:
+        timers.pop(0)()
+    assert len(calls) == 5
+    assert 'press RUN' in bridge._report.call_args.args[0]
+
+
+def test_robot_on_home_centre_counts_as_docked_there():
+    bridge = _bridge()
+    OperatorBridge._infer_pass_through_dock(bridge, (0.005, -0.004, 3.14))
+    assert bridge.docked_station == 'HOME'
+    bridge.docked_station = None
+    OperatorBridge._infer_pass_through_dock(bridge, (0.04, 0.0, 0.0))
+    assert bridge.docked_station is None

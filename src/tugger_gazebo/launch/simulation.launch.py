@@ -1,14 +1,23 @@
 import os
 
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription, SetEnvironmentVariable
+from launch.actions import (
+    DeclareLaunchArgument, IncludeLaunchDescription, RegisterEventHandler,
+    SetEnvironmentVariable)
+from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import Command
+from launch.substitutions import Command, LaunchConfiguration
 
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
 from ament_index_python.packages import get_package_prefix, get_package_share_directory
+
+
+# A busy machine can take longer than the spawner's default 5 s to start the
+# control loop. A timed-out switch leaves that controller inactive for the
+# whole session (seen with lift_controller), so allow more time.
+SWITCH_TIMEOUT_S = '30'
 
 
 def generate_launch_description():
@@ -91,7 +100,7 @@ def generate_launch_description():
             )
         ),
         launch_arguments={
-            'gz_args': f'-r {world_file}'
+            'gz_args': [f'-r {world_file} ', LaunchConfiguration('gz_extra_args')]
         }.items()
     )
 
@@ -187,7 +196,8 @@ def generate_launch_description():
         executable='spawner',
         arguments=[
             'joint_state_broadcaster',
-            '--controller-manager', '/controller_manager'
+            '--controller-manager', '/controller_manager',
+            '--switch-timeout', SWITCH_TIMEOUT_S
         ],
         output='screen'
     )
@@ -198,6 +208,7 @@ def generate_launch_description():
         arguments=[
             'steering_controller',
             '--controller-manager', '/controller_manager',
+            '--switch-timeout', SWITCH_TIMEOUT_S,
             '--param-file',
             os.path.join(
                 gazebo_pkg,
@@ -214,6 +225,7 @@ def generate_launch_description():
         arguments=[
             'traction_controller',
             '--controller-manager', '/controller_manager',
+            '--switch-timeout', SWITCH_TIMEOUT_S,
             '--param-file',
             os.path.join(
                 gazebo_pkg,
@@ -231,6 +243,7 @@ def generate_launch_description():
         arguments=[
             'lift_controller',
             '--controller-manager', '/controller_manager',
+            '--switch-timeout', SWITCH_TIMEOUT_S,
             '--param-file',
             os.path.join(
                 gazebo_pkg,
@@ -242,6 +255,9 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        # Empty keeps the normal GUI. Validation runs pass
+        # '-s --headless-rendering' so cameras render without a window.
+        DeclareLaunchArgument('gz_extra_args', default_value=''),
         set_gazebo_resource_path,
         set_gazebo_plugin_path,
         robot_state_publisher,
@@ -252,8 +268,13 @@ def generate_launch_description():
         camera_bridge,
         cargo_attachment_bridge,
         spawn_robot,
-        joint_state_broadcaster_spawner,
-        steering_controller_spawner,
-        traction_controller_spawner,
-        lift_controller_spawner
+        # Controllers start only once the robot exists in Gazebo.
+        RegisterEventHandler(OnProcessExit(
+            target_action=spawn_robot,
+            on_exit=[
+                joint_state_broadcaster_spawner,
+                steering_controller_spawner,
+                traction_controller_spawner,
+                lift_controller_spawner,
+            ])),
     ])

@@ -74,3 +74,34 @@ def test_plan_must_be_rechecked_when_pose_or_heading_changed_since_preview():
     assert current['current'] is True
     assert moved['current'] is False
     assert turned['current'] is False
+
+
+def test_entrance_gate_is_the_side_the_approach_comes_from():
+    from tugger_control.mission_planning import entrance_gate
+    assert entrance_gate([(-15.475, -6.975, 0), (-17.5, -7.0, 0)]) == 'east'
+    assert entrance_gate([(-17.475, 5.025, 0), (-17.5, 7.0, 0)]) == 'south'
+    assert entrance_gate([(17.525, -4.975, 0), (17.5, -7.0, 0)]) == 'north'
+    assert entrance_gate([(15.525, 7.025, 0), (17.5, 7.0, 0)]) == 'west'
+
+
+def test_only_routes_leaving_by_the_entry_gate_are_offered():
+    from tugger_control.mission_planning import routes_from_gate
+    good = ('a', {'source': 'S2', 'source_entrance': 'south'}, [])
+    wrong_gate = ('b', {'source': 'S2', 'source_entrance': 'east'}, [])
+    other_station = ('c', {'source': 'S1', 'source_entrance': 'south'}, [])
+    assert routes_from_gate([good, wrong_gate, other_station], 'S2', 'south') == [good]
+    assert routes_from_gate([wrong_gate], 'S2', 'south') == []
+
+
+def test_home_accepts_whichever_end_the_robot_arrives_with():
+    import math
+
+    import pytest
+
+    from tugger_control.mission_planning import home_alignment_yaw
+    assert home_alignment_yaw(0.02) == 0.0
+    assert home_alignment_yaw(-0.02) == 0.0
+    assert home_alignment_yaw(3.134) == math.pi
+    assert home_alignment_yaw(-3.134) == math.pi
+    with pytest.raises(ValueError):
+        home_alignment_yaw(float('nan'))
