@@ -106,7 +106,7 @@ class OperatorBridge(Node):
         self._path_validator = self.create_client(IsPathValid, '/is_path_valid')
         self._path_pub = self.create_publisher(NavPath, '/mission/planned_path', 10)
         self._precision_cmd_pub = self.create_publisher(
-            TwistStamped, '/tugger/precision_cmd_vel', 10)
+            TwistStamped, '/tugger/docking/cmd_vel', 10)
         self._motion_owner_pub = self.create_publisher(String, '/tugger/motion_owner', 10)
         self._lift_pub = self.create_publisher(
             Float64MultiArray, '/lift_controller/commands', 10)

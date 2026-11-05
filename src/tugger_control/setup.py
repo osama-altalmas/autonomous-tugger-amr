@@ -50,6 +50,7 @@ setup(
             'four_ws_odometry = tugger_control.four_ws_odometry:main',
             'qr_docking_vision = tugger_control.qr_docking_vision:main',
             'sim_motion_gate = tugger_control.sim_motion_gate:main',
+            'docking_precision_controller = tugger_control.docking_precision_controller:main',
             'imu_orientation_plotter = tugger_control.imu_orientation_plotter:main',
         ],
         'rqt_gui_py.plugin': [

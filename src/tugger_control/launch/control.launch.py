@@ -77,10 +77,19 @@ def generate_launch_description():
         parameters=[{'use_sim_time': True}],
     )
 
+    docking_precision_controller = Node(
+        package='tugger_control',
+        executable='docking_precision_controller',
+        name='tugger_docking_precision_controller',
+        output='screen',
+        parameters=[{'use_sim_time': True}],
+    )
+
     return LaunchDescription([
         four_ws_controller,
         four_ws_odometry,
         ekf,
         qr_docking_vision,
+        docking_precision_controller,
         sim_motion_gate,
     ])

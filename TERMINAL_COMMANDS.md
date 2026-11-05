@@ -14,7 +14,7 @@ export IGN_IP=127.0.0.1
 ros2 launch tugger_gazebo simulation.launch.py
 ```
 
-## T2 — 4WS, odometry, EKF, QR vision, motion guard
+## T2 — 4WS, odometry, EKF, QR vision, docking controller, motion guard
 
 ```bash
 cd ~/Autonomous_Tugger_Project_V2/autonomous_tugger_ws
@@ -131,7 +131,10 @@ Precision docking uses `/docking/follow_path` and `/tugger/dock_nav_cmd_vel`.
 Both command streams pass through `tugger_sim_motion_gate` before reaching
 the 4WS controller.
 
-T2 starts both `qr_docking_vision` and `tugger_sim_motion_gate`. Do not start either node separately.
-
+T2 starts `qr_docking_vision`, `docking_precision_controller`, and
+`tugger_sim_motion_gate`. The docking controller accepts only
+`/tugger/docking/cmd_vel`, verifies fresh docking ownership, and forwards to
+`/tugger/precision_cmd_vel`. Do not start these nodes separately.
+new angular velocity = old angular velocity × reduced speed / requested speed
 Start order: **T1 → T2 → T3 → T4 → T8 map activation → T5 → T6**. T7 and T9 are optional.
 Do not start a second ground-truth bridge, map server, Nav2 launch, or operator panel.

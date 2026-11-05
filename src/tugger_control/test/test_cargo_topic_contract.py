@@ -61,3 +61,19 @@ def test_nav2_has_separate_normal_and_docking_follow_path_controllers():
     assert "'/tugger/dock_nav_cmd_vel'" in launch
     assert "'/tugger/nav_cmd_vel'" in launch
     assert 'lifecycle_manager_docking' in launch
+
+
+def test_precision_commands_use_isolated_docking_controller_boundary():
+    """Keep docking command ownership separate from the 4WS actuator path."""
+    workspace = ROOT.parent
+    panel = (workspace / 'src/tugger_control/tugger_control/operator_panel.py').read_text()
+    launch = (workspace / 'src/tugger_control/launch/control.launch.py').read_text()
+    controller = (workspace / 'src/tugger_control/tugger_control/'
+                  'docking_precision_controller.py').read_text()
+    gate = (workspace / 'src/tugger_control/tugger_control/sim_motion_gate.py').read_text()
+    assert "'/tugger/docking/cmd_vel'" in panel
+    assert "executable='docking_precision_controller'" in launch
+    assert "'/tugger/docking/cmd_vel'" in controller
+    assert "'/tugger/precision_cmd_vel'" in controller
+    assert "'/tugger/precision_cmd_vel'" in gate
+    assert "'/tugger/guarded_cmd_vel'" in gate
