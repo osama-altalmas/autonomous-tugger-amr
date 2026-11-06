@@ -101,3 +101,26 @@ def test_stopping_envelope_rejects_invalid_operating_conditions(lift, velocity, 
     with pytest.raises(ValueError):
         precision_stopping_envelope((0, 0, 0), lift, obstacles, 0.0, velocity,
                                     max_speed=0.05)
+
+
+def test_measured_curvature_never_exceeds_full_lock_and_invalid_means_full_lock():
+    from tugger_control.precision_scene_clearance import FULL_LOCK_CURVATURE, stopping_curvature
+    assert stopping_curvature(0.5) == 0.5
+    assert stopping_curvature(99.0) == FULL_LOCK_CURVATURE
+    assert stopping_curvature(float('nan')) == FULL_LOCK_CURVATURE
+    assert stopping_curvature(-1.0) == FULL_LOCK_CURVATURE
+
+
+def test_straight_driving_allows_more_speed_but_never_through_an_obstacle():
+    from tugger_control.clearance_2_5d import Box
+    from tugger_control.precision_scene_clearance import (
+        FULL_LOCK_CURVATURE, precision_stopping_envelope)
+    leg = [Box('leg', 0.0, 0.53, 0.0, 0.04, 0.04, 0.0, 0.28)]
+    straight = precision_stopping_envelope((0.0, 0.0, 0.0), 0.002, leg, 0.25, 0.25,
+                                           curvature_bound=0.4)
+    full = precision_stopping_envelope((0.0, 0.0, 0.0), 0.002, leg, 0.25, 0.25,
+                                       curvature_bound=FULL_LOCK_CURVATURE)
+    assert straight[0] and not full[0]
+    touching = [Box('leg', 0.0, 0.30, 0.0, 0.04, 0.04, 0.0, 0.28)]
+    assert not precision_stopping_envelope((0.0, 0.0, 0.0), 0.002, touching, 0.02, 0.02,
+                                           curvature_bound=0.0)[0]

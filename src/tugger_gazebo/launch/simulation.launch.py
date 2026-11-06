@@ -2,8 +2,8 @@ import os
 
 from launch import LaunchDescription
 from launch.actions import (
-    DeclareLaunchArgument, IncludeLaunchDescription, RegisterEventHandler,
-    SetEnvironmentVariable)
+    DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription,
+    RegisterEventHandler, SetEnvironmentVariable)
 from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import Command, LaunchConfiguration
@@ -254,6 +254,15 @@ def generate_launch_description():
         output='screen'
     )
 
+    # Hold the lift at 2 mm as soon as its controller is active. A lift left
+    # uncommanded can come to rest exactly on its lower limit, where Gazebo
+    # latches the joint for the rest of the session. Waits for the controller
+    # to subscribe so the hold is not lost.
+    lift_hold = ExecuteProcess(
+        cmd=['ros2', 'topic', 'pub', '--once', '-w', '1', '/lift_controller/commands',
+             'std_msgs/msg/Float64MultiArray', '{data: [0.002]}'],
+        output='screen')
+
     return LaunchDescription([
         # Empty keeps the normal GUI. Validation runs pass
         # '-s --headless-rendering' so cameras render without a window.
@@ -277,4 +286,6 @@ def generate_launch_description():
                 traction_controller_spawner,
                 lift_controller_spawner,
             ])),
+        RegisterEventHandler(OnProcessExit(
+            target_action=lift_controller_spawner, on_exit=[lift_hold])),
     ])

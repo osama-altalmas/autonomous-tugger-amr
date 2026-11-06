@@ -14,7 +14,10 @@ from unittest.mock import Mock
 
 import pytest
 
+from tugger_control.lift_geometry import LIFT_CONTACT_M, LIFT_UP_M, lift_is_raised
+
 from tugger_control.cargo_policy import CARGO_IDS, confirmed_cargo
+from tugger_control.precision_scene_clearance import FULL_LOCK_CURVATURE
 from tugger_control.loaded_motion_guard import choose_guarded_speed
 from tugger_control.mission_planning import plan_is_current
 from tugger_control.station_departure import plan_station_departure
@@ -67,10 +70,13 @@ def time_value(seconds):
 
 def gate_test_class():
     return methods_in_source('sim_motion_gate.py', 'SimMotionGate',
-                             ('_tick', '_on_owner', '_fresh'), {
+                             ('_tick', '_on_owner', '_fresh', '_stopping_curvature'), {
         'math': math, 'time': __import__('time'),
         'TwistStamped': Message, 'Bool': Message, 'String': Message,
         'confirmed_cargo': confirmed_cargo, 'CARGO_IDS': CARGO_IDS,
+        'lift_is_raised': lift_is_raised,
+        'FULL_LOCK_CURVATURE': FULL_LOCK_CURVATURE, 'STOPPING_CURVATURE_MARGIN': 0.3,
+        'CAMERA_SPEED_LIMIT': 0.05, 'PRECISION_APPROACH_LIMIT': 0.4,
         'choose_guarded_speed': choose_guarded_speed,
         'precision_stopping_envelope': Mock(return_value=(True, None)),
     })
@@ -101,7 +107,7 @@ def gate_fixture():
     gate._request_at = {'NAV': None, 'PRECISION': None, 'DOCK_NAV': 9.9}
     gate._snapshot = Mock(return_value=((0, 0, 0), []))
     gate._payloads = {0: (0, 0, .065, 0), 3: (10, 10, 0, 0)}
-    gate._lift = 0.065
+    gate._lift = LIFT_UP_M
     gate._speed = 0.0
     gate._wheel_speed = 0.0
     return gate

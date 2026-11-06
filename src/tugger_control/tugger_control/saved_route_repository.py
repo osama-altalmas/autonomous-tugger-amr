@@ -139,3 +139,65 @@ class PrecisionDockingRepository:
             raise ValueError('No statically checked precision candidate matches this entrance')
         _, candidate, poses = min(choices, key=lambda item: item[0])
         return candidate, poses
+
+
+class MissionPathRepository:
+    """Single-segment mission paths, offered forward and in reverse.
+
+    A path from A to B, followed backwards, is a path from B to A: the robot
+    can lead with either end, and the reversed undock is the arrival approach.
+    """
+
+    def __init__(self, directory):
+        self.directory = Path(directory)
+        self.index = json.loads((self.directory / 'mission_paths.json').read_text())
+
+    def _load(self, key):
+        entry = self.index['paths'][key]
+        data = json.loads((self.directory / entry['file']).read_text())
+        if data.get('schema') != 'amr_single_segment_mission_path_v1':
+            raise ValueError(f'Unsupported mission path: {key}')
+        poses = [[float(v) for v in pose] for pose in data['poses']]
+        if len(poses) < 2 or any(len(p) != 3 or not all(math.isfinite(v) for v in p)
+                                 for p in poses):
+            raise ValueError(f'Mission path pose data is invalid: {key}')
+        return data, poses
+
+    @staticmethod
+    def _meta(data, approved, key, reversed_path):
+        return {
+            'source': data['source'], 'target': data['target'],
+            'source_entrance': data['source_entrance'],
+            'target_entrance': data['target_entrance'],
+            'markers': dict(data['markers']), 'length_m': data['length_m'],
+            'execution_approved': approved, '_database_execution_approved': approved,
+            'mission_path': key, 'reversed': reversed_path,
+        }
+
+    def paths_to(self, destination):
+        """Every mission path that ends at ``destination``, either direction."""
+        matches = []
+        for key, entry in sorted(self.index['paths'].items()):
+            if destination not in (entry['target'], entry['source']):
+                continue
+            data, poses = self._load(key)
+            approved = data.get('execution_approved') is True
+            if entry['target'] == destination:
+                matches.append((key, self._meta(data, approved, key, False), poses))
+            if entry['source'] == destination:
+                last = len(poses) - 1
+                reverse = {
+                    'source': data['target'], 'target': data['source'],
+                    'source_entrance': data['target_entrance'],
+                    'target_entrance': data['source_entrance'],
+                    'markers': {'route_start': last - data['markers']['approach_start'],
+                                'approach_start': last - data['markers']['route_start']},
+                    'length_m': data['length_m'],
+                }
+                poses_back = [[x, y, math.atan2(math.sin(yaw + math.pi), math.cos(yaw + math.pi))]
+                              for x, y, yaw in reversed(poses)]
+                matches.append((f'{key} (reversed)',
+                                self._meta(reverse, approved, key, True), poses_back))
+        if not matches:
+            raise ValueError(f'No mission paths reach destination: {destination}')
+        return matches

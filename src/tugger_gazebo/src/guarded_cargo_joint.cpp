@@ -104,12 +104,13 @@ public:
     const auto delta = child_pose.Pos() - parent_pose.Pos();
     const double planar = std::hypot(delta.X(), delta.Y());
     // Current simulated cargo has a 0.28 m underside and the lift platform
-    // is 15 mm thick. Reject a joint request outside the physical capture band.
+    // is 15 mm thick. Attach only at contact: the platform must touch the
+    // cargo (gap at most 5 mm), so the cargo is carried, not held across air.
     const double vertical_gap = child_pose.Pos().Z() + 0.28 -
                                 (parent_pose.Pos().Z() + 0.0075);
     const double axis_error = std::abs(std::remainder(
       child_pose.Rot().Yaw() - parent_pose.Rot().Yaw(), M_PI / 2.0));
-    if (planar > 0.03 || vertical_gap < -0.01 || vertical_gap > 0.06 ||
+    if (planar > 0.03 || vertical_gap < -0.01 || vertical_gap > 0.005 ||
         axis_error > 0.05) {
       Publish("attach_rejected");
       return;

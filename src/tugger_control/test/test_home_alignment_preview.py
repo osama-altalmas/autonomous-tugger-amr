@@ -8,10 +8,11 @@ import pytest
 pytest.importorskip('rclpy')
 pytest.importorskip('python_qt_binding')
 from tugger_control.operator_panel import OperatorBridge
+from tugger_control.lift_geometry import LIFT_CONTACT_M, LIFT_DOWN_M, LIFT_UP_M
 
 
 def _bridge():
-    return SimpleNamespace(
+    bridge = SimpleNamespace(
         _begin_preflight=Mock(return_value=1),
         _confirmed_cargo=Mock(return_value=None),
         _robot_pose=Mock(return_value=(0.025, 0.025, 0.0)),
@@ -50,6 +51,12 @@ def _bridge():
         _station_centers={'HOME': [0.0, 0.0]},
         _infer_pass_through_dock=Mock(),
     )
+    bridge._report_run_block = lambda message: OperatorBridge._report_run_block(
+        bridge, message)
+    for name in ('_station_entry_approach', '_dispatch_decision', '_start_live_plan'):
+        setattr(bridge, name, getattr(OperatorBridge, name).__get__(bridge))
+    bridge._live_planner = None
+    return bridge
 
 
 def test_alignment_requires_fresh_stationary_wheel_odometry():
@@ -295,6 +302,7 @@ def test_pickup_is_blocked_if_height_aware_clearance_is_unavailable():
     assert bridge._execution_done.call_args.args[0] is False
 
 
+
 def test_pickup_sequence_waits_for_post_command_attachment_and_lift_feedback():
     from rclpy.time import Time
     bridge = _bridge()
@@ -315,20 +323,31 @@ def test_pickup_sequence_waits_for_post_command_attachment_and_lift_feedback():
     bridge.cargo.assert_not_called()
     clock.now.return_value = Time(seconds=11)
     OperatorBridge._advance_cargo_operation(bridge)
+    # First the platform rises to touch the cargo; nothing is attached yet.
+    bridge.lift.assert_called_once_with(LIFT_CONTACT_M)
+    bridge.cargo.assert_not_called()
+    clock.now.return_value = Time(seconds=12)
+    for second in (12, 13):
+        clock.now.return_value = Time(seconds=second)
+        bridge._lift_seen_at = Time(seconds=second)
+        bridge._lift_position = LIFT_CONTACT_M
+        bridge._cargo_seen_at[0] = Time(seconds=second)
+        bridge._cargo_pose_seen_at[0] = Time(seconds=second)
+        OperatorBridge._advance_cargo_operation(bridge)
     bridge.cargo.assert_called_once_with(0, True)
     bridge._execution_done.assert_not_called()
-    clock.now.return_value = Time(seconds=12)
-    bridge._cargo_seen_at[0] = Time(seconds=12)
+    clock.now.return_value = Time(seconds=13.5)
+    bridge._cargo_seen_at[0] = Time(seconds=13.5)
     bridge._cargo_states[0] = 'attached'
     OperatorBridge._advance_cargo_operation(bridge)
-    bridge.lift.assert_called_once_with(0.065)
+    assert bridge.lift.call_args.args[0] == LIFT_UP_M
     bridge._execution_done.assert_not_called()
-    clock.now.return_value = Time(seconds=13)
-    bridge._cargo_seen_at[0] = Time(seconds=13)
-    bridge._lift_seen_at = Time(seconds=13)
-    bridge._lift_position = 0.065
+    clock.now.return_value = Time(seconds=14)
+    bridge._cargo_seen_at[0] = Time(seconds=14)
+    bridge._lift_seen_at = Time(seconds=14)
+    bridge._lift_position = LIFT_UP_M
     bridge._cargo_poses[0] = (0, 0, 0.065, 0)
-    bridge._cargo_pose_seen_at[0] = Time(seconds=13)
+    bridge._cargo_pose_seen_at[0] = Time(seconds=14)
     OperatorBridge._advance_cargo_operation(bridge)
     assert bridge._execution_done.call_args.args[0] is True
 
@@ -366,7 +385,7 @@ def test_paired_dropoff_waits_for_lowering_then_detachment_feedback():
     bridge._expected_qr_is_fresh = Mock(return_value=True)
     bridge._cargo_clearance_guard = Mock(return_value=True)
     bridge._lift_seen_at = Time(seconds=10)
-    bridge._lift_position = 0.065
+    bridge._lift_position = LIFT_UP_M
     bridge._cargo_states = {0: 'attached', 3: 'detached'}
     bridge._cargo_seen_at = {0: Time(seconds=10), 3: Time(seconds=10)}
     bridge._cargo_poses[0] = (0, 0, 0.065, 0)
@@ -375,27 +394,32 @@ def test_paired_dropoff_waits_for_lowering_then_detachment_feedback():
     bridge.lift = Mock()
     bridge._execution_done = Mock()
     OperatorBridge._start_cargo_operation(bridge, 'cargo_dropoff_northwest')
-    bridge.lift.assert_called_once_with(0.0)
+    # Lower only to contact: the cargo comes to rest on its support.
+    bridge.lift.assert_called_once_with(LIFT_CONTACT_M)
     bridge.cargo.assert_not_called()
-    clock.now.return_value = Time(seconds=11)
-    bridge._cargo_seen_at[0] = Time(seconds=11)
-    bridge._lift_seen_at = Time(seconds=11)
-    bridge._lift_position = 0.0
-    bridge._cargo_poses[0] = (0, 0, 0, 0)
-    bridge._cargo_pose_seen_at[0] = Time(seconds=11)
-    OperatorBridge._advance_cargo_operation(bridge)
-    bridge.cargo.assert_not_called()
-    clock.now.return_value = Time(seconds=12)
-    bridge._cargo_seen_at[0] = Time(seconds=12)
-    bridge._lift_seen_at = Time(seconds=12)
-    bridge._cargo_pose_seen_at[0] = Time(seconds=12)
-    OperatorBridge._advance_cargo_operation(bridge)
+    for second in (11, 12):
+        clock.now.return_value = Time(seconds=second)
+        bridge._cargo_seen_at[0] = Time(seconds=second)
+        bridge._lift_seen_at = Time(seconds=second)
+        bridge._lift_position = LIFT_CONTACT_M
+        bridge._cargo_poses[0] = (0, 0, 0, 0)
+        bridge._cargo_pose_seen_at[0] = Time(seconds=second)
+        OperatorBridge._advance_cargo_operation(bridge)
     bridge.cargo.assert_called_once_with(0, False)
     bridge._execution_done.assert_not_called()
     clock.now.return_value = Time(seconds=13)
     bridge._cargo_seen_at[0] = Time(seconds=13)
     bridge._cargo_states[0] = 'detached'
     bridge._cargo_pose_seen_at[0] = Time(seconds=13)
+    OperatorBridge._advance_cargo_operation(bridge)
+    # Detached at contact; only now does the platform lower fully.
+    assert bridge.lift.call_args.args[0] == LIFT_DOWN_M
+    bridge._execution_done.assert_not_called()
+    clock.now.return_value = Time(seconds=14)
+    bridge._cargo_seen_at[0] = Time(seconds=14)
+    bridge._lift_seen_at = Time(seconds=14)
+    bridge._lift_position = LIFT_DOWN_M
+    bridge._cargo_pose_seen_at[0] = Time(seconds=14)
     OperatorBridge._advance_cargo_operation(bridge)
     assert bridge._execution_done.call_args.args[0] is True
 
@@ -711,3 +735,56 @@ def test_robot_on_home_centre_counts_as_docked_there():
     bridge.docked_station = None
     OperatorBridge._infer_pass_through_dock(bridge, (0.04, 0.0, 0.0))
     assert bridge.docked_station is None
+
+
+def test_lift_never_commands_the_latching_lower_limit():
+    from tugger_control.lift_geometry import LIFT_DOWN_M
+    bridge = _bridge()
+    bridge._lift_pub = Mock()
+    for requested in (0.0, -0.01, 0.5):
+        OperatorBridge.lift(bridge, requested)
+        sent = bridge._lift_pub.publish.call_args.args[0].data[0]
+        assert LIFT_DOWN_M <= sent <= LIFT_UP_M
+    assert LIFT_DOWN_M > 0.0
+
+
+def test_routine_guard_states_are_quiet_and_proximity_is_summarised():
+    from tugger_control.operator_panel import guard_status_text
+    assert guard_status_text('precision guarded') is None
+    assert guard_status_text('loaded clearance reducing speed') is None
+    text = guard_status_text(
+        "loaded stopping envelope intersects ('chassis', 'cargo_dropoff_southeast_legs', 'x')")
+    assert text == ('MOTION GUARD: slowing or holding near cargo_dropoff_southeast_legs '
+                    '(chassis).')
+    scoped = guard_status_text(
+        "precision stopping envelope intersects ('chassis', "
+        "'tugger_test::cargo_station_3_legs::legs_link::leg_0_0_collision')")
+    assert scoped == 'MOTION GUARD: slowing or holding near cargo_station_3_legs (chassis).'
+    assert guard_status_text('scene feed stale') == 'MOTION GUARD: scene feed stale.'
+
+
+def test_automatic_retries_report_only_the_final_block():
+    bridge, calls, timers = _continue_bridge(started_after=99)
+    reports = []
+    bridge._report = lambda message: reports.append(message)
+
+    def run(_armed):
+        calls.append(1)
+        OperatorBridge._report_run_block(bridge, 'RUN blocked: scene stale.')
+    bridge.run_selected_mission = run
+    bridge._continue_attempt(1)
+    while timers:
+        timers.pop(0)()
+    blocked = [line for line in reports if line.startswith('RUN blocked')]
+    assert len(blocked) == 1
+
+
+def test_first_lift_reading_sends_one_hold_command_never_below_down():
+    from tugger_control.lift_geometry import LIFT_DOWN_M
+    bridge = _bridge()
+    bridge.lift = Mock()
+    bridge._advance_cargo_operation = Mock()
+    message = SimpleNamespace(name=['lift_joint'], position=[0.0])
+    OperatorBridge._joint_state(bridge, message)
+    OperatorBridge._joint_state(bridge, message)
+    bridge.lift.assert_called_once_with(LIFT_DOWN_M)
