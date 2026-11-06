@@ -242,7 +242,10 @@ def test_simulation_launch_wires_nav_and_controller_through_gate():
     nav_strings = {node.value for node in ast.walk(navigation)
                    if isinstance(node, ast.Constant) and isinstance(node.value, str)}
     assert {'sim_motion_gate', '/cmd_vel', '/tugger/guarded_cmd_vel'} <= control_strings
-    assert {'controller_server', 'behavior_server', '/tugger/nav_cmd_vel'} <= nav_strings
+    assert {'controller_server', '/tugger/nav_cmd_vel', '/tugger/dock_nav_cmd_vel'} <= nav_strings
+    # Only the gated path followers can command motion: no behavior server
+    # (spin/back-up/drive-on-heading) or BT navigator is launched beside them.
+    assert not {'behavior_server', 'bt_navigator', 'nav2_behaviors'} & nav_strings
 
 
 def test_operator_bridge_uses_simulation_time_for_scene_freshness():

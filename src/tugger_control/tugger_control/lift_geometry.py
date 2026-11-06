@@ -12,9 +12,9 @@ LIFT_LOWERED_TOP_M = 0.2375
 CARGO_UNDERSIDE_M = 0.28
 LIFT_CONTACT_M = CARGO_UNDERSIDE_M - LIFT_LOWERED_TOP_M
 CARGO_RAISE_M = 0.065
-# "Down" stays 2 mm above the joint's lower limit. Driving the lift exactly
-# onto 0.0 latches it in Gazebo: it then ignores every later command for the
-# rest of the session (confirmed by experiment on 2026-11-06).
+# The joint's hard stops (URDF) sit outside the 0.002-0.1075 m operating range:
+# a DART joint resting on a limit under a velocity limit latches there
+# (gazebosim/gz-sim#2785). Commands therefore never reach a hard stop.
 LIFT_DOWN_M = 0.002
 LIFT_UP_M = LIFT_CONTACT_M + CARGO_RAISE_M
 LIFT_TOLERANCE_M = 0.005

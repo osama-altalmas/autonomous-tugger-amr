@@ -23,6 +23,10 @@ stop_group() {
     done
     kill -KILL -- "-$pgid" 2>/dev/null
     rm -f "$PIDFILE"
+    # Killed Fast DDS processes leave shared-memory segments and ports behind,
+    # which can block discovery between later processes. This removes only
+    # zombie files; segments of running processes are kept.
+    (set +u; source /opt/ros/lyrical/setup.bash; fastdds shm clean) >/dev/null 2>&1
 }
 
 if [ "$ACTION" = down ]; then
@@ -40,11 +44,14 @@ source "$WS/install/setup.bash"
 set -u
 export ROS_DOMAIN_ID=$DOMAIN GZ_PARTITION=tugger_validation_$DOMAIN
 export GZ_IP=127.0.0.1 IGN_IP=127.0.0.1 ROS_LOG_DIR="$RUN_DIR/ros_log"
+# Cyclone DDS, as Nav2 recommends: Fast DDS intermittently failed to match
+# Nav2 servers with their clients at startup ("action server not available").
+export RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}
 
 setsid bash -c '
   echo $$ > "$0"
   ros2 launch tugger_gazebo simulation.launch.py \
-      gz_extra_args:="-s --headless-rendering" > "$1/gazebo.log" 2>&1 &
+      gz_extra_args:="-s --headless-rendering $3" > "$1/gazebo.log" 2>&1 &
   sleep 15
   ros2 launch tugger_control control.launch.py > "$1/control.log" 2>&1 &
   ros2 launch tugger_ground_truth simulation_localization.launch.py > "$1/truth.log" 2>&1 &
@@ -61,7 +68,7 @@ setsid bash -c '
     sleep 2
   done
   # Nav2 bring-up can stall on a lost lifecycle response. Retry only Nav2.
-  # bt_navigator is not checked: missions call the planner and followers directly.
+  # These three are the only Nav2 servers launched; missions call them directly.
   for attempt in 1 2 3 4; do
     ros2 launch tugger_navigation nav2.launch.py > "$1/nav2_$attempt.log" 2>&1 &
     nav2=$!
@@ -78,6 +85,6 @@ setsid bash -c '
     kill -KILL "$nav2" 2>/dev/null
   done
   wait
-' "$PIDFILE" "$RUN_DIR" "$WS" > /dev/null 2>&1 &
+' "$PIDFILE" "$RUN_DIR" "$WS" "${TUGGER_GZ_EXTRA:-}" > /dev/null 2>&1 &
 disown
 echo "started domain=$DOMAIN logs=$RUN_DIR"

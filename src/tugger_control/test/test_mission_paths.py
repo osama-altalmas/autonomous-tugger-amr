@@ -75,3 +75,25 @@ def test_rejoined_mission_path_splits_at_its_segment_two_marker():
     route_part, approach = decision['poses'][:split + 1], decision['poses'][split:]
     assert route_part[-1] == approach[0]
     assert _gap(approach[-1], CENTERS['cargo_station_3']) < 1e-6
+
+
+def test_every_mission_path_carries_a_passed_3d_audit():
+    index = json.loads((PATHS / 'mission_paths.json').read_text())
+    assert index['lift_audit'] and all(index['lift_audit'].values())
+    for entry in index['paths'].values():
+        data = json.loads((PATHS / entry['file']).read_text())
+        assert data['validation']['audit']['passed'] is True
+        assert data['validation']['articulated_wheel_sweep'].startswith('PASSED')
+
+
+def test_the_audit_catches_a_path_through_a_stand():
+    import sys
+    sys.path.insert(0, str(ROOT / 'tools/v1_manhattan_bezier'))
+    from audit_mission_paths import audit_path
+    from tugger_control.warehouse_clearance import static_world_boxes
+    world = static_world_boxes(ROOT / 'src/tugger_gazebo/worlds/tugger_warehouse.sdf')
+    # The unsafe live path from 2026-11-06: south along x = -17.975 past a leg.
+    poses = [[-17.975, 11.0 - 0.05 * i, -math.pi / 2] for i in range(90)]
+    report = audit_path({'source': 'HOME', 'target': 'cargo_station_3', 'poses': poses},
+                        CENTERS, world)
+    assert report['passed'] is False

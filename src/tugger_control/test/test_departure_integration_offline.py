@@ -177,6 +177,7 @@ def panel_fixture():
     obj._plan_generation = 5
     obj._robot_pose = Mock(return_value=(0.0, 0.0, 0.0))
     obj._confirmed_cargo = Mock(return_value=0)
+    obj._check_destination_allowed = Mock()
     obj._loaded_guard_is_ready = Mock(return_value=True)
     obj._modeled_loaded_path_clearance = Mock(return_value=100)
     obj._approach_provider = Mock(return_value=(
@@ -399,3 +400,21 @@ def test_departure_is_refused_when_no_route_leaves_by_the_entry_gate():
     with pytest.raises(ValueError, match='east gate'):
         gui._prepare_loaded_departure('station', 0, (0, 0, 0), 'HOME', routes, [])
     assert gui._pending_departure is None
+
+
+def test_loaded_robot_leaves_home_through_a_fitting_gate():
+    # Reported: Station 3 cargo -> HOME -> Station 4 was refused at HOME.
+    gui = panel_fixture()
+    gui._pass_through = ('HOME',)
+    gui.docked_station = 'HOME'
+    routes = [('HOME__TO__cargo_dropoff_southeast', {
+        'source': 'HOME', 'source_entrance': 'east',
+        'execution_approved': True, '_database_execution_approved': True}, [])]
+    approach = [[2.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
+    gui._pass_through_exit = Mock(return_value=(approach, routes))
+    gui._prepare_loaded_departure('HOME', 3, (0, 0, 0), 'cargo_dropoff_southeast', routes, [])
+    gui._pass_through_exit.assert_called_once()
+    gui._approach_provider.assert_not_called()
+    assert gui._pending_departure['station'] == 'HOME'
+    assert gui._pending_departure['cargo_id'] == 3
+    gui._modeled_loaded_path_clearance.assert_called_once()

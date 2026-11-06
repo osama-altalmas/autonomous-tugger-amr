@@ -85,7 +85,7 @@ controller_server:
       plugin: "nav2_controller::SimpleGoalChecker"
       stateful: true
       xy_goal_tolerance: 0.03
-      yaw_goal_tolerance: 0.07
+      yaw_goal_tolerance: 0.035
 
     # Used only by the saved under-stand docking paths.  Facility routes
     # retain the normal 7 cm tolerance above.  The operator independently
@@ -305,6 +305,11 @@ bt_navigator:
     global_frame: map
     robot_base_frame: base_footprint
     odom_topic: /wheel/odom
+    # Activation builds the behavior tree and waits this long (ms) for each
+    # action server, e.g. behavior_server's "wait". The 1000 ms default is
+    # shorter than DDS discovery of a just-activated server under simulator
+    # load, which failed activation ("Action server wait not available").
+    wait_for_service_timeout: 5000
 
 
 waypoint_follower:
@@ -320,10 +325,6 @@ lifecycle_manager_navigation:
     node_names:
       - controller_server
       - planner_server
-      - smoother_server
-      - behavior_server
-      - bt_navigator
-      - waypoint_follower
 
 
 smoother_server:
