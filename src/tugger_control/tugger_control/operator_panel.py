@@ -30,7 +30,7 @@ from std_msgs.msg import Bool, Empty, Float64MultiArray, String
 from tf2_ros import Buffer, TransformListener
 
 from tugger_control.direction_policy import prepare_dynamic_path, validate_planner_motion
-from tugger_control.cargo_policy import check_destination, confirmed_cargo
+from tugger_control.cargo_policy import confirmed_cargo
 from tugger_control.cargo_policy import (
     CARGO_IDS, CARGO_STATIONS, DROPOFF_CARGO, PICKUP_CARGO, cargo_stand_model, other_cargo)
 from tugger_control.cargo_operation import CargoOperation
@@ -46,6 +46,9 @@ from tugger_control.visual_maneuver_executor import VisualManeuverExecutor
 from tugger_control.visual_maneuver_planner import marker_visible, replan_visual_maneuver
 from tugger_control.clearance_2_5d import collision_pairs
 from tugger_control.visual_scene_clearance import PreparedVisualClearance
+from tugger_control.backout_path import backout_candidates
+from tugger_control.station_occupancy import (
+    assess_destination, load_occupancy, measure_occupancy, save_occupancy, station_label)
 from tugger_control.visual_heading_gate import relative_qr_heading_consistent
 from tugger_control.visual_marker_guard import FixedMarkerGuard
 from tugger_control.docking_markers import expected_marker
@@ -70,6 +73,11 @@ QR_VISUAL_MAX_PLAN_FAILURES = 3
 QR_ALIGNMENT_STABLE_FRAMES = 3
 CONTINUE_ATTEMPTS = 5
 QR_IDENTITY_GRACE_S = 1.5
+QR_VISUAL_MAX_NO_PROGRESS = 6
+QR_VISUAL_PROGRESS_M = 0.002
+MAX_MISSION_RETRIES = 2
+RECOVERY_DELAY_S = 1.0
+RETRYABLE_CARGO_FAILURES = ('attach_rejected', 'timeout', 'cargo_moved_before_attach')
 # Docked means at the station centre; farther away the robot is between stages.
 DOCKED_TOLERANCE_M = 0.10
 GUARD_NOTE_INTERVAL_S = 15.0
@@ -107,6 +115,13 @@ def _yaw(quaternion):
     )
 
 
+def _marker_in_map(robot_pose, marker):
+    """Map position of a marker measured in base_footprint at robot_pose."""
+    x, y, yaw = robot_pose
+    c, sn = math.cos(yaw), math.sin(yaw)
+    return (x + c * marker[0] - sn * marker[1], y + sn * marker[0] + c * marker[1])
+
+
 class OperatorBridge(Node):
     """ROS work layer.  Every action result is delivered asynchronously."""
 
@@ -119,7 +134,10 @@ class OperatorBridge(Node):
         self._report = report
         self._plan_ready = lambda message, executing: self._announce_plan(
             plan_ready, message, executing)
-        self._execution_done = execution_done
+        self._execution_done = lambda succeeded, status: self._finish_mission(
+            execution_done, succeeded, status)
+        self._mission_retry = None
+        self._mission_phase = None
         self._approach_provider = approach_provider
         self._live_planner = live_planner
         self._live_plan = None
@@ -178,6 +196,7 @@ class OperatorBridge(Node):
         self._pending_path = None
         self._pending_pose = None
         self._pending_alignment_station = None
+        self._pending_precision_start = None
         self._pending_destination = None
         self._pending_execution_approved = False
         self._queued_precision_poses = None
@@ -234,6 +253,8 @@ class OperatorBridge(Node):
         self._visual_executor = None
         self._visual_replan_requested = False
         self._visual_plan_failures = 0
+        self._visual_best_metric = None
+        self._visual_no_progress = 0
         self._visual_marker_guard = None
         self._visual_camera_outliers = 0
         # Heading comes from the approved precision approach (not a guessed
@@ -253,7 +274,10 @@ class OperatorBridge(Node):
         self.create_subscription(JointState, '/joint_states', self._joint_state, 10)
         self.create_subscription(Odometry, '/wheel/odom', self._alignment_odometry, 10)
         self.create_subscription(
-            PoseStamped, '/qr_docking/frame_pose', self._red_frame_pose, 10)
+            PoseStamped, '/qr_docking/frame_pose', self._red_frame_received, 10)
+        # Each camera frame is processed with the robot pose at its own stamp.
+        self._red_frame_waiting = None
+        self.create_timer(0.02, self._release_red_frame)
         self.create_timer(0.1, self._qr_alignment_watchdog)
         self.create_timer(0.1, self._advance_cargo_operation)
         self.create_timer(0.1, self._publish_motion_owner)
@@ -335,12 +359,69 @@ class OperatorBridge(Node):
             self._report(message)
 
     def run_selected_mission_with_retry(self, armed):
-        """Operator RUN: a momentary check failure is retried quietly."""
+        """Operator RUN: a momentary check failure is retried quietly.
+
+        An unusual mission (see station_occupancy) is shown as a warning on
+        the first RUN; the operator's second RUN confirms it. Only this
+        operator entry point confirms: automatic retries and continuations
+        never do, so they cannot run an unconfirmed mission.
+        """
         if not armed:
             self._report('RUN blocked: arm simulator commands first.')
             return
+        confirm = getattr(self, '_mission_confirm', None)
+        if confirm is not None and not confirm['confirmed']:
+            confirm['confirmed'] = True
+            self._report('WARNING: ' + '; '.join(confirm['warnings']) +
+                         '. Press RUN again to proceed.')
+            return
         self._motion_armed = True
         self._continue_attempt(1)
+
+    def _station_occupancy(self):
+        """Live station cargo state from simulator cargo poses; file as backup."""
+        now = self.get_clock().now()
+        fresh = all(
+            self._cargo_pose_seen_at.get(key) is not None and
+            0 <= (now - self._cargo_pose_seen_at[key]).nanoseconds / 1e9 <= 2.0
+            for key in self._cargo_poses)
+        if fresh:
+            try:
+                attached = self._confirmed_cargo()
+            except ValueError:
+                attached = None
+            state = measure_occupancy(self._cargo_poses, attached,
+                                      getattr(self, '_station_centers', {}))
+            if state is not None:
+                if state != getattr(self, '_saved_occupancy', None):
+                    try:
+                        save_occupancy(state)
+                        self._saved_occupancy = state
+                    except OSError:
+                        pass
+                return state
+        return load_occupancy()
+
+    def _assess_destination(self, destination, cargo):
+        return assess_destination(destination, cargo, self._station_occupancy())
+
+    def _deviation_confirmed(self, destination):
+        confirm = getattr(self, '_mission_confirm', None)
+        return (confirm is not None and confirm['destination'] == destination and
+                confirm['confirmed'])
+
+    def _check_destination_allowed(self, destination, cargo):
+        """Hard blocks always stop; warnings need the operator's confirmation."""
+        blocks, warnings, _dock_only = self._assess_destination(destination, cargo)
+        if blocks:
+            raise ValueError(blocks[0])
+        if warnings and not self._deviation_confirmed(destination):
+            raise ValueError(f'unconfirmed: {warnings[0]}; press RUN twice to confirm')
+
+    def _dock_only(self, station):
+        confirm = getattr(self, '_mission_confirm', None)
+        return (confirm is not None and confirm['destination'] == station and
+                confirm['dock_only'])
 
     def _continue_attempt(self, attempt):
         """Press RUN for the planned leg; retry briefly if a check was momentary.
@@ -412,6 +493,158 @@ class OperatorBridge(Node):
             return approach, routes_from_gate(candidates, station,
                                               route.get('source_entrance'))
         raise ValueError(f'no gate of {station} fits the robot: {last_error}')
+
+    def start_mission(self, destination, candidates, station_targets):
+        """Operator request: a new mission with a fresh recovery budget."""
+        self._mission_retry = {'destination': destination, 'candidates': candidates,
+                               'targets': station_targets, 'attempts': 0}
+        self._mission_confirm = None
+        self.execute_destination(destination, candidates, station_targets)
+
+    def _finish_mission(self, report_done, succeeded, status):
+        """Report the outcome, or recover from a failure and try again."""
+        retry = getattr(self, '_mission_retry', None)
+        phase = getattr(self, '_mission_phase', None)
+        if (succeeded or retry is None or status == GoalStatus.STATUS_CANCELED or
+                self._cancel_requested or not self._motion_armed):
+            if succeeded or status == GoalStatus.STATUS_CANCELED:
+                self._mission_retry = None
+            self._mission_confirm = None
+            report_done(succeeded, status)
+            return
+        if not self._recoverable(phase):
+            self._mission_retry = None
+            self._mission_confirm = None
+            report_done(succeeded, status)
+            return
+        if retry['attempts'] >= MAX_MISSION_RETRIES:
+            self._report(f'MISSION FAILED: {phase} still failing after '
+                         f'{MAX_MISSION_RETRIES} recovery attempts. Robot stopped.')
+            self._mission_retry = None
+            self._mission_confirm = None
+            report_done(succeeded, status)
+            return
+        retry['attempts'] += 1
+        self._report(f'RECOVERY {retry["attempts"]}/{MAX_MISSION_RETRIES}: the {phase} stage '
+                     'did not complete; recovering automatically.')
+        timer = None
+
+        def recover():
+            timer.cancel()
+            try:
+                self._recover(phase, retry)
+            except Exception as exc:
+                self._report(f'MISSION FAILED: recovery could not start: {exc}.')
+                self._mission_retry = None
+                report_done(False, GoalStatus.STATUS_ABORTED)
+        timer = self.create_timer(RECOVERY_DELAY_S, recover)
+
+    def _recoverable(self, phase):
+        if phase in ('route', 'approach', 'camera'):
+            return True
+        failure = getattr(self, '_last_cargo_failure', None)
+        return (phase == 'cargo' and failure is not None and failure[0] == 'pickup' and
+                failure[1] in RETRYABLE_CARGO_FAILURES)
+
+    def _recover(self, phase, retry):
+        destination = retry['destination']
+        if phase == 'route':
+            # Replan from where the robot stands: rejoin, connector or live plan.
+            self._continue_after_undock = True
+            self.execute_destination(destination, retry['candidates'], retry['targets'])
+            return
+        if phase == 'cargo':
+            # A rejected pickup means the simulator found the robot misaligned
+            # with the cargo. Lower the lift, then re-verify (and if needed
+            # correct) the dock with the camera before trying again; a robot
+            # that is still aligned passes in a few stationary frames.
+            self.lift(LIFT_DOWN_M)
+            station = self.docked_station or destination
+            timer = None
+
+            def again():
+                timer.cancel()
+                self._start_qr_alignment(station)
+            timer = self.create_timer(3.0, again)
+            return
+        self._prepare_backout(destination, retry['candidates'], retry['targets'])
+
+    def _prepare_backout(self, destination, candidates, station_targets):
+        """Back out along the recorded approach to its gate, then re-approach."""
+        arrival = getattr(self, '_arrival_approach', None)
+        if arrival is None or arrival[0] != destination:
+            raise ValueError(f'no recorded approach to {destination} to back out along')
+        approach = arrival[1]
+        pose = self._robot_pose()
+        index = min(range(len(approach)), key=lambda i: math.hypot(
+            approach[i][0] - pose[0], approach[i][1] - pose[1]))
+        if math.hypot(approach[index][0] - pose[0], approach[index][1] - pose[1]) > 0.30:
+            raise ValueError('robot is not on its approach')
+        cargo = self._confirmed_cargo()
+        if cargo is None:
+            if not lift_is_down(self._lift_position):
+                raise ValueError('backing out empty requires the lift to be down')
+            world = Path(get_package_share_directory('tugger_gazebo')) / 'worlds/tugger_warehouse.sdf'
+            scene = decode_scene(self._collision_scene,
+                                 self.get_clock().now().nanoseconds / 1e9,
+                                 expected_counts=scene_expected_counts(world))
+        # Follow the approach back with the robot's sideways offset blended
+        # out smoothly, shortest clear blend first; a straight line to the
+        # approach starts with a kink the 4WS robot cannot follow from rest.
+        reversed_approach = list(reversed(approach[:index + 1]))
+        if math.hypot(reversed_approach[-1][0] - pose[0],
+                      reversed_approach[-1][1] - pose[1]) < 0.05:
+            raise ValueError('robot is already at the approach entry')
+        chosen, last_hit = None, 'no blend within the 4WS turning limit'
+        for _length, positions in backout_candidates(pose, reversed_approach):
+            prepared = prepare_dynamic_path(positions, pose[2])
+            poses = [[x, y, heading] for (x, y), heading in
+                     zip(positions, prepared['body_headings'])]
+            if cargo is None:
+                clear, sample, hit = sampled_precision_clearance(
+                    [tuple(p) for p in poses], [box for _, box in scene], self._lift_position)
+                if not clear:
+                    last_hit = f'collision at sample {sample}: {hit}'
+                    continue
+            else:
+                try:
+                    self._modeled_loaded_path_clearance(poses, cargo)
+                except ValueError as exc:
+                    last_hit = str(exc)
+                    continue
+            chosen = (prepared, poses)
+            break
+        if chosen is None:
+            raise ValueError(f'no clear back-out path: {last_hit}')
+        prepared, poses = chosen
+        path = NavPath()
+        path.header.frame_id = 'map'
+        path.header.stamp = self.get_clock().now().to_msg()
+        for values in poses:
+            path.poses.append(self._pose(values))
+        self._precision_station = None
+        self._camera_handoff_station = None
+        self._queued_precision_poses = None
+        self._queued_precision_station = None
+        self._departure_exit_pose = tuple(poses[-1])
+        self._pending_pose = pose
+        self._pending_destination = destination
+        self._pending_execution_approved = True
+        if cargo is None:
+            self._dock_precision_mode = True
+            self._station_exit_active = True
+            self._station_exit_target = (destination, candidates, station_targets)
+            self._pending_path = path
+        else:
+            self._pending_departure = {
+                'path': path, 'poses': poses, 'start_pose': pose,
+                'cargo_id': cargo, 'station': destination,
+            }
+            self._departure_target = (destination, candidates, station_targets)
+        self._path_pub.publish(path)
+        self._report(f'RECOVERY: backing out {prepared["leading_end"].lower()}-leading along '
+                     f'the approach to the {destination} entry, then re-approaching.')
+        self._continue_attempt(1)
 
     def _prepare_station_exit(self, station, current_pose, destination, candidates,
                               station_targets):
@@ -596,13 +829,19 @@ class OperatorBridge(Node):
             raise ValueError('No configured station approach is available for departure')
         if not self._loaded_guard_is_ready():
             raise ValueError('Live simulator collision-scene guard is not ready')
-        approach_meta, default_poses = self._approach_provider(station)
-        if approach_meta.get('execution_approved') is not True:
-            raise ValueError('Station departure source approach is not execution-approved')
-        arrival = getattr(self, '_arrival_approach', None)
-        approach_poses = (arrival[1] if arrival is not None and arrival[0] == station
-                          else default_poses)
-        candidates = self._same_gate_routes(station, approach_poses, candidates, destination)
+        if station in getattr(self, '_pass_through', ()):
+            # A pass-through stop is left by whichever gate fits the robot.
+            approach_poses, candidates = self._pass_through_exit(
+                station, current_pose, candidates)
+        else:
+            approach_meta, default_poses = self._approach_provider(station)
+            if approach_meta.get('execution_approved') is not True:
+                raise ValueError('Station departure source approach is not execution-approved')
+            arrival = getattr(self, '_arrival_approach', None)
+            approach_poses = (arrival[1] if arrival is not None and arrival[0] == station
+                              else default_poses)
+            candidates = self._same_gate_routes(station, approach_poses, candidates,
+                                                destination)
         if not any(route.get('execution_approved') is True and
                    route.get('_database_execution_approved') is True
                    for _, route, _ in candidates):
@@ -929,6 +1168,38 @@ class OperatorBridge(Node):
         return math.atan2(math.sin(reference - pose[2]),
                           math.cos(reference - pose[2]))
 
+    def _red_frame_received(self, message):
+        """Hold the newest camera frame until TF covers its stamp.
+
+        The camera can run up to a few tens of ms ahead of TF. Pairing a frame
+        with the newest TF instead mixes two instants, which misplaces the
+        marker in the map while the robot turns (tf2 MessageFilter pattern).
+        """
+        if not self._qr_alignment_active:
+            return
+        self._red_frame_waiting = message
+        self._release_red_frame()
+
+    def _release_red_frame(self):
+        message = self._red_frame_waiting
+        if message is None:
+            return
+        stamp = rclpy.time.Time.from_msg(message.header.stamp)
+        waited = (self.get_clock().now() - stamp).nanoseconds / 1e9
+        if not self._tf.can_transform('map', 'base_footprint', stamp) and waited < 0.2:
+            return
+        # Released either with TF at its stamp or, after 0.2 s, to the
+        # staleness checks of the handler, which then hold the alignment.
+        self._red_frame_waiting = None
+        self._red_frame_pose(message)
+
+    def _robot_pose_at(self, stamp):
+        """Robot pose at a message stamp; fails rather than mixing instants."""
+        transform = self._tf.lookup_transform(
+            'map', 'base_footprint', rclpy.time.Time.from_msg(stamp))
+        translation = transform.transform.translation
+        return translation.x, translation.y, _yaw(transform.transform.rotation)
+
     def _red_frame_pose(self, message):
         """Fresh red-frame centre + station yaw gate; no blind camera recovery."""
         if not self._qr_alignment_active:
@@ -958,7 +1229,11 @@ class OperatorBridge(Node):
             self._hold_visual_alignment('invalid frame geometry')
             return
         try:
-            map_pose = self._robot_pose()
+            map_pose = self._robot_pose_at(message.header.stamp)
+        except Exception as exc:
+            self._hold_visual_alignment(f'no TF at the camera frame time: {exc}')
+            return
+        try:
             heading_error = self._alignment_heading_error(map_pose)
         except Exception as exc:
             self._stop_qr_alignment(f'station heading unavailable: {exc}')
@@ -985,14 +1260,17 @@ class OperatorBridge(Node):
         self._visual_latest_marker = (marker_x, marker_y)
         self._visual_latest_camera_stamp = stamp
         # Do not continue executing a primitive sequence against an old
-        # camera target.  The marker naturally moves as the robot moves, but
-        # a larger change means that the measured target has materially
-        # changed since the accepted plan.  Holding here also guarantees that
-        # the next plan starts only after the robot is stationary.
+        # camera target. The marker moves in the robot frame as the robot
+        # moves, so compare where it is in the map: a fixed marker stays put,
+        # and a map-frame change means the measured target itself changed
+        # since the accepted plan. Holding here also guarantees that the next
+        # plan starts only after the robot is stationary.
         if (self._visual_executor is not None and
                 self._visual_plan_marker is not None and
-                math.hypot(marker_x - self._visual_plan_marker[0],
-                           marker_y - self._visual_plan_marker[1]) >
+                self._visual_plan_origin is not None and
+                math.dist(_marker_in_map(map_pose, (marker_x, marker_y)),
+                          _marker_in_map(self._visual_plan_origin,
+                                         self._visual_plan_marker)) >
                 QR_VISUAL_REPLAN_MARKER_DELTA_M):
             self._hold_visual_alignment(
                 'camera target changed during maneuver; replanning')
@@ -1001,8 +1279,12 @@ class OperatorBridge(Node):
         anchor_error = math.hypot(
             map_pose[0] - self._visual_marker_guard.marker[0],
             map_pose[1] - self._visual_marker_guard.marker[1])
-        # Cancel the old arc sequence near the target before settling.
+        # Cancel the old arc sequence near the target before settling, but
+        # only once the heading is aligned too. A heading correction passes
+        # through the target position; cancelling it there on position alone
+        # restarted it every frame, so the robot never turned.
         if (radial_error <= 0.012 and anchor_error <= 0.015 and
+                abs(heading_error) <= QR_ALIGNMENT_HEADING_TOLERANCE_RAD and
                 self._visual_executor is not None):
             self._visual_executor = None
             self._visual_replan_requested = True
@@ -1073,7 +1355,8 @@ class OperatorBridge(Node):
 
             if reason == 'odometry diverged from planned primitive':
                 self._stop_qr_alignment(
-                    '4WS tracking diverged; diagnostic stop without replanning'
+                    '4WS tracking diverged; diagnostic stop without replanning '
+                    f'({result.get("detail", "no detail")})'
                 )
             else:
                 self._hold_visual_alignment(reason)
@@ -1108,16 +1391,30 @@ class OperatorBridge(Node):
             scene = decode_scene(self._collision_scene, now,
                                  expected_counts=scene_expected_counts(world))
             lift = self._lift_position
-            if (lift is None or not -0.005 <= lift <= 0.005 or
-                    self._lift_seen_at is None or not 0 <=
-                    (self.get_clock().now() - self._lift_seen_at).nanoseconds / 1e9 <= 1.0):
+            cargo = self._confirmed_cargo()
+            lift_fresh = (self._lift_seen_at is not None and 0 <= (
+                self.get_clock().now() - self._lift_seen_at).nanoseconds / 1e9 <= 1.0)
+            if cargo is None and (lift is None or not -0.005 <= lift <= 0.005 or not lift_fresh):
                 raise ValueError('fresh lowered lift feedback required')
+            if cargo is not None and (not lift_is_raised(lift) or not lift_fresh):
+                raise ValueError('fresh raised lift feedback required with cargo attached')
             generation = self._visual_plan_generation
             marker_x, marker_y = marker
-            obstacle_snapshot = tuple(box for _, box in scene)
+            carried = None
+            excluded = ()
+            if cargo is not None:
+                # Plan with the carried cargo; its own stand moves with the robot.
+                cx, cy, cz, cyaw = self._cargo_poses[cargo]
+                dx, dy = cx - pose[0], cy - pose[1]
+                cos_h, sin_h = math.cos(pose[2]), math.sin(pose[2])
+                carried = (cos_h * dx + sin_h * dy, -sin_h * dx + cos_h * dy, cz,
+                           cyaw - pose[2])
+                excluded = (cargo_stand_model(cargo),)
+            obstacle_snapshot = tuple(box for model, box in scene if model not in excluded)
             # Indexed collision broad-phase retains EXACT oriented-box SAT
             # collision behaviour, without checking all 68 boxes every time.
-            prepared = PreparedVisualClearance(obstacle_snapshot, lift, margin=0.01)
+            prepared = PreparedVisualClearance(obstacle_snapshot, lift, margin=0.01,
+                                               carried=carried)
             c, s = math.cos(pose[2]), math.sin(pose[2])
 
             def clearance(local_pose):
@@ -1142,7 +1439,7 @@ class OperatorBridge(Node):
                 self._visual_plan_marker = marker
                 self._visual_plan_generation_at_submit = generation
             self._visual_replan_requested = False
-            self._report('Visual 4WS plan queued from fresh TF, QR and scene snapshot.')
+            pass  # Routine; not reported to the operator.
         except Exception as exc:
             self._stop_qr_alignment(f'visual plan preflight failed: {exc}')
 
@@ -1201,7 +1498,11 @@ class OperatorBridge(Node):
         self._visual_plan_failures = 0
         self._visual_executor = VisualManeuverExecutor(
             plan, speed=0.005, segment_timeout=20.0)
-        self._report(f'Visual 4WS plan accepted ({len(plan)} bounded primitives).')
+        if self._visual_progress_stalled(current):
+            self._stop_qr_alignment(
+                f'no progress after {QR_VISUAL_MAX_NO_PROGRESS} camera corrections; '
+                'the heading or position is outside what camera corrections can fix')
+            return
 
     def _visual_clearance_current(self, pose):
         """Recheck exact current pose against a *fresh* live scene."""
@@ -1237,14 +1538,37 @@ class OperatorBridge(Node):
                 math.hypot(vx, vy) <= QR_STATIONARY_MAX_SPEED_M_S and
                 abs(yaw_rate) <= QR_STATIONARY_MAX_YAW_RATE_RAD_S)
 
+    def _visual_progress_stalled(self, pose):
+        """True once several accepted plans in a row have not reduced the error."""
+        forward, lateral = self._red_frame_error
+        try:
+            heading = abs(self._alignment_heading_error(pose))
+        except Exception:
+            heading = 0.0
+        if not all(math.isfinite(v) for v in (forward, lateral, heading)):
+            return False
+        # Position error plus heading error weighted to metres (6 degrees ~ 3 cm).
+        metric = math.hypot(forward, lateral) + 0.3 * heading
+        best = getattr(self, '_visual_best_metric', None)
+        if best is None or metric < best - QR_VISUAL_PROGRESS_M:
+            self._visual_best_metric = metric
+            self._visual_no_progress = 0
+            return False
+        self._visual_no_progress = getattr(self, '_visual_no_progress', 0) + 1
+        return self._visual_no_progress >= QR_VISUAL_MAX_NO_PROGRESS
+
     def _report_red_frame_state(self, forward_m, lateral_m, state):
-        """Show the camera's final-position estimate without flooding the GUI."""
+        """Show the camera's estimate only when it changes, or every 5 s."""
         now = self.get_clock().now()
+        last = getattr(self, '_last_red_frame_reported', None)
         if self._last_red_frame_state_report_at is not None:
             elapsed = (now - self._last_red_frame_state_report_at).nanoseconds / 1e9
-            if elapsed < 0.5:
+            changed = (last is None or state != last[2] or
+                       math.hypot(forward_m - last[0], lateral_m - last[1]) > 0.001)
+            if elapsed < 0.5 or (not changed and elapsed < 5.0):
                 return
         self._last_red_frame_state_report_at = now
+        self._last_red_frame_reported = (forward_m, lateral_m, state)
         status = 'CENTERED' if state == 'ALIGNED' else 'CORRECTING'
         self._report(
             f'RED FRAME {status}: forward error={forward_m:.3f} m, '
@@ -1270,9 +1594,18 @@ class OperatorBridge(Node):
         if station == 'HOME':
             self._execution_done(True, GoalStatus.STATUS_SUCCEEDED)
             return
+        if self._dock_only(station):
+            self._report(f'{station_label(station)}: docked; no cargo operation, as '
+                         'confirmed.')
+            self._execution_done(True, GoalStatus.STATUS_SUCCEEDED)
+            return
         self._start_cargo_operation(station)
 
     def _start_cargo_operation(self, station):
+        self._mission_phase = 'cargo'
+        self._start_cargo_operation_now(station)
+
+    def _start_cargo_operation_now(self, station):
         """Begin a cargo operation only with fresh telemetry and clearance."""
         pickup, dropoff = PICKUP_CARGO, DROPOFF_CARGO
         try:
@@ -1283,13 +1616,23 @@ class OperatorBridge(Node):
             if not self._expected_qr_is_fresh(station):
                 raise ValueError('expected destination QR identity is missing or stale')
             cargo = self._confirmed_cargo()
-            check_destination(station, cargo)
+            self._check_destination_allowed(station, cargo)
             now = self.get_clock().now()
             if (self._lift_seen_at is None or
                     not 0 <= (now - self._lift_seen_at).nanoseconds / 1e9 <= 1.0):
                 raise ValueError('lift position feedback is missing or stale')
             is_pickup = station in pickup
-            cargo_id = pickup[station] if is_pickup else dropoff[station]
+            if is_pickup:
+                # Pick up whichever cargo the station actually holds.
+                occupancy = self._station_occupancy()
+                cargo_id = occupancy.get(station) if occupancy else pickup[station]
+                if cargo_id is None:
+                    raise ValueError(f'{station_label(station)} has no cargo to pick up')
+            else:
+                # Set down the cargo actually carried (confirmed if unusual).
+                cargo_id = cargo
+                if cargo_id is None:
+                    raise ValueError('no attached cargo to set down')
             pose_seen = self._cargo_pose_seen_at[cargo_id]
             if (pose_seen is None or self._cargo_poses[cargo_id] is None or
                     not 0 <= (now - pose_seen).nanoseconds / 1e9 <= 1.0):
@@ -1391,6 +1734,7 @@ class OperatorBridge(Node):
                 self._report('LIFT STOP UNCONFIRMED: position feedback is stale; '
                              'the previous position command may still be active.')
             self._report(f'MISSION INCOMPLETE: cargo operation failed: {task.result}.')
+            self._last_cargo_failure = (task.operation, task.result)
             self._execution_done(False, GoalStatus.STATUS_ABORTED)
 
     def _stop_qr_alignment(self, reason):
@@ -1412,6 +1756,10 @@ class OperatorBridge(Node):
         self._execution_done(False, GoalStatus.STATUS_ABORTED)
 
     def _start_qr_alignment(self, station):
+        self._mission_phase = 'camera'
+        self._start_qr_alignment_now(station)
+
+    def _start_qr_alignment_now(self, station):
         # HOME accepts either end, as the controller decides which end leads.
         # Cargo targets must use the selected approved precision segment, never
         # the yaw of an arbitrary entrance or the identity quaternion of the
@@ -1458,6 +1806,8 @@ class OperatorBridge(Node):
         self._visual_executor = None
         self._visual_replan_requested = True
         self._visual_plan_failures = 0
+        self._visual_best_metric = None
+        self._visual_no_progress = 0
         self._visual_marker_guard = None
         self._visual_camera_outliers = 0
         self._last_visual_hold_report_at = None
@@ -1520,6 +1870,7 @@ class OperatorBridge(Node):
         self._pending_path = None
         self._pending_pose = None
         self._pending_alignment_station = None
+        self._pending_precision_start = None
         self._pending_destination = None
         self._pending_execution_approved = False
         self._queued_precision_poses = None
@@ -1663,7 +2014,19 @@ class OperatorBridge(Node):
         generation = self._begin_preflight()
         try:
             cargo = self._confirmed_cargo()
-            check_destination(destination, cargo)
+            blocks, warnings, dock_only = self._assess_destination(destination, cargo)
+            if blocks:
+                raise ValueError(blocks[0])
+            confirm = getattr(self, '_mission_confirm', None)
+            if warnings:
+                if confirm is None or confirm['destination'] != destination:
+                    self._mission_confirm = {'destination': destination,
+                                             'warnings': warnings,
+                                             'dock_only': dock_only, 'confirmed': False}
+                    self._report('WARNING: ' + '; '.join(warnings) +
+                                 '. RUN will ask you to confirm.')
+            elif confirm is not None and confirm['destination'] != destination:
+                self._mission_confirm = None
             pose = self._robot_pose()
             center = getattr(self, '_station_centers', {}).get(self.docked_station)
             if (self.docked_station is not None and center is not None and
@@ -1672,7 +2035,7 @@ class OperatorBridge(Node):
                 self._report(f'{self.docked_station}: robot is away from the centre; '
                              'it is no longer docked there.')
                 self.docked_station = None
-            if cargo is None and self.docked_station is None:
+            if self.docked_station is None:
                 self._infer_pass_through_dock(pose)
             if self.docked_station is not None and self.docked_station == destination:
                 raise ValueError(f'the robot is already docked at {destination}')
@@ -1696,8 +2059,8 @@ class OperatorBridge(Node):
             # Never ask the ordinary 2D Nav2 global planner to start beneath
             # the stand where the static costmap marks the station occupied.
             if cargo is not None and self.docked_station is not None:
-                if self.docked_station != f'cargo_station_{cargo}':
-                    raise ValueError('Loaded departure station does not match attached cargo')
+                # Leaves by its pickup's own approach, or through a gate of a
+                # pass-through stop such as HOME, with loaded clearance checks.
                 self._prepare_loaded_departure(
                     self.docked_station, cargo, pose,
                     destination, candidates, station_targets)
@@ -1711,10 +2074,15 @@ class OperatorBridge(Node):
             if approach_rejoin is not None:
                 # Already on this destination's segment 2: continue along it.
                 key, meta, remaining = approach_rejoin
-                self.execute_saved_route(
-                    f'{destination} precision approach (rejoined {key})', remaining,
-                    precision_station=destination, mission_destination=destination,
-                    execution_approved=meta.get('execution_approved') is True)
+                # Start it as a normal segment 2 (3D scene check and docking
+                # guard), not as a route checked against the 2D costmap.
+                self._pending_precision_start = (destination, remaining)
+                self._pending_pose = pose
+                self._pending_destination = destination
+                self._pending_execution_approved = meta.get('execution_approved') is True
+                self._plan_ready(
+                    f'{destination}: on its segment 2 (from {key}); RUN continues the '
+                    'precision approach from here.', False)
                 return
             decision = select_destination_plan(
                 destination, candidates, pose, destination_poses=station_targets)
@@ -1741,6 +2109,10 @@ class OperatorBridge(Node):
             self._start_live_plan(destination, pose, station_targets, generation,
                                   approach, approach_approved)
             return
+        # Remembered so a failed short connector falls through to a live plan.
+        self._connector_fallback = (
+            (destination, pose, station_targets, generation, approach, approach_approved)
+            if decision['mode'] == 'SHORT_CONNECTOR' and station_targets else None)
         self._dispatch_decision(destination, decision, pose, station_targets, generation,
                                 approach, approach_approved)
 
@@ -1884,13 +2256,12 @@ class OperatorBridge(Node):
         try:
             handle = future.result()
             if not handle.accepted:
-                self._report('Connector planner rejected the saved-route start.')
-                return
+                raise ValueError('connector planner rejected the saved-route start')
             result = handle.get_result_async()
             result.add_done_callback(
                 lambda response, token=generation: self._on_connector_result(response, token))
         except Exception as exc:
-            self._report(f'Connector request failed: {exc}')
+            self._connector_failed(str(exc), generation)
 
     def _on_connector_result(self, future, generation):
         if generation != self._plan_generation:
@@ -1899,34 +2270,51 @@ class OperatorBridge(Node):
             response = future.result()
             connector = response.result.path
             if response.status != GoalStatus.STATUS_SUCCEEDED or len(connector.poses) < 2:
-                self._report('No safe short connector to the selected saved route.')
-                return
+                raise ValueError('no safe short connector to the selected saved route')
             planner_poses = [[p.pose.position.x, p.pose.position.y,
                               _yaw(p.pose.orientation)] for p in connector.poses]
             planner_sign = validate_planner_motion(planner_poses)
             selected = prepare_dynamic_path(
                 [(pose[0], pose[1]) for pose in planner_poses], self._robot_yaw())
             if planner_sign != selected['body_velocity_sign']:
-                self._report('Planner direction disagrees with live heading; no plan was sent.')
-                return
+                raise ValueError('planner direction disagrees with live heading')
             connector_poses = [[p.pose.position.x, p.pose.position.y, 0.0]
                                for p in connector.poses]
             length = self._path_length(connector_poses)
             if length > 3.0:
-                self._report(f'Connector is {length:.2f} m; refusing a long dynamic route.')
-                return
+                raise ValueError(f'connector is {length:.2f} m; refusing a long dynamic route')
             if self._recovery_only:
                 self._recovery_only = False
                 self._prepare_saved_execution(connector_poses, length, generation)
                 return
             if math.hypot(connector_poses[-1][0] - self._saved_poses[0][0],
                           connector_poses[-1][1] - self._saved_poses[0][1]) > 0.15:
-                self._report('Connector does not reach the selected saved-route start.')
-                return
+                raise ValueError('connector does not reach the selected saved-route start')
             merged = connector_poses[:-1] + self._saved_poses
             self._prepare_saved_execution(merged, length, generation)
         except Exception as exc:
-            self._report(f'Connector result failed: {exc}')
+            self._connector_failed(str(exc), generation)
+
+    def _connector_failed(self, reason, generation):
+        """A short connector failed: plan the whole path live, as agreed.
+
+        The Nav2 grid planner knows nothing of 4WS kinematics, so its short
+        connector may reverse direction or miss the route. The live planner
+        uses the offline generator's rules and plans one full path from the
+        robot. Only the last-resort Nav2 recovery plan has no further fallback.
+        """
+        context = getattr(self, '_connector_fallback', None)
+        self._connector_fallback = None
+        if (self._recovery_only or context is None or
+                getattr(self, '_live_planner', None) is None):
+            self._report(f'Connector result failed: {reason}. No plan was sent.')
+            return
+        # The connector's generation is current (stale results return early).
+        destination, pose, station_targets, _selected_at, approach, approved = context
+        self._report(f'{destination}: short connector failed ({reason}); planning the '
+                     'whole path live instead.')
+        self._start_live_plan(destination, pose, station_targets, generation,
+                              approach, approved)
 
     def _prepare_saved_execution(self, poses, connector_length, generation=None):
         if generation is not None and generation != self._plan_generation:
@@ -2010,7 +2398,8 @@ class OperatorBridge(Node):
             self._report_run_block('RUN blocked: a navigation or precision alignment is already active.')
             return
         if (self._pending_path is None and self._pending_alignment_station is None and
-                self._pending_departure is None):
+                self._pending_departure is None and
+                getattr(self, '_pending_precision_start', None) is None):
             self._report_run_block('RUN blocked: select and validate a mission first.')
             return
         if not self._pending_execution_approved:
@@ -2031,7 +2420,7 @@ class OperatorBridge(Node):
         try:
             cargo = self._confirmed_cargo()
             if self._pending_destination is not None:
-                check_destination(self._pending_destination, cargo)
+                self._check_destination_allowed(self._pending_destination, cargo)
             if cargo is not None and not self._loaded_guard_is_ready():
                 self._report_run_block('RUN blocked: loaded controller clearance monitoring is not ready.')
                 return
@@ -2063,6 +2452,20 @@ class OperatorBridge(Node):
             pending['started'] = self.get_clock().now()
             self._departure_pending = pending
             self._report('Loaded departure RUN accepted; waiting for DOCK_DEPART guard.')
+            return
+        pending_start = getattr(self, '_pending_precision_start', None)
+        if pending_start is not None:
+            station, poses = pending_start
+            self._pending_precision_start = None
+            self._pending_pose = None
+            self._motion_armed = True
+            self._cancel_requested = False
+            self.docked_station = None
+            self._precision_station = None
+            self._camera_handoff_station = station
+            self._queued_precision_station = station
+            self._queued_precision_poses = poses
+            self._start_precision_segment()
             return
         if self._pending_alignment_station is not None:
             station = self._pending_alignment_station
@@ -2097,11 +2500,16 @@ class OperatorBridge(Node):
         goal = FollowPath.Goal()
         goal.path = path
         exiting = getattr(self, '_station_exit_active', False)
+        self._mission_phase = (
+            'exit' if exiting or self._departure_active else
+            'approach' if self._precision_station else 'route')
         goal.controller_id = (
             'DepartureFollowPath' if self._departure_active else
             'PrecisionFollowPath' if self._precision_station or exiting else 'FollowPath')
         camera_next = (self._camera_handoff_station and
                        self._queued_precision_poses is None and not exiting)
+        # Segment 2 keeps its 10 mm target; routes that end directly in camera
+        # alignment stop within 3 cm so the red frame stays in view.
         goal.goal_checker_id = (
             'precision_goal_checker' if self._precision_station else
             'camera_handoff_goal_checker' if camera_next else 'goal_checker')
@@ -2176,6 +2584,16 @@ class OperatorBridge(Node):
                 self._active_follow = None
                 self._start_qr_alignment(self._camera_handoff_station)
                 return
+            station = self._camera_handoff_station
+            if (not succeeded and self._precision_station and station and
+                    self._expected_qr_is_fresh(station)):
+                # Segment 2 stalled with the expected marker already in view:
+                # let the downward camera finish the alignment.
+                self._active_follow = None
+                self._report(f'{station}: segment 2 stopped short with the marker in view; '
+                             'the downward camera continues the alignment.')
+                self._start_qr_alignment(station)
+                return
             self._dock_precision_mode = False
             self._execution_done(succeeded, status)
         except Exception as exc:
@@ -2184,6 +2602,7 @@ class OperatorBridge(Node):
 
     def _start_precision_segment(self):
         """Validate and dispatch segment 2 after segment 1 has stopped."""
+        self._mission_phase = 'approach'
         station = self._queued_precision_station
         poses = self._queued_precision_poses
         # An empty robot leaves a station the way it came in.
@@ -2195,7 +2614,7 @@ class OperatorBridge(Node):
                 raise ValueError(f'staging gap {gap:.2f} m exceeds 0.25 m')
             prepared = prepare_dynamic_path([(p[0], p[1]) for p in poses], current[2])
             cargo = self._confirmed_cargo()
-            check_destination(station, cargo)
+            self._check_destination_allowed(station, cargo)
             if cargo is not None:
                 if not self._loaded_guard_is_ready():
                     raise ValueError('loaded controller clearance monitoring is not ready')
@@ -2530,7 +2949,7 @@ class OperatorPanel(Plugin):
         except (OSError, ValueError, KeyError) as exc:
             self._report(f'Destination-route load rejected: {exc}')
             return
-        self._bridge.execute_destination(
+        self._bridge.start_mission(
             destination, candidates, self._station_entries.get(destination, []))
 
     def _request_precision_docking(self, station):

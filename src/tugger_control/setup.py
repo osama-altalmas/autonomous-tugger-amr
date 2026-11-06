@@ -52,6 +52,7 @@ setup(
             'sim_motion_gate = tugger_control.sim_motion_gate:main',
             'docking_precision_controller = tugger_control.docking_precision_controller:main',
             'imu_orientation_plotter = tugger_control.imu_orientation_plotter:main',
+            'nav2_startup_guard = tugger_control.nav2_startup_guard:main',
         ],
         'rqt_gui_py.plugin': [
             'tugger_control = tugger_control.operator_panel:OperatorPanel',

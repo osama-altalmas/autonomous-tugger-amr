@@ -18,15 +18,21 @@ def _local_pose(origin, pose):
             math.atan2(math.sin(pose[2] - yaw), math.cos(pose[2] - yaw)))
 
 
+STILL_SPEED = 0.001
+STILL_TIME = 0.3
+
+
 class VisualManeuverExecutor:
     """Track bounded signed arcs from measured odometry with stop interlocks."""
 
     def __init__(self, primitives, *, speed=0.01, observation_age=0.5,
-                 segment_timeout=12.0, position_error=0.012, heading_error=0.10):
+                 segment_timeout=12.0, position_error=0.012, heading_error=0.10,
+                 steering_rate=0.8, wheelbase=0.58):
         self.primitives = tuple((float(d), float(k)) for d, k in primitives)
         if (not self.primitives or not 0 < speed <= 0.02 or
                 not 0 < observation_age <= 0.5 or segment_timeout <= 0 or
-                position_error <= 0 or heading_error <= 0):
+                position_error <= 0 or heading_error <= 0 or
+                steering_rate <= 0 or wheelbase <= 0):
             raise ValueError('invalid visual maneuver limits')
         if any(not math.isfinite(d) or not math.isfinite(k) or
                not 0.005 <= abs(d) <= 0.05 or abs(k) > 2.0 / 0.58
@@ -37,11 +43,22 @@ class VisualManeuverExecutor:
         self.segment_timeout = segment_timeout
         self.position_error = position_error
         self.heading_error = heading_error
+        # Yaw the robot may gain or lose against the ideal arc while its wheels
+        # slew: worst case a full swing between locks at the 4WS controller's
+        # steering rate. A primitive starts with the wheels still at the
+        # previous primitive's angle, so that angle counts too (a straight
+        # segment after a full-lock arc keeps turning until they unwind).
+        def lag(k):
+            return abs(k) * speed * 2.0 * abs(math.atan(wheelbase * k / 2.0)) / steering_rate
+        self.slew_lag = [
+            max(lag(k), lag(self.primitives[i - 1][1]) if i else 0.0)
+            for i, (_, k) in enumerate(self.primitives)]
         self.index = 0
         self.origin = None
         self.started = None
         self.stopping = False
         self.stopped = False
+        self.still_since = None
 
     def update(self, pose, speed, now, odom_stamp, camera_stamp, *, identity_ok,
                clearance_ok, visible, cancelled=False):
@@ -62,8 +79,16 @@ class VisualManeuverExecutor:
         if self.started is not None and (now - self.started > self.segment_timeout or now < self.started):
             self.stopped = True
             return {**stop, 'reason': 'primitive timed out'}
+        # A primitive's start is measured only once the robot has really
+        # stopped: below 1 mm/s for 0.3 s. Starting while it still rolled from
+        # the previous arc counted that roll against the new primitive.
+        if abs(speed) > STILL_SPEED:
+            self.still_since = None
+        elif self.still_since is None:
+            self.still_since = now
+        settled = self.still_since is not None and now - self.still_since >= STILL_TIME
         if self.stopping:
-            if abs(speed) > 0.003:
+            if not settled:
                 return {**stop, 'state': 'WAIT_STOP', 'reason': 'waiting for stationary feedback'}
             self.index += 1
             self.origin = None
@@ -73,7 +98,7 @@ class VisualManeuverExecutor:
                 self.stopped = True
                 return {**stop, 'state': 'DONE', 'reason': 'maneuver ended; verify camera target'}
         if self.origin is None:
-            if abs(speed) > 0.003:
+            if not settled:
                 return {**stop, 'state': 'WAIT_STOP', 'reason': 'waiting before maneuver'}
             self.origin = tuple(pose)
             self.started = now
@@ -87,11 +112,20 @@ class VisualManeuverExecutor:
         expected = propagate((0., 0., 0.), progress, curvature)
         yaw_error = abs(math.atan2(math.sin(local[2] - expected[2]),
                                    math.cos(local[2] - expected[2])))
+        # The yaw tolerance follows the physics of the arc: the steering-slew
+        # lag plus 0.02 rad, growing with the turn made so far. A fixed 0.10 rad
+        # would accept a robot that never turns during a 0.10 rad correction.
+        yaw_tolerance = min(self.heading_error,
+                            self.slew_lag[self.index] + 0.02 + 0.3 * abs(expected[2]))
         if (progress * distance < -0.002 * abs(distance) or
                 math.hypot(local[0] - expected[0], local[1] - expected[1]) > self.position_error or
-                yaw_error > self.heading_error or abs(progress) > abs(distance) + 0.01):
+                yaw_error > yaw_tolerance or abs(progress) > abs(distance) + 0.01):
             self.stopped = True
-            return {**stop, 'reason': 'odometry diverged from planned primitive'}
+            return {**stop, 'reason': 'odometry diverged from planned primitive',
+                    'detail': (f'primitive {self.index + 1}/{len(self.primitives)}, '
+                               f'progress {progress:+.3f}/{distance:+.3f} m, '
+                               f'position error {math.hypot(local[0] - expected[0], local[1] - expected[1]):.3f} m, '
+                               f'yaw error {yaw_error:.3f}/{yaw_tolerance:.3f} rad')}
         if abs(progress) >= abs(distance) - 0.002:
             self.stopping = True
             return {**stop, 'state': 'WAIT_STOP', 'reason': 'primitive complete'}

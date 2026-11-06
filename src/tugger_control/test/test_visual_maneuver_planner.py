@@ -70,3 +70,15 @@ def test_replanning_rejects_unknown_or_nonfinite_pose():
 def test_margin_rejects_marker_at_edge_of_modeled_camera_view(x):
     assert not marker_visible((0., 0., 0.), (x, .03, 0.))
     assert plan_visual_maneuver((x, .03, 0.), lambda pose: True) is None
+
+
+def test_visual_clearance_includes_the_carried_cargo():
+    from tugger_control.clearance_2_5d import Box
+    from tugger_control.lift_geometry import LIFT_UP_M
+    from tugger_control.visual_scene_clearance import PreparedVisualClearance
+    # A beam at cargo height beside the robot: only the carried cargo reaches it.
+    beam = Box('beam', 0.0, 0.62, 0.0, 0.05, 0.05, 0.33, 0.40)
+    empty = PreparedVisualClearance([beam], LIFT_UP_M)
+    loaded = PreparedVisualClearance([beam], LIFT_UP_M, carried=(0.0, 0.0, 0.065, 0.0))
+    assert empty((0.0, 0.0, 0.0))
+    assert not loaded((0.0, 0.0, 0.0))

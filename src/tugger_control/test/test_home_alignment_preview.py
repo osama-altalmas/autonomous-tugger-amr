@@ -53,7 +53,16 @@ def _bridge():
     )
     bridge._report_run_block = lambda message: OperatorBridge._report_run_block(
         bridge, message)
-    for name in ('_station_entry_approach', '_dispatch_decision', '_start_live_plan'):
+    bridge._robot_pose_at = lambda stamp: bridge._robot_pose()
+    # Simulation start: Stations 1 and 3 hold their cargo; drop-offs are empty.
+    bridge._station_occupancy = Mock(return_value={
+        'cargo_station_0': 0, 'cargo_station_3': 3,
+        'cargo_dropoff_northwest': None, 'cargo_dropoff_southeast': None})
+    for name in ('_assess_destination', '_check_destination_allowed',
+                 '_deviation_confirmed', '_dock_only'):
+        setattr(bridge, name, getattr(OperatorBridge, name).__get__(bridge))
+    for name in ('_station_entry_approach', '_dispatch_decision', '_start_live_plan',
+                 '_start_cargo_operation_now', '_start_qr_alignment_now'):
         setattr(bridge, name, getattr(OperatorBridge, name).__get__(bridge))
     bridge._live_planner = None
     return bridge
@@ -114,6 +123,80 @@ def test_alignment_waits_without_motion_for_expected_fresh_marker_identity():
     bridge._precision_cmd_pub.publish.assert_not_called()
 
 
+@pytest.mark.parametrize('yaw,cancelled', [(0.105, False), (0.005, True)])
+def test_heading_correction_is_not_cancelled_on_position_alone(yaw, cancelled):
+    # Regression: a robot on the target position but 6 degrees off had every
+    # heading correction cancelled after one camera frame, so it never turned.
+    from geometry_msgs.msg import PoseStamped
+    from rclpy.time import Time
+    bridge = _bridge()
+    bridge._qr_alignment_active = True
+    bridge._qr_alignment_station = 'cargo_station_0'
+    bridge._red_frame_stamp = None
+    bridge._expected_qr_is_fresh = Mock(return_value=True)
+    bridge._robot_pose = Mock(return_value=(0.0, 0.0, yaw))
+    bridge._alignment_target_yaw = 0.0
+    bridge._alignment_heading_error = (
+        lambda pose=None: OperatorBridge._alignment_heading_error(bridge, pose))
+    bridge._qr_heading_agrees = Mock(return_value=True)
+    bridge._visual_marker_guard = Mock(marker=(0.0, 0.0))
+    bridge._visual_marker_guard.check.return_value = ('OK', '')
+    bridge._visual_camera_outliers = 0
+    executor = object()
+    bridge._visual_executor = executor
+    bridge._visual_plan_marker = (0.001, 0.0)
+    bridge._visual_plan_origin = (0.0, 0.0, yaw)
+    bridge._visual_replan_requested = False
+    bridge._qr_aligned_frames = 0
+    bridge._publish_precision_stop = Mock()
+    bridge._report_red_frame_state = Mock()
+    bridge._visual_alignment_step = Mock()
+    bridge._alignment_is_stationary = Mock(return_value=False)
+    bridge.get_clock.return_value.now.return_value = Time(seconds=10)
+    message = PoseStamped()
+    message.header.frame_id = 'base_footprint'
+    message.header.stamp = Time(seconds=10).to_msg()
+    message.pose.position.x = 0.001
+    OperatorBridge._red_frame_pose(bridge, message)
+    assert (bridge._visual_executor is None) is cancelled
+
+
+@pytest.mark.parametrize('map_shift,held', [(0.0, False), (0.01, True)])
+def test_marker_change_during_a_maneuver_is_judged_in_the_map(map_shift, held):
+    # Regression: the robot backing 3 cm moves the marker 3 cm in the robot
+    # frame; that is not a target change and must not cancel the maneuver.
+    from geometry_msgs.msg import PoseStamped
+    from rclpy.time import Time
+    bridge = _bridge()
+    bridge._qr_alignment_active = True
+    bridge._qr_alignment_station = 'cargo_station_0'
+    bridge._red_frame_stamp = None
+    bridge._expected_qr_is_fresh = Mock(return_value=True)
+    bridge._robot_pose = Mock(return_value=(-0.03, 0.0, 0.0))
+    bridge._alignment_target_yaw = 0.0
+    bridge._alignment_heading_error = (
+        lambda pose=None: OperatorBridge._alignment_heading_error(bridge, pose))
+    bridge._qr_heading_agrees = Mock(return_value=True)
+    bridge._visual_marker_guard = Mock(marker=(0.0, 0.0))
+    bridge._visual_marker_guard.check.return_value = ('OK', '')
+    bridge._visual_camera_outliers = 0
+    bridge._visual_executor = object()
+    bridge._visual_plan_origin = (0.0, 0.0, 0.0)
+    bridge._visual_plan_marker = (0.0, 0.0)
+    bridge._qr_aligned_frames = 0
+    bridge._report_red_frame_state = Mock()
+    bridge._visual_alignment_step = Mock()
+    bridge._publish_precision_stop = Mock()
+    bridge._alignment_is_stationary = Mock(return_value=False)
+    bridge.get_clock.return_value.now.return_value = Time(seconds=10)
+    message = PoseStamped()
+    message.header.frame_id = 'base_footprint'
+    message.header.stamp = Time(seconds=10).to_msg()
+    message.pose.position.x = 0.03 + map_shift
+    OperatorBridge._red_frame_pose(bridge, message)
+    assert bridge._hold_visual_alignment.called is held
+
+
 def test_near_home_is_a_preview_until_armed_run():
     bridge = _bridge()
     OperatorBridge.execute_destination(bridge, 'HOME', [], [[0.025, 0.025, 0.0]])
@@ -171,6 +254,7 @@ def test_loaded_guard_heartbeat_must_be_fresh():
 
 
 def test_run_rechecks_cargo_pairing_after_preview():
+    # Station 3 cargo at Station 2 is unusual: RUN refuses it until confirmed.
     bridge = _bridge()
     bridge._pending_alignment_station = 'cargo_dropoff_northwest'
     bridge._pending_destination = 'cargo_dropoff_northwest'
@@ -179,7 +263,7 @@ def test_run_rechecks_cargo_pairing_after_preview():
     bridge._confirmed_cargo.return_value = 3
     OperatorBridge.run_selected_mission(bridge, True)
     bridge._start_qr_alignment.assert_not_called()
-    assert any('does not match the confirmed cargo' in call.args[0]
+    assert any('unconfirmed: Station 3 cargo belongs at Station 4' in call.args[0]
                for call in bridge._report.call_args_list)
 
 
@@ -194,14 +278,54 @@ def test_run_rejects_unapproved_saved_or_precision_path():
                for call in bridge._report.call_args_list)
 
 
-def test_wrong_dropoff_is_rejected_before_planning():
+def test_wrong_dropoff_is_a_warning_the_operator_must_confirm():
+    bridge = _bridge()
+    bridge._confirmed_cargo.return_value = 0
+    bridge._mission_confirm = None
+    bridge._approach_provider = Mock()
+    OperatorBridge.execute_destination(bridge, 'cargo_dropoff_southeast', [], [[0, 0, 0]])
+    assert bridge._mission_confirm['confirmed'] is False
+    assert any('WARNING: Station 1 cargo belongs at Station 2, not Station 4' in call.args[0]
+               for call in bridge._report.call_args_list)
+
+
+def test_carrying_cargo_to_a_pickup_station_is_blocked():
     bridge = _bridge()
     bridge._confirmed_cargo.return_value = 0
     bridge._approach_provider = Mock()
-    OperatorBridge.execute_destination(bridge, 'cargo_dropoff_southeast', [], [[0, 0, 0]])
+    OperatorBridge.execute_destination(bridge, 'cargo_station_3', [], [[0, 0, 0]])
     bridge._approach_provider.assert_not_called()
-    assert any('does not match the confirmed cargo' in call.args[0]
-               for call in bridge._report.call_args_list)
+    assert any('Robot is carrying Station 1 cargo: drop it off first (at Station 2)'
+               in call.args[0] for call in bridge._report.call_args_list)
+
+
+def test_first_run_warns_and_second_run_proceeds():
+    bridge = _bridge()
+    bridge._continue_attempt = Mock()
+    bridge._mission_confirm = {'destination': 'cargo_dropoff_southeast',
+                               'warnings': ['Station 1 cargo belongs at Station 2'],
+                               'dock_only': False, 'confirmed': False}
+    OperatorBridge.run_selected_mission_with_retry(bridge, True)
+    bridge._continue_attempt.assert_not_called()
+    assert 'Press RUN again to proceed' in bridge._report.call_args.args[0]
+    OperatorBridge.run_selected_mission_with_retry(bridge, True)
+    bridge._continue_attempt.assert_called_once_with(1)
+
+
+def test_automatic_retries_cannot_confirm_a_warning():
+    bridge = _bridge()
+    bridge._mission_confirm = {'destination': 'cargo_dropoff_southeast',
+                               'warnings': ['unusual'], 'dock_only': False,
+                               'confirmed': False}
+    bridge._confirmed_cargo.return_value = 0
+    for _ in range(3):
+        try:
+            OperatorBridge._check_destination_allowed(bridge, 'cargo_dropoff_southeast', 0)
+        except ValueError as exc:
+            assert 'unconfirmed' in str(exc)
+        else:
+            raise AssertionError('an unconfirmed warning was allowed')
+    assert bridge._mission_confirm['confirmed'] is False
 
 
 def test_unknown_cargo_feedback_is_not_treated_as_unloaded():
@@ -788,3 +912,138 @@ def test_first_lift_reading_sends_one_hold_command_never_below_down():
     OperatorBridge._joint_state(bridge, message)
     OperatorBridge._joint_state(bridge, message)
     bridge.lift.assert_called_once_with(LIFT_DOWN_M)
+
+
+def _recovery_bridge(phase, attempts=0):
+    from action_msgs.msg import GoalStatus
+    bridge = _bridge()
+    bridge._motion_armed = True
+    bridge._cancel_requested = False
+    bridge._mission_phase = phase
+    bridge._mission_retry = {'destination': 'cargo_station_0', 'candidates': [],
+                             'targets': [], 'attempts': attempts}
+    timers = []
+    bridge.create_timer = lambda _period, callback: timers.append(callback) or Mock()
+    bridge._recover = Mock()
+    bridge._recoverable = lambda phase: OperatorBridge._recoverable(bridge, phase)
+    done = Mock()
+    return bridge, timers, done, GoalStatus
+
+
+def test_recoverable_failure_retries_within_the_budget():
+    bridge, timers, done, status = _recovery_bridge('approach')
+    OperatorBridge._finish_mission(bridge, done, False, status.STATUS_ABORTED)
+    done.assert_not_called()
+    assert bridge._mission_retry['attempts'] == 1 and len(timers) == 1
+    timers[0]()
+    bridge._recover.assert_called_once()
+
+
+def test_failure_after_the_budget_is_reported_with_a_clear_reason():
+    bridge, timers, done, status = _recovery_bridge('camera', attempts=2)
+    OperatorBridge._finish_mission(bridge, done, False, status.STATUS_ABORTED)
+    done.assert_called_once_with(False, status.STATUS_ABORTED)
+    assert 'after 2 recovery attempts' in bridge._report.call_args.args[0]
+    assert not timers
+
+
+def test_cancel_and_latched_lift_are_never_retried():
+    bridge, timers, done, status = _recovery_bridge('approach')
+    OperatorBridge._finish_mission(bridge, done, False, status.STATUS_CANCELED)
+    done.assert_called_once()
+    bridge, timers, done, status = _recovery_bridge('cargo')
+    bridge._last_cargo_failure = ('pickup', 'lift_latched_in_simulator_restart_gazebo')
+    OperatorBridge._finish_mission(bridge, done, False, status.STATUS_ABORTED)
+    done.assert_called_once()
+    assert not timers
+
+
+def test_success_clears_the_recovery_budget():
+    bridge, timers, done, status = _recovery_bridge('cargo', attempts=1)
+    OperatorBridge._finish_mission(bridge, done, True, status.STATUS_SUCCEEDED)
+    done.assert_called_once_with(True, status.STATUS_SUCCEEDED)
+    assert bridge._mission_retry is None
+
+
+def test_rejected_pickup_reverifies_the_dock_with_the_camera():
+    # The simulator rejects an attach when the robot is misaligned with the
+    # cargo, so recovery must re-check the dock, not just retry the lift.
+    bridge, timers, _done, _status = _recovery_bridge('cargo')
+    bridge.docked_station = 'cargo_station_0'
+    bridge.lift = Mock()
+    bridge._start_qr_alignment = Mock()
+    bridge._start_cargo_operation = Mock()
+    OperatorBridge._recover(bridge, 'cargo', bridge._mission_retry)
+    bridge.lift.assert_called_once_with(LIFT_DOWN_M)
+    timers[0]()
+    bridge._start_qr_alignment.assert_called_once_with('cargo_station_0')
+    bridge._start_cargo_operation.assert_not_called()
+
+
+def test_camera_stage_gives_up_when_corrections_stop_helping():
+    bridge = _bridge()
+    bridge._alignment_heading_error = lambda pose: 0.105
+    bridge._red_frame_error = (0.001, 0.0)
+    stalled = [OperatorBridge._visual_progress_stalled(bridge, (0, 0, 0)) for _ in range(7)]
+    assert stalled[:6] == [False] * 6 and stalled[6] is True
+
+
+def test_camera_stage_keeps_going_while_the_error_shrinks():
+    bridge = _bridge()
+    bridge._alignment_heading_error = lambda pose: 0.0
+    for step in range(10):
+        bridge._red_frame_error = (0.03 - 0.003 * step, 0.0)
+        assert OperatorBridge._visual_progress_stalled(bridge, (0, 0, 0)) is False
+
+
+def test_camera_frame_waits_for_tf_at_its_own_stamp():
+    from geometry_msgs.msg import PoseStamped
+    from rclpy.time import Time
+    from rclpy.clock_type import ClockType
+    ROS = ClockType.ROS_TIME
+    bridge = _bridge()
+    bridge._qr_alignment_active = True
+    bridge._red_frame_waiting = None
+    bridge._red_frame_pose = Mock()
+    bridge._release_red_frame = lambda: OperatorBridge._release_red_frame(bridge)
+    bridge._tf = Mock()
+    bridge._tf.can_transform.return_value = False
+    message = PoseStamped()
+    message.header.stamp = Time(seconds=10).to_msg()
+    bridge.get_clock.return_value.now.return_value = Time(seconds=10.03, clock_type=ROS)
+    OperatorBridge._red_frame_received(bridge, message)
+    bridge._red_frame_pose.assert_not_called()
+    bridge._tf.can_transform.return_value = True
+    OperatorBridge._release_red_frame(bridge)
+    bridge._red_frame_pose.assert_called_once_with(message)
+    # A frame whose TF never arrives goes to the handler's staleness checks.
+    bridge._red_frame_pose.reset_mock()
+    bridge._tf.can_transform.return_value = False
+    OperatorBridge._red_frame_received(bridge, message)
+    bridge.get_clock.return_value.now.return_value = Time(seconds=10.25, clock_type=ROS)
+    OperatorBridge._release_red_frame(bridge)
+    bridge._red_frame_pose.assert_called_once_with(message)
+
+
+def test_failed_short_connector_falls_through_to_a_live_plan():
+    bridge = _bridge()
+    bridge._recovery_only = False
+    bridge._live_planner = Mock()
+    bridge._start_live_plan = Mock()
+    context = ('cargo_station_0', (0.04, -0.03, 0.0), [[1, 1, 0]], 3, [[0, 0, 0]], True)
+    bridge._connector_fallback = context
+    OperatorBridge._connector_failed(bridge, 'planner path changes direction', 5)
+    bridge._start_live_plan.assert_called_once_with(
+        'cargo_station_0', (0.04, -0.03, 0.0), [[1, 1, 0]], 5, [[0, 0, 0]], True)
+    assert bridge._connector_fallback is None
+
+
+def test_last_resort_recovery_connector_failure_stops_with_a_reason():
+    bridge = _bridge()
+    bridge._recovery_only = True
+    bridge._live_planner = Mock()
+    bridge._start_live_plan = Mock()
+    bridge._connector_fallback = None
+    OperatorBridge._connector_failed(bridge, 'no safe short connector', 5)
+    bridge._start_live_plan.assert_not_called()
+    assert 'No plan was sent' in bridge._report.call_args.args[0]

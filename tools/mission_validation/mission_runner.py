@@ -149,6 +149,8 @@ class Runner:
         self.trial_routes = set(trial_routes)
         self.trial_candidates = set(trial_candidates)
         self.force_live = False
+        self.disturb = None          # (dx, dy): shove once when the camera stage starts
+        self._disturbed = False
         self.reports = []
         self.finished = None
         self.planned = False
@@ -194,10 +196,22 @@ class Runner:
                 bridge._active_follow is not None or bridge._qr_alignment_active or
                 bridge._cargo_task is not None)
 
+    def _maybe_disturb(self):
+        """Test only: shove the robot once at the camera stage to force a failure."""
+        if (self.disturb is None or self._disturbed or
+                self.recorder.owner != 'DOCK_CAMERA' or self.recorder.pose is None):
+            return
+        self._disturbed = True
+        x, y, yaw = self.recorder.pose
+        print(f'disturbing robot by {self.disturb} at the camera stage', flush=True)
+        dyaw = self.disturb[2] if len(self.disturb) > 2 else 0.0
+        self._set_pose(x + self.disturb[0], y + self.disturb[1], yaw + dyaw)
+
     def spin_until(self, condition, seconds):
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             self.executor.spin_once(timeout_sec=0.02)
+            self._maybe_disturb()
             if condition():
                 return True
         return False
@@ -236,7 +250,7 @@ class Runner:
                 'lift': self.bridge._lift_position, 'docked_station': None,
                 'guard_reasons': {}}
 
-    def teleport(self, x, y, yaw):
+    def _set_pose(self, x, y, yaw):
         assert os.environ.get('GZ_PARTITION', '').startswith('tugger_validation_')
         request = (f'name: "autonomous_tugger" position {{x: {x} y: {y} z: 0.0}} '
                    f'orientation {{z: {math.sin(yaw / 2)} w: {math.cos(yaw / 2)}}}')
@@ -244,6 +258,9 @@ class Runner:
                         '--reqtype', 'gz.msgs.Pose', '--reptype', 'gz.msgs.Boolean',
                         '--timeout', '5000', '--req', request], check=True,
                        capture_output=True)
+
+    def teleport(self, x, y, yaw):
+        self._set_pose(x, y, yaw)
         self.spin_until(lambda: False, 20.0)
         self.bridge.docked_station = None
 
@@ -260,7 +277,7 @@ class Runner:
                 # In memory only, for this validation run. Files stay unapproved.
                 route['execution_approved'] = True
                 route['_database_execution_approved'] = True
-        self.bridge.execute_destination(
+        self.bridge.start_mission(
             destination, candidates, self.entries.get(destination, []))
         if not self.spin_until(lambda: self.planned, 180):
             result['outcome'] = 'NO_PLAN'
@@ -409,6 +426,8 @@ def main():
                         help='cancel the first mission after this many seconds')
     parser.add_argument('--teleport', nargs=3, type=float, metavar=('X', 'Y', 'YAW'),
                         help='move the robot here (isolated world only) before missions')
+    parser.add_argument('--disturb-camera', nargs=3, type=float, metavar=('DX', 'DY', 'DYAW'),
+                        help='test only: shove the robot once when the camera stage starts')
     parser.add_argument('--force-live', action='store_true',
                         help='test only: ignore preplanned paths so live planning runs')
     parser.add_argument('--settle', type=float, default=30.0,
@@ -431,6 +450,7 @@ def main():
     results = []
     destinations = list(args.destinations)
     runner.force_live = args.force_live
+    runner.disturb = tuple(args.disturb_camera) if args.disturb_camera else None
     if args.teleport:
         runner.teleport(*args.teleport)
     if args.cancel_first_after and destinations:

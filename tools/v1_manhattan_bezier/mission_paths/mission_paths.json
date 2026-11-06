@@ -186,5 +186,11 @@
       "file": "cargo_station_3__TO__cargo_station_0.json"
     }
   },
-  "failures": {}
+  "failures": {},
+  "lift_audit": {
+    "cargo_station_0 pickup": true,
+    "cargo_station_3 pickup": true,
+    "cargo_dropoff_northwest drop-off (cargo from cargo_station_0)": true,
+    "cargo_dropoff_southeast drop-off (cargo from cargo_station_3)": true
+  }
 }

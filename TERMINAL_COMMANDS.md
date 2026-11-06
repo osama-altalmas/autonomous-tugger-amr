@@ -2,6 +2,10 @@
 
 Run one terminal per component. Do not start duplicates.
 
+Every terminal uses Cyclone DDS (`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`), as
+Nav2 recommends. All terminals must use the same setting, including the `ros2`
+checks in T8; a terminal without it may not see the others.
+
 Start order: **Step 0 → T1 → T2 → T3 → T4 → T8 map activation → T5 → T8 checks → T6**.
 T7 and T9 are optional.
 
@@ -13,9 +17,13 @@ Close every simulation terminal, then:
 pkill -f "gz sim"; pkill -f "ros2 launch"; pkill -f rqt_gui; pkill -f rviz2; pkill -f map_server
 sleep 3
 ps -eo cmd | grep -E "[g]z sim|[r]os2 launch|[r]qt_gui|[m]ap_server" || echo "clean"
+source /opt/ros/lyrical/setup.bash && fastdds shm clean
+ros2 daemon stop
 ```
 
-Continue only when it prints `clean`.
+Continue only when it prints `clean`. The last command removes shared-memory
+files left by killed ROS processes; leftovers can stop Nav2 servers from
+finding each other ("action server not available").
 
 ## T1 — Gazebo
 
@@ -24,14 +32,15 @@ cd ~/Autonomous_Tugger_Project_V2/autonomous_tugger_ws
 unset AMENT_PREFIX_PATH COLCON_PREFIX_PATH CMAKE_PREFIX_PATH PYTHONPATH
 source /opt/ros/lyrical/setup.bash
 source install/setup.bash
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 export GZ_IP=127.0.0.1
 export IGN_IP=127.0.0.1
 ros2 launch tugger_gazebo simulation.launch.py
 ```
 
-Wait until all four controllers report `activate successful`. The launch then
-holds the lift at 2 mm automatically; an uncommanded lift can latch on its
-lower limit in Gazebo.
+Wait until all four controllers report `activate successful`. The lift's hard
+stops sit outside its working range, so it cannot latch on a limit in Gazebo
+(DART bug gazebosim/gz-sim#2785); no lift command is needed at startup.
 
 ## T2 — 4WS, odometry, EKF, QR vision, docking controller, motion guard
 
@@ -40,6 +49,7 @@ cd ~/Autonomous_Tugger_Project_V2/autonomous_tugger_ws
 unset AMENT_PREFIX_PATH COLCON_PREFIX_PATH CMAKE_PREFIX_PATH PYTHONPATH
 source /opt/ros/lyrical/setup.bash
 source install/setup.bash
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 ros2 launch tugger_control control.launch.py
 ```
 
@@ -50,6 +60,7 @@ cd ~/Autonomous_Tugger_Project_V2/autonomous_tugger_ws
 unset AMENT_PREFIX_PATH COLCON_PREFIX_PATH CMAKE_PREFIX_PATH PYTHONPATH
 source /opt/ros/lyrical/setup.bash
 source install/setup.bash
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 ros2 launch tugger_ground_truth simulation_localization.launch.py
 ```
 
@@ -60,6 +71,7 @@ cd ~/Autonomous_Tugger_Project_V2/autonomous_tugger_ws
 unset AMENT_PREFIX_PATH COLCON_PREFIX_PATH CMAKE_PREFIX_PATH PYTHONPATH
 source /opt/ros/lyrical/setup.bash
 source install/setup.bash
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 ros2 run nav2_map_server map_server --ros-args \
   -r __node:=map_server \
   -p "yaml_filename:=$PWD/src/tugger_navigation/maps/warehouse_map.yaml" \
@@ -73,6 +85,7 @@ cd ~/Autonomous_Tugger_Project_V2/autonomous_tugger_ws
 unset AMENT_PREFIX_PATH COLCON_PREFIX_PATH CMAKE_PREFIX_PATH PYTHONPATH
 source /opt/ros/lyrical/setup.bash
 source install/setup.bash
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 ros2 launch tugger_navigation nav2.launch.py
 ```
 
@@ -83,6 +96,7 @@ cd ~/Autonomous_Tugger_Project_V2/autonomous_tugger_ws
 unset AMENT_PREFIX_PATH COLCON_PREFIX_PATH CMAKE_PREFIX_PATH PYTHONPATH
 source /opt/ros/lyrical/setup.bash
 source install/setup.bash
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 ros2 run rqt_gui rqt_gui -s tugger_control
 ```
 
@@ -92,6 +106,7 @@ ros2 run rqt_gui rqt_gui -s tugger_control
 cd ~/Autonomous_Tugger_Project_V2/autonomous_tugger_ws
 source /opt/ros/lyrical/setup.bash
 source install/setup.bash
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 rviz2 --ros-args -p use_sim_time:=true
 ```
 
@@ -103,6 +118,7 @@ Map activation is required on every startup, after T4 and before T5:
 cd ~/Autonomous_Tugger_Project_V2/autonomous_tugger_ws
 source /opt/ros/lyrical/setup.bash
 source install/setup.bash
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 ros2 lifecycle set /map_server configure
 ros2 lifecycle set /map_server activate
 ros2 lifecycle get /map_server
@@ -145,6 +161,7 @@ cd ~/Autonomous_Tugger_Project_V2/autonomous_tugger_ws
 unset AMENT_PREFIX_PATH COLCON_PREFIX_PATH CMAKE_PREFIX_PATH PYTHONPATH
 source /opt/ros/lyrical/setup.bash
 source install/setup.bash
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 ros2 run rqt_image_view rqt_image_view
 ```
 

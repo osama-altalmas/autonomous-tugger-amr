@@ -753,10 +753,16 @@
 
     <axis xyz="0 0 1"/>
 
+    <!--
+      Operating range is 0.002-0.1075 m (lift_geometry.py). The hard stops sit
+      outside it and the servo effort is unbounded: in DART a joint that comes
+      to rest on a limit under a velocity limit latches there and ignores all
+      later commands (gazebosim/gz-sim#2785, maintainer-recommended model).
+    -->
     <limit
-      lower="0.0"
-      upper="0.110"
-      effort="2000"
+      lower="-0.05"
+      upper="0.200"
+      effort="1e9"
       velocity="0.05"/>
 
   </joint>

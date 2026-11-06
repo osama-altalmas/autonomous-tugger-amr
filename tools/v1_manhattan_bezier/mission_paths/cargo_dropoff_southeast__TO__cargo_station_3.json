@@ -4031,5 +4031,16 @@
   "route": "generated route cargo_dropoff_southeast__TO__cargo_station_3.json",
   "approach": "generated approach cargo_station_3__south"
  },
- "execution_approved": true
+ "execution_approved": true,
+ "validation": {
+  "articulated_wheel_sweep": "PASSED (wheel bounds cover all steering angles)",
+  "surrounding_obstacle_clearance": "PASSED (269 sampled poses, unloaded)",
+  "audit": {
+   "loaded": false,
+   "passed": true,
+   "samples": 269,
+   "first_collision": null,
+   "sample_index": null
+  }
+ }
 }

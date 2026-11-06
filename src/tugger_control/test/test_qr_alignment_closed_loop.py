@@ -20,7 +20,8 @@ def _simulate(forward, lateral, seconds=120.0):
     target = (forward, lateral, 0.0)
     pose, speed, steering = (0.0, 0.0, 0.0), 0.0, 0.0
     executor = None
-    for _ in range(int(seconds / dt)):
+    for step in range(int(seconds / dt)):
+        now = 1.0 + step * dt
         if executor is None:
             if (math.hypot(pose[0] - target[0], pose[1] - target[1]) <= .02 and
                     abs(pose[2] - target[2]) <= .1):
@@ -31,7 +32,7 @@ def _simulate(forward, lateral, seconds=120.0):
                 return 'STOP', math.hypot(pose[0] - target[0], pose[1] - target[1])
             executor = VisualManeuverExecutor(plan)
         command = executor.update(
-            pose, speed, 1.0, 1.0, 1.0,
+            pose, speed, now, now, now,
             identity_ok=True, clearance_ok=True,
             visible=marker_visible(pose, target))
         if command['state'] == 'STOP':
