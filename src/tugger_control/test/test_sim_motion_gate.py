@@ -6,6 +6,8 @@ import ast
 
 import pytest
 
+from tugger_control.lift_geometry import LIFT_CONTACT_M, LIFT_UP_M
+
 pytest.importorskip('rclpy')
 from geometry_msgs.msg import TwistStamped
 from rclpy.time import Time
@@ -21,7 +23,7 @@ def gate(obstacles=()):
     request.twist.angular.z = 0.2
     clock = Mock()
     clock.now.return_value = Time(seconds=10)
-    return SimpleNamespace(
+    item = SimpleNamespace(
         _now=Mock(return_value=10.0), _last_time=9.9,
         get_clock=Mock(return_value=clock), _output=Mock(), _ready=Mock(), _dock_ready=Mock(),
         _status=Mock(), _last_reason=None, _states={0: 'attached', 3: 'detached'},
@@ -31,8 +33,11 @@ def gate(obstacles=()):
         _fresh=SimMotionGate._fresh,
         _snapshot=Mock(return_value=((0.0, 0.0, 0.0), obstacles)),
         _payloads={0: (0.0, 0.0, 0.065, 0.0), 3: (10, 10, 0, 0)},
-        _lift=0.065, _speed=0.05, _wheel_speed=0.05,
+        _lift=LIFT_UP_M, _speed=0.05, _wheel_speed=0.05,
     )
+    item._stopping_curvature = lambda v, omega, now: SimMotionGate._stopping_curvature(
+        item, v, omega, now)
+    return item
 
 
 def test_loaded_output_is_speed_limited_and_keeps_curvature():
@@ -291,3 +296,36 @@ def test_scene_time_is_read_from_the_scene_and_absent_values_fall_back():
     assert scene_time('{}') is None
     assert scene_time('not json') is None
     assert scene_time(None) is None
+
+
+def test_loaded_camera_alignment_moves_slowly_instead_of_being_refused():
+    item = gate()
+    item._owner = 'DOCK_CAMERA'
+    item._requests['PRECISION'] = item._requests['NAV']
+    item._request_at['PRECISION'] = 9.9
+    item._requests['NAV'].twist.linear.x = 0.3
+    item._requests['NAV'].twist.angular.z = 0.0
+    SimMotionGate._tick(item)
+    result = item._output.publish.call_args.args[0]
+    assert 0.0 < result.twist.linear.x <= 0.05
+
+
+def test_loaded_segment_two_is_still_refused():
+    item = gate()
+    item._owner = 'DOCK_NAV'
+    SimMotionGate._tick(item)
+    result = item._output.publish.call_args.args[0]
+    assert result.twist.linear.x == 0.0
+
+
+def test_stopping_curvature_uses_fresh_steering_or_falls_back_to_full_lock():
+    from tugger_control.precision_scene_clearance import FULL_LOCK_CURVATURE
+    item = gate()
+    item._steer, item._steer_at = None, None
+    assert SimMotionGate._stopping_curvature(item, 0.3, 0.0, 10.0) == FULL_LOCK_CURVATURE
+    item._steer, item._steer_at = 0.0, 9.95
+    assert SimMotionGate._stopping_curvature(item, 0.3, 0.0, 10.0) == pytest.approx(0.3)
+    # Commanded curvature larger than current steering wins.
+    assert SimMotionGate._stopping_curvature(item, 0.2, 0.2, 10.0) == pytest.approx(1.3)
+    item._steer_at = 9.0  # stale feedback
+    assert SimMotionGate._stopping_curvature(item, 0.3, 0.0, 10.0) == FULL_LOCK_CURVATURE

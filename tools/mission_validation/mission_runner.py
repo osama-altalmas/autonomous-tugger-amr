@@ -148,13 +148,17 @@ class Runner:
         self.timeout = timeout
         self.trial_routes = set(trial_routes)
         self.trial_candidates = set(trial_candidates)
+        self.force_live = False
         self.reports = []
         self.finished = None
         self.planned = False
         panel = SimpleNamespace()
+        panel._tools_directory = lambda: OperatorPanel._tools_directory(panel)
         panel._routes = OperatorPanel._load_routes(panel)
         self.routes = panel._routes
         docking = OperatorPanel._load_docking_routes(panel)
+        self.mission_paths = OperatorPanel._load_mission_paths(panel)
+        live_planner = OperatorPanel._make_live_planner(panel)
         self.entries = OperatorPanel._load_station_entries(panel)
         def approach(station, entry_pose=None):
             metadata, poses = docking.approach(station, entry_pose)
@@ -164,7 +168,8 @@ class Runner:
             return metadata, poses
         self.bridge = OperatorBridge(self._report, self._plan, self._done,
                                      approach_provider=approach,
-                                     station_layout=panel._routes.database)
+                                     station_layout=panel._routes.database,
+                                     live_planner=live_planner)
         self.recorder = Recorder()
         self.recorder.pose_lookup = self.bridge._robot_pose
         self.executor = SingleThreadedExecutor()
@@ -211,13 +216,45 @@ class Runner:
                     self.recorder.map_received)
         return self.spin_until(ready, seconds)
 
+    def cancel_after(self, destination, seconds):
+        """Start a mission, cancel it part-way, and report where it stopped."""
+        self.finished, self.planned = None, False
+        self.bridge.execute_destination(
+            destination, self.mission_paths.paths_to(destination),
+            self.entries.get(destination, []))
+        self.spin_until(lambda: self.planned, 60)
+        self.bridge._motion_armed = True
+        self.bridge.run_selected_mission_with_retry(True)
+        self.spin_until(lambda: False, seconds)
+        self.bridge.cancel_navigation()
+        self.spin_until(lambda: False, 5.0)
+        self.bridge._cancel_requested = False
+        self.bridge._motion_armed = True
+        return {'destination': destination, 'outcome': 'CANCELLED_ON_PURPOSE',
+                'final_pose': self.recorder.pose, 'center_error_m': 0.0, 'wall_s': seconds,
+                'phases': {}, 'reports': [], 'guard_events': [], 'cargo': None,
+                'lift': self.bridge._lift_position, 'docked_station': None,
+                'guard_reasons': {}}
+
+    def teleport(self, x, y, yaw):
+        assert os.environ.get('GZ_PARTITION', '').startswith('tugger_validation_')
+        request = (f'name: "autonomous_tugger" position {{x: {x} y: {y} z: 0.0}} '
+                   f'orientation {{z: {math.sin(yaw / 2)} w: {math.cos(yaw / 2)}}}')
+        subprocess.run(['gz', 'service', '-s', '/world/tugger_test/set_pose',
+                        '--reqtype', 'gz.msgs.Pose', '--reptype', 'gz.msgs.Boolean',
+                        '--timeout', '5000', '--req', request], check=True,
+                       capture_output=True)
+        self.spin_until(lambda: False, 20.0)
+        self.bridge.docked_station = None
+
     def mission(self, destination):
         self.finished, self.planned = None, False
         self.recorder.reset()
         first_report = len(self.reports)
         wall = time.monotonic()
         result = {'destination': destination, 'outcome': 'NOT_RUN'}
-        candidates = self.routes.routes_to(destination)
+        # Test only: hide preplanned paths so the live planner must run.
+        candidates = [] if self.force_live else self.mission_paths.paths_to(destination)
         for key, route, _poses in candidates:
             if key in self.trial_routes:
                 # In memory only, for this validation run. Files stay unapproved.
@@ -225,15 +262,20 @@ class Runner:
                 route['_database_execution_approved'] = True
         self.bridge.execute_destination(
             destination, candidates, self.entries.get(destination, []))
-        if not self.spin_until(lambda: self.planned, 60):
+        if not self.spin_until(lambda: self.planned, 180):
             result['outcome'] = 'NO_PLAN'
         else:
             self.bridge._motion_armed = True
             deadline = time.monotonic() + self.timeout
             # A loaded departure asks for a new RUN at staging, as for an operator.
+            # Press RUN once, like an operator; the panel continues by itself
+            # after undocking. Press again only if nothing is running.
+            first = True
             while self.finished is None and time.monotonic() < deadline:
                 self.planned = False
-                self.bridge.run_selected_mission(True)
+                if first or not self._busy():
+                    self.bridge.run_selected_mission_with_retry(True)
+                first = False
                 idle_limit = time.monotonic() + 120.0
                 while (self.finished is None and not self.planned and
                        time.monotonic() < deadline):
@@ -363,6 +405,12 @@ def main():
                         help='Allow this unapproved route in this run only')
     parser.add_argument('--trial-candidate', action='append', default=[],
                         help='Allow this unapproved STATION__gate approach in this run only')
+    parser.add_argument('--cancel-first-after', type=float,
+                        help='cancel the first mission after this many seconds')
+    parser.add_argument('--teleport', nargs=3, type=float, metavar=('X', 'Y', 'YAW'),
+                        help='move the robot here (isolated world only) before missions')
+    parser.add_argument('--force-live', action='store_true',
+                        help='test only: ignore preplanned paths so live planning runs')
     parser.add_argument('--settle', type=float, default=30.0,
                         help='seconds to wait after the stack reports ready')
     args = parser.parse_args()
@@ -381,7 +429,14 @@ def main():
         rclpy.shutdown()
         return
     results = []
-    for destination in args.destinations:
+    destinations = list(args.destinations)
+    runner.force_live = args.force_live
+    if args.teleport:
+        runner.teleport(*args.teleport)
+    if args.cancel_first_after and destinations:
+        results.append(runner.cancel_after(destinations.pop(0), args.cancel_first_after))
+        print('cancelled on purpose at', runner.recorder.pose, flush=True)
+    for destination in destinations:
         result = runner.mission(destination)
         results.append(result)
         Path(args.output).write_text(json.dumps(results, indent=1))
@@ -391,7 +446,7 @@ def main():
     runner.bridge.destroy_node()
     runner.recorder.destroy_node()
     rclpy.shutdown()
-    raise SystemExit(0 if all(r['outcome'] == 'SUCCESS' for r in results) else 1)
+    raise SystemExit(0 if all(r['outcome'] in ('SUCCESS', 'CANCELLED_ON_PURPOSE') for r in results) else 1)
 
 
 if __name__ == '__main__':

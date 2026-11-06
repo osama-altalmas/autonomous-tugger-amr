@@ -9,6 +9,8 @@ import math
 from collections import Counter
 import xml.etree.ElementTree as ET
 
+from tugger_control.lift_geometry import lift_is_raised
+from tugger_control.precision_scene_clearance import FULL_LOCK_CURVATURE, stopping_curvature
 from tugger_control.clearance_2_5d import Box, boxes_overlap
 from tugger_control.warehouse_clearance import cargo_box, robot_boxes, static_world_boxes
 
@@ -80,7 +82,7 @@ def decode_scene(payload, now, *, max_age=0.4, expected_counts=None):
 def loaded_envelope_clear(robot_pose, attached_cargo_pose, lift, cargo_id, obstacles,
                           current_speed, requested_speed, *, reaction_s=0.5,
                           deceleration=2.5, xy_clearance=0.02, z_clearance=0.01,
-                          max_speed=1.2):
+                          max_speed=1.2, curvature_bound=FULL_LOCK_CURVATURE):
     """Check a deliberately conservative all-directions stopping envelope.
 
     Circular horizontal inflation covers translation and any rotation during
@@ -94,7 +96,7 @@ def loaded_envelope_clear(robot_pose, attached_cargo_pose, lift, cargo_id, obsta
     if (cargo_id not in (0, 3) or reaction_s <= 0 or deceleration <= 0 or
             xy_clearance < 0 or z_clearance < 0 or max_speed <= 0 or
             abs(current_speed) > max_speed or abs(requested_speed) > max_speed or
-            not 0.060 <= lift <= 0.070):
+            not lift_is_raised(lift)):
         raise ValueError('Loaded motion is outside guarded operating limits')
     if math.hypot(attached_cargo_pose[0] - robot_pose[0],
                   attached_cargo_pose[1] - robot_pose[1]) > 0.04:
@@ -103,7 +105,7 @@ def loaded_envelope_clear(robot_pose, attached_cargo_pose, lift, cargo_id, obsta
     travel = speed * reaction_s + speed * speed / (2.0 * deceleration)
     # Counter-phase 4WS at 45 degrees has |curvature| <= 2 / wheelbase.
     # A square corner can sweep this far as its heading changes.
-    angular_change = min(math.pi, 2.0 * travel / 0.58)
+    angular_change = min(math.pi, stopping_curvature(curvature_bound) * travel)
     rotation = 2.0 * math.hypot(0.68, 0.68) * math.sin(angular_change / 2.0)
     horizontal_margin = xy_clearance + travel + rotation
     parts = robot_boxes(robot_pose, lift) + [cargo_box('cargo', attached_cargo_pose)]
@@ -122,7 +124,8 @@ def loaded_envelope_clear(robot_pose, attached_cargo_pose, lift, cargo_id, obsta
 
 
 def choose_guarded_speed(robot_pose, attached_cargo_pose, lift, cargo_id, obstacles,
-                         current_speed, requested_speed, *, max_speed=1.2):
+                         current_speed, requested_speed, *, max_speed=1.2,
+                         curvature_bound=FULL_LOCK_CURVATURE):
     """Reduce loaded speed near tight geometry; return zero if none is safe."""
     if not math.isfinite(requested_speed):
         raise ValueError('Invalid requested velocity')
@@ -138,7 +141,8 @@ def choose_guarded_speed(robot_pose, attached_cargo_pose, lift, cargo_id, obstac
         value = math.copysign(candidate, limited) if candidate else 0.0
         clear, last_hit = loaded_envelope_clear(
             robot_pose, attached_cargo_pose, lift, cargo_id, obstacles,
-            current_speed, value, max_speed=max_speed)
+            current_speed, value, max_speed=max_speed,
+            curvature_bound=curvature_bound)
         if clear:
             return value, None
     return 0.0, last_hit

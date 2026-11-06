@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pytest
 
+from tugger_control.lift_geometry import LIFT_CONTACT_M, LIFT_UP_M
+
 from tugger_control.clearance_2_5d import Box
 from tugger_control.loaded_motion_guard import (
     REQUIRED_MODELS, choose_guarded_speed, decode_scene, loaded_envelope_clear,
@@ -41,7 +43,7 @@ def test_scene_rejects_invalid_obstacle_size(value):
 
 
 def check(obstacles, speed=0.0, requested=0.0):
-    return loaded_envelope_clear((0, 0, 0), (0, 0, 0.065, 0), 0.065, 0,
+    return loaded_envelope_clear((0, 0, 0), (0, 0, 0.065, 0), LIFT_UP_M, 0,
                                  obstacles, speed, requested)
 
 
@@ -64,7 +66,7 @@ def test_stopping_envelope_blocks_obstacle_before_contact():
 
 def test_unexpected_cargo_or_excess_speed_fails_closed():
     with pytest.raises(ValueError):
-        loaded_envelope_clear((0, 0, 0), (0.1, 0, 0.065, 0), 0.065, 0, [], 0, 0)
+        loaded_envelope_clear((0, 0, 0), (0.1, 0, 0.065, 0), LIFT_UP_M, 0, [], 0, 0)
     with pytest.raises(ValueError):
         check([], speed=1.3)
     with pytest.raises(ValueError):
@@ -75,7 +77,7 @@ def test_station_legs_reduce_speed_instead_of_expanding_cargo_to_floor():
     legs = [('station_legs', Box(f'leg_{x}_{y}', x, y, 0.0, 0.04, 0.04, 0, 0.28))
             for x in (-0.56, 0.56) for y in (-0.56, 0.56)]
     velocity, hit = choose_guarded_speed(
-        (0, 0, 0), (0, 0, 0.065, 0), 0.065, 0, legs, 0.0, 0.1)
+        (0, 0, 0), (0, 0, 0.065, 0), LIFT_UP_M, 0, legs, 0.0, 0.1)
     assert hit is None
     assert 0.0 < velocity < 0.1
 
@@ -106,6 +108,6 @@ def test_station_one_departure_has_nonzero_guarded_speed_in_modeled_world():
              'tugger_gazebo/worlds/tugger_warehouse.sdf')
     obstacles = [(box.name.split('/', 1)[0], box) for box in static_world_boxes(world)]
     speed, hit = choose_guarded_speed(
-        (-17.5, -7, 0), (-17.5, -7, 0.065, 0), 0.065, 0,
+        (-17.5, -7, 0), (-17.5, -7, 0.065, 0), LIFT_UP_M, 0,
         obstacles, 0.0, 0.5)
     assert hit is None and 0 < speed <= 0.5

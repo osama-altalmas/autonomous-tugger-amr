@@ -54,6 +54,34 @@ def routes_from_gate(candidates, station, gate):
             candidate[1].get('source_entrance') == gate]
 
 
+def mission_approach_rejoin(candidates, robot_pose, distance=DIRECT_REJOIN_DISTANCE_M):
+    """Find a mission path whose segment 2 the robot is already on.
+
+    Returns ``(key, meta, remaining_poses)`` for the closest heading-compatible
+    pose inside a segment 2 zone, or ``None``.
+    """
+    x, y, yaw = (float(v) for v in robot_pose)
+    best = None
+    for key, route, poses in candidates:
+        markers = route.get('markers')
+        if not markers:
+            continue
+        for index in range(markers['approach_start'], len(poses) - 1):
+            gap = _distance((x, y), poses[index])
+            if gap > distance or (best is not None and gap >= best[0]):
+                continue
+            if _remaining_length(poses, index) < 0.05:
+                continue
+            try:
+                prepare_dynamic_path([(p[0], p[1]) for p in poses[index:]], yaw)
+            except ValueError:
+                continue
+            best = (gap, key, route, [list(p) for p in poses[index:]])
+    if best is None:
+        return None
+    return best[1], best[2], best[3]
+
+
 def select_destination_plan(destination, candidates, robot_pose,
                             direct_distance=DIRECT_REJOIN_DISTANCE_M,
                             max_connector_distance=MAX_CONNECTOR_DISTANCE_M,
@@ -81,7 +109,14 @@ def select_destination_plan(destination, candidates, robot_pose,
     for key, route, poses in candidates:
         if route.get('target') != destination or len(poses) < 2:
             continue
-        eligible = [index for index in range(len(poses) - 1)
+        markers = route.get('markers')
+        if markers:
+            # Mission paths: rejoin only along the route part, never inside the
+            # undock or segment 2 zones under a stand.
+            span = range(markers['route_start'], markers['approach_start'])
+        else:
+            span = range(len(poses) - 1)
+        eligible = [index for index in span
                     if _remaining_length(poses, index) >= TERMINAL_REJOIN_EXCLUSION_M]
         if not eligible:
             continue

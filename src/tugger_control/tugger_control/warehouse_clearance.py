@@ -8,6 +8,7 @@ import math
 import xml.etree.ElementTree as ET
 
 from tugger_control.clearance_2_5d import Box, boxes_overlap, collision_pairs
+from tugger_control.lift_geometry import LIFT_TOLERANCE_M, LIFT_UP_M, cargo_lift_offset
 
 
 def validate_modeled_geometry(world_path, robot_path):
@@ -141,7 +142,8 @@ def static_world_boxes(path):
 def robot_boxes(pose, lift):
     """Conservative chassis/lift/wheel boxes for the current 4WS model."""
     x, y, yaw = pose
-    if not all(math.isfinite(value) for value in (x, y, yaw, lift)) or not -0.005 <= lift <= 0.075:
+    if (not all(math.isfinite(value) for value in (x, y, yaw, lift)) or
+            not -LIFT_TOLERANCE_M <= lift <= LIFT_UP_M + LIFT_TOLERANCE_M):
         raise ValueError('Invalid robot pose or lift position')
     boxes = [Box('chassis', x, y, yaw, 0.44, 0.29, 0.0725, 0.2225),
              Box('lift', x, y, yaw, 0.25, 0.16, 0.2225 + lift, 0.2375 + lift)]
@@ -179,14 +181,18 @@ def lift_sweep_clear(robot_pose, cargo_pose, other_cargo_pose, static_boxes,
         raise ValueError('Invalid lift-clearance input')
     other = cargo_box('other_cargo', other_cargo_pose)
     obstacles = list(static_boxes) + [other]
+    # The cargo only moves while the lift is above contact height; below it the
+    # cargo rests on its support and the platform travels on its own.
+    resting_z = cargo_pose[2] - cargo_lift_offset(lift_position)
     steps = max(1, math.ceil(abs(target_lift - lift_position) / 0.005))
     for index in range(steps + 1):
-        travel = (target_lift - lift_position) * index / steps
-        parts = robot_boxes(robot_pose, lift_position + travel)
+        lift = lift_position + (target_lift - lift_position) * index / steps
+        parts = robot_boxes(robot_pose, lift)
         hits = collision_pairs(parts, obstacles, margin=margin)
         if hits:
             return False, hits[0]
-        moved = (cargo_pose[0], cargo_pose[1], cargo_pose[2] + travel, cargo_pose[3])
+        moved = (cargo_pose[0], cargo_pose[1], resting_z + cargo_lift_offset(lift),
+                 cargo_pose[3])
         cargo = cargo_box('cargo', moved)
         for obstacle in obstacles:
             if (('_legs/' in obstacle.name or '_legs::' in obstacle.name) and

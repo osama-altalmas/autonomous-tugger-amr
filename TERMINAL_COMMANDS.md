@@ -2,6 +2,21 @@
 
 Run one terminal per component. Do not start duplicates.
 
+Start order: **Step 0 → T1 → T2 → T3 → T4 → T8 map activation → T5 → T8 checks → T6**.
+T7 and T9 are optional.
+
+## Step 0 — Start clean (every session)
+
+Close every simulation terminal, then:
+
+```bash
+pkill -f "gz sim"; pkill -f "ros2 launch"; pkill -f rqt_gui; pkill -f rviz2; pkill -f map_server
+sleep 3
+ps -eo cmd | grep -E "[g]z sim|[r]os2 launch|[r]qt_gui|[m]ap_server" || echo "clean"
+```
+
+Continue only when it prints `clean`.
+
 ## T1 — Gazebo
 
 ```bash
@@ -13,6 +28,10 @@ export GZ_IP=127.0.0.1
 export IGN_IP=127.0.0.1
 ros2 launch tugger_gazebo simulation.launch.py
 ```
+
+Wait until all four controllers report `activate successful`. The launch then
+holds the lift at 2 mm automatically; an uncommanded lift can latch on its
+lower limit in Gazebo.
 
 ## T2 — 4WS, odometry, EKF, QR vision, docking controller, motion guard
 
@@ -78,21 +97,34 @@ rviz2 --ros-args -p use_sim_time:=true
 
 ## T8 — Map activation and checks
 
+Map activation is required on every startup, after T4 and before T5:
+
 ```bash
 cd ~/Autonomous_Tugger_Project_V2/autonomous_tugger_ws
 source /opt/ros/lyrical/setup.bash
 source install/setup.bash
+ros2 lifecycle set /map_server configure
+ros2 lifecycle set /map_server activate
 ros2 lifecycle get /map_server
 ```
 
-If `unconfigured`:
+It must say `active`. If `configure` says `Node not found`, wait a few seconds
+and run both commands again.
+
+After starting T5, wait about 30 s, then check Nav2 and the controllers:
 
 ```bash
-ros2 lifecycle set /map_server configure
-ros2 lifecycle set /map_server activate
+ros2 lifecycle get /planner_server
+ros2 lifecycle get /controller_server
+ros2 lifecycle get /docking/controller_server
+ros2 control list_controllers
 ```
 
-Checks:
+All three Nav2 servers must be `active` and all four controllers `active`.
+`Node not found` means T5 is not running. If a Nav2 server is `unconfigured`
+(a startup race), stop T5 with Ctrl+C and start it again.
+
+Further checks:
 
 ```bash
 timeout 8s ros2 run tf2_ros tf2_echo map base_footprint
@@ -137,9 +169,21 @@ Speed profile:
 - Normal curves: the motion gate caps genuine curves at **0.6 m/s** while
   preserving the requested curvature.
 - Docking approach: Nav2 requests up to **0.35 m/s**; the motion gate limit is **0.4 m/s**.
-- Final camera correction: remains capped at **0.05 m/s** for 10 mm settling.
-- Loaded departure: uses `DepartureFollowPath` at **0.5 m/s** maximum and
-  remains subject to the loaded stopping-distance guard.
+  The gate slows the robot near stand legs using its stopping-distance check.
+- Final camera correction: capped at **0.05 m/s** for 10 mm settling, loaded or not.
+- Loaded departure: `DepartureFollowPath` requests up to **0.45 m/s**, under the
+  **0.5 m/s** gate limit, and remains subject to the loaded stopping-distance guard.
+
+## Paths
+
+Missions follow single-segment paths in `tools/v1_manhattan_bezier/mission_paths/`,
+each running from the source dock pose to the target dock pose. After changing
+the world, regenerate everything from the world file, then review and approve
+the new paths before running them:
+
+```bash
+tools/regenerate_paths_from_world.sh
+```
 
 After changing speed or controller configuration, rebuild `tugger_control`
 and `tugger_navigation`, then restart T2 and T5. Do not run a second launch
@@ -157,5 +201,4 @@ T2 starts `qr_docking_vision`, `docking_precision_controller`, and
 `/tugger/docking/cmd_vel`, verifies fresh docking ownership, and forwards to
 `/tugger/precision_cmd_vel`. Do not start these nodes separately.
 new angular velocity = old angular velocity × reduced speed / requested speed
-Start order: **T1 → T2 → T3 → T4 → T8 map activation → T5 → T6**. T7 and T9 are optional.
 Do not start a second ground-truth bridge, map server, Nav2 launch, or operator panel.

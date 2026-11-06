@@ -52,9 +52,21 @@ def sampled_precision_clearance(poses, obstacles, lift, *, margin=0.01):
     return True, sample_index + 1, None
 
 
+# Counter-phase 4WS at 45 degrees and a 0.58 m wheelbase: |curvature| <= 2/0.58.
+FULL_LOCK_CURVATURE = 2.0 / 0.58
+
+
+def stopping_curvature(curvature_bound):
+    """Clamp a curvature bound to [0, full lock]; invalid values mean full lock."""
+    if not math.isfinite(curvature_bound) or curvature_bound < 0:
+        return FULL_LOCK_CURVATURE
+    return min(curvature_bound, FULL_LOCK_CURVATURE)
+
+
 def precision_stopping_envelope(pose, lift, obstacles, current_speed, requested_speed,
                                 *, reaction_s=0.5, deceleration=2.5,
-                                max_speed=0.4, max_current_speed=None):
+                                max_speed=0.4, max_current_speed=None,
+                                curvature_bound=FULL_LOCK_CURVATURE):
     """Conservative simulator-only unloaded stopping envelope, not safety-rated.
 
     The circular expansion bounds translation plus a worst-case 4WS heading
@@ -77,7 +89,9 @@ def precision_stopping_envelope(pose, lift, obstacles, current_speed, requested_
         raise ValueError('Complete validated collision scene required')
     speed = max(abs(current_speed), abs(requested_speed))
     travel = speed * reaction_s + speed * speed / (2 * deceleration)
-    rotation = min(math.pi, 2 * travel / 0.58)
+    # Heading change while stopping: by default the robot is assumed to swing
+    # at full steering lock. The gate passes a measured bound instead.
+    rotation = min(math.pi, stopping_curvature(curvature_bound) * travel)
     extra = 0.02 + travel + 2 * math.hypot(0.44, 0.29) * math.sin(rotation / 2)
     parts = robot_boxes(pose, lift)
     for obstacle in obstacles:
@@ -91,7 +105,8 @@ def precision_stopping_envelope(pose, lift, obstacles, current_speed, requested_
 
 
 def choose_precision_speed(pose, lift, obstacles, current_speed, requested_speed,
-                           *, max_speed=0.4, minimum_speed=0.0):
+                           *, max_speed=0.4, minimum_speed=0.0,
+                           curvature_bound=FULL_LOCK_CURVATURE):
     """Select the fastest precision speed whose stopping envelope is clear.
 
     The approach controller is allowed to request 0.4 m/s away from the
@@ -115,7 +130,8 @@ def choose_precision_speed(pose, lift, obstacles, current_speed, requested_speed
         value = math.copysign(candidate, limited) if candidate else 0.0
         clear, last_hit = precision_stopping_envelope(
             pose, lift, obstacles, current_speed, value,
-            max_speed=max_speed, max_current_speed=0.4)
+            max_speed=max_speed, max_current_speed=0.4,
+            curvature_bound=curvature_bound)
         if clear:
             return value, None
     return 0.0, last_hit

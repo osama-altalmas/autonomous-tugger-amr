@@ -20,16 +20,22 @@ from tf2_ros import Buffer, TransformListener
 
 from tugger_control.cargo_policy import confirmed_cargo
 from tugger_control.cargo_policy import CARGO_IDS
+from tugger_control.lift_geometry import lift_is_raised
 from tugger_control.loaded_motion_guard import choose_guarded_speed, decode_scene, scene_expected_counts
 from tugger_control.motion_math import speed_profile
 from tugger_control.precision_scene_clearance import (
-    choose_precision_speed, precision_approach_speed_limit)
+    FULL_LOCK_CURVATURE, choose_precision_speed)
 from tugger_control.warehouse_clearance import validate_modeled_geometry
 
 
 # Stay under the 1.2 m/s loaded guard limit. Requesting exactly the limit lets
 # normal speed overshoot fail the guard and stop the robot repeatedly.
 LOADED_ROUTE_REQUEST_LIMIT = 1.15
+# Final camera corrections, loaded or not, never exceed this speed.
+CAMERA_SPEED_LIMIT = 0.05
+PRECISION_APPROACH_LIMIT = 0.4
+# Added to the measured steering curvature for the stopping envelope (1/m).
+STOPPING_CURVATURE_MARGIN = 0.3
 
 
 def planar_quaternion(q):
@@ -103,6 +109,7 @@ class SimMotionGate(Node):
         self._robot_truth = None
         self._lift, self._lift_at = None, None
         self._speed, self._speed_at = None, None
+        self._steer, self._steer_at = None, None
         self._wheel_speed, self._wheel_speed_at = None, None
         self._last_time = None
         self._last_reason = None
@@ -193,6 +200,9 @@ class SimMotionGate(Node):
     def _on_motion(self, msg):
         if len(msg.data) >= 2 and math.isfinite(msg.data[1]):
             self._speed, self._speed_at = float(msg.data[1]), self._now()
+        # [3] is the steering angle the 4WS controller currently applies.
+        if len(msg.data) >= 4 and math.isfinite(msg.data[3]):
+            self._steer, self._steer_at = float(msg.data[3]), self._now()
 
     def _on_wheel_odom(self, msg):
         if msg.header.frame_id != 'odom' or msg.child_frame_id != 'base_footprint':
@@ -201,6 +211,21 @@ class SimMotionGate(Node):
         stamp = msg.header.stamp.sec + msg.header.stamp.nanosec / 1e9
         if math.isfinite(speed) and self._fresh(stamp, self._now(), 0.3):
             self._wheel_speed, self._wheel_speed_at = speed, stamp
+
+    def _stopping_curvature(self, v, omega, now):
+        """Largest curvature the robot can follow while stopping.
+
+        A stop command steers the 4WS controller back towards straight, so the
+        turn during a stop is bounded by the steering it already has or the
+        curvature being commanded now, plus a margin. Without fresh steering
+        feedback the full-lock bound applies.
+        """
+        steer, steer_at = getattr(self, '_steer', None), getattr(self, '_steer_at', None)
+        if steer is None or not self._fresh(steer_at, now, 0.3):
+            return FULL_LOCK_CURVATURE
+        current = abs(2.0 * math.tan(steer) / 0.58)
+        commanded = abs(omega / v) if abs(v) > 1e-6 else 0.0
+        return min(FULL_LOCK_CURVATURE, max(current, commanded) + STOPPING_CURVATURE_MARGIN)
 
     def _snapshot(self, now):
         if not self._model_valid:
@@ -279,29 +304,34 @@ class SimMotionGate(Node):
                 (owner in ('DOCK_NAV', 'DOCK_CAMERA') and cargo is None and
                  snapshot is not None and -0.005 <= self._lift <= 0.005) or
                 (owner == 'DOCK_DEPART' and cargo is not None and
-                 snapshot is not None and 0.060 <= self._lift <= 0.070))
+                 snapshot is not None and lift_is_raised(self._lift)))
             if owner != 'STOP' and self._fresh(self._request_at[source], now, 0.25):
                 request = self._requests[source]
                 v, omega = float(request.twist.linear.x), float(request.twist.angular.z)
                 if not math.isfinite(v) or not math.isfinite(omega):
                     raise ValueError('nonfinite command')
-                if owner in ('DOCK_NAV', 'DOCK_CAMERA', 'PRECISION'):
-                    if cargo is not None:
-                        raise ValueError('unloaded precision guard cannot move attached cargo')
+                camera = owner in ('DOCK_CAMERA', 'PRECISION')
+                if owner == 'DOCK_NAV' and cargo is not None:
+                    raise ValueError('unloaded precision guard cannot move attached cargo')
+                # Camera alignment at a drop-off carries cargo: it is checked by
+                # the loaded envelope below, at camera speed, not refused here.
+                if owner in ('DOCK_NAV', 'DOCK_CAMERA', 'PRECISION') and cargo is None:
                     if snapshot is None:
                         raise ValueError(reason)
                     # The independent docking controller may approach at 0.4
                     # m/s in open space. Taper before fixed cargo legs; final
                     # camera corrections, including HOME, are capped at .05.
-                    approach_limit = (precision_approach_speed_limit(
-                        snapshot[0], snapshot[1]) if owner == 'DOCK_NAV'
-                        else 0.05)
+                    # The stopping envelope below slows the robot where clearance
+                    # requires it, so no separate distance-to-legs taper is used.
+                    approach_limit = (PRECISION_APPROACH_LIMIT if owner == 'DOCK_NAV'
+                                      else CAMERA_SPEED_LIMIT)
                     requested_abs = abs(v)
                     limited, hit = choose_precision_speed(
                         snapshot[0], self._lift, [box for _, box in snapshot[1]],
                         max(abs(self._speed), abs(self._wheel_speed)), v,
                         max_speed=approach_limit,
-                        minimum_speed=0.10 if owner == 'DOCK_NAV' else 0.0)
+                        minimum_speed=0.10 if owner == 'DOCK_NAV' else 0.0,
+                        curvature_bound=self._stopping_curvature(v, omega, now))
                     if hit is not None:
                         raise ValueError(f'precision stopping envelope intersects {hit}')
                     omega = omega * limited / v if abs(v) > 1e-6 else 0.0
@@ -323,14 +353,16 @@ class SimMotionGate(Node):
                             v, omega, straight_limit=LOADED_ROUTE_REQUEST_LIMIT)
                     # Departure shares the independent docking controller but
                     # has its own ownership mode and a stricter speed ceiling.
-                    requested = (max(-0.5, min(0.5, v))
-                                 if owner == 'DOCK_DEPART' else v)
+                    loaded_limit = (CAMERA_SPEED_LIMIT if camera else
+                                    0.5 if owner == 'DOCK_DEPART' else 1.2)
+                    requested = max(-loaded_limit, min(loaded_limit, v))
                     limited, hit = choose_guarded_speed(
                         snapshot[0],
                         getattr(self, '_aligned_payloads', {}).get(cargo, self._payloads[cargo]),
                         self._lift, cargo,
                         snapshot[1], max(abs(self._speed), abs(self._wheel_speed)), requested,
-                        max_speed=0.5 if owner == 'DOCK_DEPART' else 1.2)
+                        max_speed=loaded_limit,
+                        curvature_bound=self._stopping_curvature(v, omega, now))
                     if hit is not None:
                         raise ValueError(f'loaded stopping envelope intersects {hit}')
                     if abs(limited) + 1e-6 < min(abs(v), 0.1):
@@ -339,7 +371,7 @@ class SimMotionGate(Node):
                         reason = 'ready'
                     omega = omega * limited / v if abs(v) > 1e-6 else 0.0
                     v = limited
-                    if owner == 'DOCK_DEPART':
+                    if owner == 'DOCK_DEPART' or camera:
                         # 45-degree counter-phase 4WS steering at 0.58 m wheelbase.
                         omega_limit = 2.0 * abs(v) / 0.58
                         omega = max(-omega_limit, min(omega_limit, omega))

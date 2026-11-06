@@ -1,6 +1,7 @@
 """RQt dispatcher for offline-generated tugger routes."""
 
 import json
+import re
 import math
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -33,10 +34,12 @@ from tugger_control.cargo_policy import check_destination, confirmed_cargo
 from tugger_control.cargo_policy import (
     CARGO_IDS, CARGO_STATIONS, DROPOFF_CARGO, PICKUP_CARGO, cargo_stand_model, other_cargo)
 from tugger_control.cargo_operation import CargoOperation
+from tugger_control.lift_geometry import (
+    LIFT_CONTACT_M, LIFT_DOWN_M, LIFT_UP_M, lift_is_down, lift_is_raised)
 from tugger_control.loaded_motion_guard import decode_scene, scene_expected_counts
 from tugger_control.mission_planning import (
-    entrance_gate, home_alignment_yaw, plan_is_current, routes_from_gate,
-    select_destination_plan)
+    entrance_gate, home_alignment_yaw, mission_approach_rejoin, plan_is_current,
+    routes_from_gate, select_destination_plan)
 from tugger_control.station_departure import plan_station_departure
 from tugger_control.precision_scene_clearance import sampled_precision_clearance
 from tugger_control.visual_maneuver_executor import VisualManeuverExecutor
@@ -46,7 +49,9 @@ from tugger_control.visual_scene_clearance import PreparedVisualClearance
 from tugger_control.visual_heading_gate import relative_qr_heading_consistent
 from tugger_control.visual_marker_guard import FixedMarkerGuard
 from tugger_control.docking_markers import expected_marker
+from tugger_control.live_route_planner import LiveRoutePlanner
 from tugger_control.saved_route_repository import (
+    MissionPathRepository,
     PrecisionDockingRepository,
     SavedRouteRepository,
 )
@@ -55,8 +60,6 @@ from tugger_control.warehouse_clearance import (
 )
 
 
-LIFT_DOWN_M = 0.0
-LIFT_UP_M = 0.065
 QR_CONFIRMATION_MAX_AGE_S = 0.5
 QR_ALIGNMENT_TIMEOUT_S = 3.0
 # Four-wheel lateral parking uses multiple slow arcs and stationary checkpoints.
@@ -66,6 +69,26 @@ QR_ALIGNMENT_HEADING_TOLERANCE_RAD = math.radians(1.0)
 QR_VISUAL_MAX_PLAN_FAILURES = 3
 QR_ALIGNMENT_STABLE_FRAMES = 3
 CONTINUE_ATTEMPTS = 5
+QR_IDENTITY_GRACE_S = 1.5
+# Docked means at the station centre; farther away the robot is between stages.
+DOCKED_TOLERANCE_M = 0.10
+GUARD_NOTE_INTERVAL_S = 15.0
+# Routine guard states: normal operation, not worth a panel line.
+QUIET_GUARD_STATES = ('ready', 'stopped', 'unloaded motion', 'precision guarded',
+                      'precision speed reduced', 'loaded clearance reducing speed')
+
+
+def guard_status_text(status):
+    """Turn a motion-gate status into an operator line, or None for routine ones."""
+    if status in QUIET_GUARD_STATES:
+        return None
+    match = re.search(r"envelope intersects \('([^']+)', '([^']+)'", status)
+    if match:
+        # Scoped names look like 'world::model::link::collision'; show the model.
+        parts = match.group(2).split('::')
+        model = parts[1] if len(parts) > 1 else parts[0].split('/')[0]
+        return f'MOTION GUARD: slowing or holding near {model} ({match.group(1)}).'
+    return f'MOTION GUARD: {status}.'
 CONTINUE_RETRY_S = 0.5
 QR_ALIGNMENT_MAX_OBSERVATION_AGE_S = 0.5
 # A visual primitive is only a short proposal.  If the measured marker has
@@ -88,7 +111,7 @@ class OperatorBridge(Node):
     """ROS work layer.  Every action result is delivered asynchronously."""
 
     def __init__(self, report, plan_ready, execution_done, approach_provider=None,
-                 cargo_clearance_guard=None, station_layout=None):
+                 cargo_clearance_guard=None, station_layout=None, live_planner=None):
         super().__init__('tugger_operator_panel')
         # The Gazebo scene, TF and payload feedback all use simulation time.
         # Without this, comparing their timestamps to wall time fails closed.
@@ -98,6 +121,8 @@ class OperatorBridge(Node):
             plan_ready, message, executing)
         self._execution_done = execution_done
         self._approach_provider = approach_provider
+        self._live_planner = live_planner
+        self._live_plan = None
         # From the generated route database: exact centres and the stops
         # without a stand, which may be left by any gate.
         layout = station_layout or {}
@@ -233,6 +258,7 @@ class OperatorBridge(Node):
         self.create_timer(0.1, self._advance_cargo_operation)
         self.create_timer(0.1, self._publish_motion_owner)
         self.create_timer(0.1, self._dock_wait_watchdog)
+        self.create_timer(0.2, self._poll_live_plan)
 
     def _guard_ready(self, message):
         self._loaded_control_ready = bool(message.data)
@@ -303,13 +329,30 @@ class OperatorBridge(Node):
                 self._departure_pending is not None or self._departure_active or
                 self._active_follow is not None or self._qr_alignment_active)
 
+    def _report_run_block(self, message):
+        """Automatic retries stay quiet; only a final failure is reported."""
+        if not getattr(self, '_quiet_run_blocks', False):
+            self._report(message)
+
+    def run_selected_mission_with_retry(self, armed):
+        """Operator RUN: a momentary check failure is retried quietly."""
+        if not armed:
+            self._report('RUN blocked: arm simulator commands first.')
+            return
+        self._motion_armed = True
+        self._continue_attempt(1)
+
     def _continue_attempt(self, attempt):
         """Press RUN for the planned leg; retry briefly if a check was momentary.
 
         A collision scene can be a few milliseconds stale at the instant of the
         check. Every retry runs the full RUN checks; nothing is bypassed.
         """
-        self.run_selected_mission(self._motion_armed)
+        self._quiet_run_blocks = attempt < CONTINUE_ATTEMPTS
+        try:
+            self.run_selected_mission(self._motion_armed)
+        finally:
+            self._quiet_run_blocks = False
         if self._mission_started() or self._cancel_requested or not self._motion_armed:
             return
         if attempt >= CONTINUE_ATTEMPTS:
@@ -360,7 +403,8 @@ class OperatorBridge(Node):
             if route.get('source') != station or not poses:
                 continue
             try:
-                approach = self._approach_provider(station, poses[0])[1]
+                start = route.get('markers', {}).get('route_start', 0)
+                approach = self._approach_provider(station, poses[start])[1]
                 plan_station_departure(current_pose, approach)
             except (OSError, ValueError, KeyError) as exc:
                 last_error = f'{route_key}: {exc}'
@@ -379,7 +423,7 @@ class OperatorBridge(Node):
             candidates = self._same_gate_routes(station, approach, candidates, destination)
         if not self._loaded_guard_is_ready():
             raise ValueError('Live simulator collision-scene guard is not ready')
-        if self._lift_position is None or abs(self._lift_position) > 0.005:
+        if not lift_is_down(self._lift_position):
             raise ValueError('Empty station exit requires the lift to be down')
         decision = plan_station_departure(current_pose, approach)
         world = Path(get_package_share_directory('tugger_gazebo')) / 'worlds/tugger_warehouse.sdf'
@@ -642,8 +686,18 @@ class OperatorBridge(Node):
         if message.data == self._last_guard_status:
             return
         self._last_guard_status = message.data
-        if message.data not in ('ready', 'stopped', 'unloaded motion'):
-            self._report(f'MOTION GUARD: {message.data}.')
+        text = guard_status_text(message.data)
+        if text is None:
+            return
+        # Slowing near the same object is reported once per interval.
+        now = self.get_clock().now().nanoseconds / 1e9
+        notes = getattr(self, '_guard_notes', {})
+        self._guard_notes = notes
+        last = notes.get(text)
+        if last is not None and 0 <= now - last < GUARD_NOTE_INTERVAL_S:
+            return
+        notes[text] = now
+        self._report(text)
 
     def _publish_motion_owner(self):
         owner = 'STOP'
@@ -730,6 +784,11 @@ class OperatorBridge(Node):
             return
         self._lift_position = position
         self._lift_seen_at = self.get_clock().now()
+        if not getattr(self, '_lift_hold_sent', False):
+            # Hold the lift from the first reading. An uncommanded lift can be
+            # shaken onto its lower limit while driving, where Gazebo latches it.
+            self._lift_hold_sent = True
+            self.lift(max(position, LIFT_DOWN_M))
         self._advance_cargo_operation()
 
     def _cargo_pose(self, station, message):
@@ -782,7 +841,7 @@ class OperatorBridge(Node):
                 raise ValueError('simulator payload pose is stale or missing')
         if (self._lift_seen_at is None or
                 not 0 <= (now - self._lift_seen_at).nanoseconds / 1e9 <= 1.0 or
-                not 0.060 <= self._lift_position <= 0.070):
+                not lift_is_raised(self._lift_position)):
             raise ValueError('raised lift feedback is stale or outside its tolerance')
         world = Path(get_package_share_directory('tugger_gazebo')) / 'worlds/tugger_warehouse.sdf'
         robot = Path(get_package_share_directory('tugger_description')) / 'urdf/tugger.urdf.xacro'
@@ -851,6 +910,10 @@ class OperatorBridge(Node):
         self._publish_precision_stop()
         # Avoid GUI floods from repeated camera observations.
         now = self.get_clock().now()
+        started = getattr(self, '_qr_alignment_started_at', None)
+        if (reason == 'waiting for the expected QR identity' and started is not None and
+                0 <= (now - started).nanoseconds / 1e9 < QR_IDENTITY_GRACE_S):
+            return  # Normal first moment of every alignment, not worth a line.
         previous = getattr(self, '_last_visual_hold_report_at', None)
         if previous is None or (now - previous).nanoseconds / 1e9 > 1.0:
             self._last_visual_hold_report_at = now
@@ -1231,9 +1294,9 @@ class OperatorBridge(Node):
             if (pose_seen is None or self._cargo_poses[cargo_id] is None or
                     not 0 <= (now - pose_seen).nanoseconds / 1e9 <= 1.0):
                 raise ValueError('simulator cargo pose is missing or stale')
-            if is_pickup and abs(self._lift_position) > 0.005:
+            if is_pickup and not lift_is_down(self._lift_position):
                 raise ValueError('pickup requires the lift to be down')
-            if not is_pickup and not 0.060 <= self._lift_position <= 0.070:
+            if not is_pickup and not lift_is_raised(self._lift_position):
                 raise ValueError('drop-off requires confirmed raised cargo')
             if self._cargo_clearance_guard is None or not self._cargo_clearance_guard(
                     station, cargo_id, 'pickup' if is_pickup else 'dropoff'):
@@ -1245,7 +1308,8 @@ class OperatorBridge(Node):
             if is_pickup:
                 self._report('Allowing the vehicle to settle before requesting attachment.')
             else:
-                self.lift(LIFT_DOWN_M)
+                # Lower only to contact: the cargo rests on its support first.
+                self.lift(LIFT_CONTACT_M)
         except (ValueError, TypeError) as exc:
             self._report(f'MISSION INCOMPLETE: cargo operation blocked: {exc}.')
             self._execution_done(False, GoalStatus.STATUS_ABORTED)
@@ -1289,7 +1353,7 @@ class OperatorBridge(Node):
         if command is None:
             command = task.observe(now_seconds, attachment=attachment, lift=lift,
                                    cargo_height=cargo_height, armed=self._motion_armed)
-        if command in ('ATTACH', 'RAISE', 'DETACH'):
+        if command in ('CONTACT', 'ATTACH', 'RAISE', 'DETACH', 'STOW'):
             try:
                 if not self._expected_qr_is_fresh(self.docked_station):
                     task.result = 'destination_qr_stale'
@@ -1302,12 +1366,16 @@ class OperatorBridge(Node):
                 self._report(f'Cargo clearance check failed: {exc}')
                 task.result = 'clearance_unavailable'
                 command = 'FAILED'
-        if command == 'ATTACH':
+        if command == 'CONTACT':
+            self.lift(LIFT_CONTACT_M)
+        elif command == 'ATTACH':
             self.cargo(task.cargo_id, True)
         elif command == 'RAISE':
             self.lift(LIFT_UP_M)
         elif command == 'DETACH':
             self.cargo(task.cargo_id, False)
+        elif command == 'STOW':
+            self.lift(LIFT_DOWN_M)
         elif command == 'SUCCEEDED':
             self._cargo_task = None
             label = 'ATTACHED AND LIFTED' if task.operation == 'pickup' else 'LOWERED AND DETACHED'
@@ -1317,7 +1385,8 @@ class OperatorBridge(Node):
             self._cargo_task = None
             if (self._lift_seen_at is not None and
                     0 <= (now - self._lift_seen_at).nanoseconds / 1e9 <= 1.0):
-                self.lift(self._lift_position)
+                # Hold where it is, but never onto the latching lower limit.
+                self.lift(max(self._lift_position, LIFT_DOWN_M))
             else:
                 self._report('LIFT STOP UNCONFIRMED: position feedback is stale; '
                              'the previous position command may still be active.')
@@ -1568,7 +1637,7 @@ class OperatorBridge(Node):
         if (seen is None or
                 not 0 <= (now - seen).nanoseconds / 1e9 <= 1.0 or
                 self._lift_position is None or
-                not 0.060 <= self._lift_position <= 0.070):
+                not lift_is_raised(self._lift_position)):
             raise ValueError(
                 'Cannot recover loaded dock: lift feedback stale or invalid')
 
@@ -1596,6 +1665,13 @@ class OperatorBridge(Node):
             cargo = self._confirmed_cargo()
             check_destination(destination, cargo)
             pose = self._robot_pose()
+            center = getattr(self, '_station_centers', {}).get(self.docked_station)
+            if (self.docked_station is not None and center is not None and
+                    math.hypot(pose[0] - center[0], pose[1] - center[1]) > DOCKED_TOLERANCE_M):
+                # Left the centre (for example a cancelled exit): no longer docked.
+                self._report(f'{self.docked_station}: robot is away from the centre; '
+                             'it is no longer docked there.')
+                self.docked_station = None
             if cargo is None and self.docked_station is None:
                 self._infer_pass_through_dock(pose)
             if self.docked_station is not None and self.docked_station == destination:
@@ -1631,6 +1707,15 @@ class OperatorBridge(Node):
                 self._prepare_station_exit(
                     self.docked_station, pose, destination, candidates, station_targets)
                 return
+            approach_rejoin = mission_approach_rejoin(candidates, pose)
+            if approach_rejoin is not None:
+                # Already on this destination's segment 2: continue along it.
+                key, meta, remaining = approach_rejoin
+                self.execute_saved_route(
+                    f'{destination} precision approach (rejoined {key})', remaining,
+                    precision_station=destination, mission_destination=destination,
+                    execution_approved=meta.get('execution_approved') is True)
+                return
             decision = select_destination_plan(
                 destination, candidates, pose, destination_poses=station_targets)
         except (Exception, ValueError) as exc:
@@ -1638,6 +1723,29 @@ class OperatorBridge(Node):
             return
         approach = None
         approach_approved = True
+        route_meta = decision.get('route') or {}
+        if decision['mode'] in ('SAVED_REJOIN', 'SHORT_CONNECTOR') and route_meta.get('markers'):
+            # A single-segment mission path: its own segment 2 starts at the
+            # marker; the route part before it goes to the existing route stage.
+            split = route_meta['markers']['approach_start'] - decision['rejoin_index']
+            approach = decision['poses'][split:]
+            decision['poses'] = decision['poses'][:split + 1]
+            approach_approved = route_meta.get('execution_approved') is True
+        else:
+            approach, approach_approved = self._station_entry_approach(
+                destination, decision, pose, station_targets)
+            if approach is None:
+                return
+        if decision['mode'] == 'LIVE_RECOVERY_REQUIRED' and getattr(
+                self, '_live_planner', None) is not None and station_targets:
+            self._start_live_plan(destination, pose, station_targets, generation,
+                                  approach, approach_approved)
+            return
+        self._dispatch_decision(destination, decision, pose, station_targets, generation,
+                                approach, approach_approved)
+
+    def _station_entry_approach(self, destination, decision, pose, station_targets):
+        """Segment 2 from the configured approach repository for a gate."""
         try:
             if self._approach_provider is None:
                 raise ValueError('No precision approach repository is configured')
@@ -1650,13 +1758,54 @@ class OperatorBridge(Node):
                 raise ValueError('No station entrance is configured')
             metadata, approach = self._approach_provider(destination, entry)
             approach_approved = metadata.get('execution_approved') is True
-            if metadata.get('source') == 'isolated_entrance_candidate':
+            if (metadata.get('source') == 'isolated_entrance_candidate' and
+                    not approach_approved):
                 self._report(
                     f'{destination}: selected a statically sampled entrance '
                     'candidate; Gazebo behavior remains unverified.')
         except (OSError, ValueError, KeyError) as exc:
             self._report(f'{destination}: precision approach unavailable: {exc}')
+            return None, False
+        return approach, approach_approved
+
+    def _start_live_plan(self, destination, pose, station_targets, generation,
+                         fallback_approach, fallback_approved):
+        """Plan live in the background with the offline generator's rules."""
+        self._report(f'{destination}: no preplanned path within reach; planning live '
+                     'with the offline generator rules.')
+        future = self._visual_plan_pool.submit(
+            self._live_planner.plan, tuple(pose), [list(p) for p in station_targets])
+        self._live_plan = (future, destination, pose, station_targets, generation,
+                           fallback_approach, fallback_approved)
+
+    def _poll_live_plan(self):
+        pending = getattr(self, '_live_plan', None)
+        if pending is None or not pending[0].done():
             return
+        self._live_plan = None
+        future, destination, pose, station_targets, generation, approach, approved = pending
+        if generation != self._plan_generation:
+            return
+        decision = {'mode': 'LIVE_RECOVERY_REQUIRED'}
+        try:
+            poses, entry = future.result()
+            metadata, live_approach = self._approach_provider(destination, entry)
+            label = f'Live plan → {destination}'
+            self._report(f'{label}: {len(poses)} poses to the {destination} entry; '
+                         'segment 2 follows.')
+            self.execute_saved_route(
+                label, poses, camera_handoff_station=destination,
+                next_precision=live_approach, mission_destination=destination,
+                execution_approved=metadata.get('execution_approved') is True)
+            return
+        except Exception as exc:
+            self._report(f'{destination}: live planning failed ({exc}); '
+                         'using the Nav2 recovery planner.')
+        self._dispatch_decision(destination, decision, pose, station_targets, generation,
+                                approach, approved)
+
+    def _dispatch_decision(self, destination, decision, pose, station_targets, generation,
+                           approach, approach_approved):
         if decision['mode'] == 'ALREADY_AT_DESTINATION':
             gap = math.hypot(pose[0] - approach[0][0], pose[1] - approach[0][1])
             if gap > 0.25:
@@ -1852,28 +2001,28 @@ class OperatorBridge(Node):
     def run_selected_mission(self, armed):
         """Run only the exact path previously previewed by the operator."""
         if not armed:
-            self._report('RUN blocked: arm simulator commands first.')
+            self._report_run_block('RUN blocked: arm simulator commands first.')
             return
         if (self._follow_goal_pending or self._stage_validation_pending or
                 self._departure_pending is not None or self._departure_active or
                 self._active_follow is not None or self._qr_alignment_active or
                 self._cargo_task is not None):
-            self._report('RUN blocked: a navigation or precision alignment is already active.')
+            self._report_run_block('RUN blocked: a navigation or precision alignment is already active.')
             return
         if (self._pending_path is None and self._pending_alignment_station is None and
                 self._pending_departure is None):
-            self._report('RUN blocked: select and validate a mission first.')
+            self._report_run_block('RUN blocked: select and validate a mission first.')
             return
         if not self._pending_execution_approved:
-            self._report('RUN blocked: a selected saved or precision route is not execution-approved.')
+            self._report_run_block('RUN blocked: a selected saved or precision route is not execution-approved.')
             return
         try:
             check = plan_is_current(self._pending_pose, self._robot_pose())
         except (Exception, ValueError) as exc:
-            self._report(f'RUN blocked: cannot recheck the live pose: {exc}')
+            self._report_run_block(f'RUN blocked: cannot recheck the live pose: {exc}')
             return
         if not check['current']:
-            self._report(
+            self._report_run_block(
                 'RUN blocked: robot pose changed since feasibility check '
                 f'({check["position_error_m"]:.2f} m, '
                 f'{math.degrees(check["yaw_error_rad"]):.1f} deg). '
@@ -1884,14 +2033,14 @@ class OperatorBridge(Node):
             if self._pending_destination is not None:
                 check_destination(self._pending_destination, cargo)
             if cargo is not None and not self._loaded_guard_is_ready():
-                self._report('RUN blocked: loaded controller clearance monitoring is not ready.')
+                self._report_run_block('RUN blocked: loaded controller clearance monitoring is not ready.')
                 return
             if cargo is not None and self._pending_path is not None:
                 poses = [(p.pose.position.x, p.pose.position.y, _yaw(p.pose.orientation))
                          for p in self._pending_path.poses]
                 self._modeled_loaded_path_clearance(poses, cargo)
         except (ValueError, TypeError, OSError) as exc:
-            self._report(f'RUN blocked: {exc}.')
+            self._report_run_block(f'RUN blocked: {exc}.')
             return
         if self._pending_departure is not None:
             pending = self._pending_departure
@@ -1904,7 +2053,7 @@ class OperatorBridge(Node):
                 if not self._dock_follower.server_is_ready():
                     raise ValueError('independent docking controller unavailable')
             except Exception as exc:
-                self._report(f'RUN blocked: loaded departure preflight: {exc}')
+                self._report_run_block(f'RUN blocked: loaded departure preflight: {exc}')
                 return
             self._pending_departure = None
             self._pending_pose = None
@@ -2175,6 +2324,8 @@ class OperatorBridge(Node):
         self._report('Nav2 trajectory cancellation requested.')
 
     def lift(self, height):
+        # Never command the lower limit itself: Gazebo latches the lift there.
+        height = min(max(float(height), LIFT_DOWN_M), LIFT_UP_M)
         message = Float64MultiArray()
         message.data = [height]
         self._lift_pub.publish(message)
@@ -2186,6 +2337,19 @@ class OperatorBridge(Node):
         self._report(f'Cargo {verb} command sent for station {station}.')
 
 
+def _status_html(message):
+    """Colour the operator log: red needs attention, orange is a warning."""
+    import html
+    text = html.escape(message)
+    upper = message.upper()
+    if any(word in upper for word in ('FAILED', 'INCOMPLETE', 'BLOCKED', 'REJECTED',
+                                      'UNAVAILABLE', 'STOPPED.', 'ABORT')):
+        return f'<span style="color:#c62828"><b>{text}</b></span>'
+    if any(word in upper for word in ('MOTION GUARD', 'HOLD', 'WARNING', 'STALE')):
+        return f'<span style="color:#e65100">{text}</span>'
+    return text
+
+
 class OperatorPanel(Plugin):
     """RQt entry point for planning missions and guarded simulator commands."""
 
@@ -2194,6 +2358,7 @@ class OperatorPanel(Plugin):
         self.setObjectName('OperatorPanel')
         self._routes = self._load_routes()
         self._docking_routes = self._load_docking_routes()
+        self._mission_paths = self._load_mission_paths()
         self._station_entries = self._load_station_entries()
         self._widget = QWidget()
         self._widget.setWindowTitle('Tugger AMR Operator Panel')
@@ -2221,7 +2386,8 @@ class OperatorPanel(Plugin):
         home.clicked.connect(lambda: self._request_destination('HOME'))
         mission_layout.addWidget(home, len(buttons), 0)
         run = QPushButton('RUN selected mission')
-        run.clicked.connect(lambda: self._bridge.run_selected_mission(self._armed.isChecked()))
+        run.clicked.connect(
+            lambda: self._bridge.run_selected_mission_with_retry(self._armed.isChecked()))
         mission_layout.addWidget(run, len(buttons) + 1, 0)
         cancel = QPushButton('Cancel active navigation')
         cancel.clicked.connect(lambda: self._bridge.cancel_navigation())
@@ -2252,7 +2418,8 @@ class OperatorPanel(Plugin):
         self._bridge = OperatorBridge(
             self._report, self._planned, self._finished,
             approach_provider=self._docking_routes.approach,
-            station_layout=self._routes.database)
+            station_layout=self._routes.database,
+            live_planner=self._make_live_planner())
         self._timer = QTimer(self._widget)
         self._timer.timeout.connect(self._spin_ros)
         self._timer.start(20)
@@ -2264,6 +2431,27 @@ class OperatorPanel(Plugin):
         except PackageNotFoundError:
             directory = Path(__file__).resolve().parents[3] / 'tools' / 'v1_manhattan_bezier' / 'routes'
         return SavedRouteRepository(directory)
+
+    def _tools_directory(self):
+        return Path(__file__).resolve().parents[3] / 'tools' / 'v1_manhattan_bezier'
+
+    def _load_mission_paths(self):
+        return MissionPathRepository(self._tools_directory() / 'mission_paths')
+
+    def _make_live_planner(self):
+        try:
+            map_yaml = (Path(get_package_share_directory('tugger_navigation')) /
+                        'maps' / 'warehouse_map.yaml')
+        except PackageNotFoundError:
+            map_yaml = (Path(__file__).resolve().parents[3] / 'src' / 'tugger_navigation' /
+                        'maps' / 'warehouse_map.yaml')
+        try:
+            world = (Path(get_package_share_directory('tugger_gazebo')) /
+                     'worlds' / 'tugger_warehouse.sdf')
+        except PackageNotFoundError:
+            world = (Path(__file__).resolve().parents[3] / 'src' / 'tugger_gazebo' /
+                     'worlds' / 'tugger_warehouse.sdf')
+        return LiveRoutePlanner(self._tools_directory(), map_yaml, world=world)
 
     def _load_docking_routes(self):
         try:
@@ -2304,7 +2492,7 @@ class OperatorPanel(Plugin):
                 break
 
     def _report(self, message):
-        self._status.append(message)
+        self._status.append(_status_html(message))
 
     def _arming_changed(self, armed):
         if armed:
@@ -2338,7 +2526,7 @@ class OperatorPanel(Plugin):
 
     def _request_destination(self, destination):
         try:
-            candidates = self._routes.routes_to(destination)
+            candidates = self._mission_paths.paths_to(destination)
         except (OSError, ValueError, KeyError) as exc:
             self._report(f'Destination-route load rejected: {exc}')
             return

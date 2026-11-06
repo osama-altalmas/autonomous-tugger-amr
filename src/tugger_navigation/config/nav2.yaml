@@ -155,7 +155,7 @@ controller_server:
     # separate speed profile from the final precision approach.
     DepartureFollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      max_linear_vel: 0.50
+      max_linear_vel: 0.45  # below the 0.5 m/s departure gate limit
       lookahead_dist: 0.35
       min_lookahead_dist: 0.20
       max_lookahead_dist: 0.55
