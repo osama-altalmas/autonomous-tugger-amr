@@ -41,8 +41,9 @@ def _simulate(forward, lateral, seconds=120.0):
             executor = None
             continue
         velocity = command['linear_x']
-        desired_steering = steering_for_twist(
-            velocity, command['angular_z'], .58, math.pi / 4)
+        # The 4WS controller holds the wheel angle when commanded to stop.
+        desired_steering = (steering if abs(velocity) < 1e-4 else steering_for_twist(
+            velocity, command['angular_z'], .58, math.pi / 4))
         speed = approach(speed, velocity,
                          .25 if speed * velocity >= 0 else .35, dt)
         steering = approach(steering, desired_steering, .8, dt)

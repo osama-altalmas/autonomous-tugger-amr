@@ -48,8 +48,11 @@ def decode_scene(payload, now, *, max_age=0.4, expected_counts=None):
     stamp = data.get('stamp')
     if not isinstance(stamp, (float, int)) or not math.isfinite(stamp):
         raise ValueError('Simulator scene timestamp is invalid')
-    if not 0.0 <= now - stamp <= max_age:
-        raise ValueError('Simulator scene is stale or from a future clock epoch')
+    if now - stamp < 0.0:
+        raise ValueError(f'Simulator scene is from a future clock epoch '
+                         f'({stamp - now:.3f} s ahead)')
+    if now - stamp > max_age:
+        raise ValueError(f'Simulator scene is stale ({now - stamp:.3f} s old)')
     raw_boxes = data.get('boxes')
     if not isinstance(raw_boxes, list) or len(raw_boxes) > 10000:
         raise ValueError('Simulator collision scene is invalid')

@@ -112,7 +112,9 @@ def test_stopped_replans_reduce_steering_slew_residual_in_ideal_4ws_model(target
         if command['state'] == 'DONE':
             executor = None
         desired = command['linear_x']
-        desired_steering = steering_for_twist(desired, command['angular_z'], .58, math.pi / 4)
+        # The 4WS controller holds the wheel angle when commanded to stop.
+        desired_steering = (steering if abs(desired) < 1e-4 else
+                            steering_for_twist(desired, command['angular_z'], .58, math.pi / 4))
         speed = approach(speed, desired, .25 if speed*desired >= 0 else .35, dt)
         steering = approach(steering, desired_steering, .8, dt)
         pose = propagate(pose, speed*dt, 2*math.tan(steering)/.58)

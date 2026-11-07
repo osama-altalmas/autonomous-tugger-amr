@@ -115,6 +115,13 @@ def _yaw(quaternion):
     )
 
 
+class ClearanceUnavailable(ValueError):
+    """Clearance could not be judged (stale data), which is not a collision."""
+
+
+LIFT_DATA_GAP_S = 1.0
+
+
 def _marker_in_map(robot_pose, marker):
     """Map position of a marker measured in base_footprint at robot_pose."""
     x, y, yaw = robot_pose
@@ -447,6 +454,23 @@ class OperatorBridge(Node):
             self._continue_attempt(attempt + 1)
         timer = self.create_timer(CONTINUE_RETRY_S, retry)
 
+    def _station_partway(self, pose):
+        """The cargo station whose approach the robot stands on, short of its gate."""
+        for station in CARGO_STATIONS:
+            try:
+                approach = self._station_approach(station)
+            except (OSError, ValueError, KeyError):
+                continue
+            if not approach:
+                continue
+            gate, dock = approach[0], approach[-1]
+            if (math.hypot(pose[0] - dock[0], pose[1] - dock[1]) <= DOCKED_TOLERANCE_M or
+                    math.hypot(pose[0] - gate[0], pose[1] - gate[1]) <= 0.15):
+                continue
+            if min(math.hypot(p[0] - pose[0], p[1] - pose[1]) for p in approach) <= 0.30:
+                return station
+        return None
+
     def _station_approach(self, station):
         """Return the approach the robot actually entered this station by."""
         arrival = getattr(self, '_arrival_approach', None)
@@ -569,12 +593,21 @@ class OperatorBridge(Node):
             return
         self._prepare_backout(destination, retry['candidates'], retry['targets'])
 
-    def _prepare_backout(self, destination, candidates, station_targets):
-        """Back out along the recorded approach to its gate, then re-approach."""
+    def _prepare_backout(self, destination, candidates, station_targets, station=None):
+        """Back out along a station's approach to its gate, then continue.
+
+        By default the station is the destination (recovery: re-approach it).
+        With another station, the robot leaves a station it is partway out of
+        (for example after a cancelled departure) and then heads to destination.
+        """
+        station = station or destination
         arrival = getattr(self, '_arrival_approach', None)
-        if arrival is None or arrival[0] != destination:
+        if arrival is not None and arrival[0] == station:
+            approach = arrival[1]
+        elif station != destination:
+            approach = self._station_approach(station)
+        else:
             raise ValueError(f'no recorded approach to {destination} to back out along')
-        approach = arrival[1]
         pose = self._robot_pose()
         index = min(range(len(approach)), key=lambda i: math.hypot(
             approach[i][0] - pose[0], approach[i][1] - pose[1]))
@@ -638,12 +671,17 @@ class OperatorBridge(Node):
         else:
             self._pending_departure = {
                 'path': path, 'poses': poses, 'start_pose': pose,
-                'cargo_id': cargo, 'station': destination,
+                'cargo_id': cargo, 'station': station,
             }
             self._departure_target = (destination, candidates, station_targets)
         self._path_pub.publish(path)
-        self._report(f'RECOVERY: backing out {prepared["leading_end"].lower()}-leading along '
-                     f'the approach to the {destination} entry, then re-approaching.')
+        if station == destination:
+            self._report(f'RECOVERY: backing out {prepared["leading_end"].lower()}-leading along '
+                         f'the approach to the {destination} entry, then re-approaching.')
+        else:
+            self._report(f'{station}: robot is partway out of the station; backing out '
+                         f'{prepared["leading_end"].lower()}-leading along its approach to the '
+                         f'gate, then continuing to {destination}.')
         self._continue_attempt(1)
 
     def _prepare_station_exit(self, station, current_pose, destination, candidates,
@@ -1047,8 +1085,7 @@ class OperatorBridge(Node):
         for key in CARGO_IDS:
             seen = self._cargo_pose_seen_at[key]
             if seen is None or not 0 <= (now - seen).nanoseconds / 1e9 <= 1.0:
-                self._report('Cargo clearance blocked: simulator payload pose is stale or missing.')
-                return False
+                raise ClearanceUnavailable('simulator payload pose is stale or missing')
         try:
             world = Path(get_package_share_directory('tugger_gazebo')) / 'worlds/tugger_warehouse.sdf'
             robot = Path(get_package_share_directory('tugger_description')) / 'urdf/tugger.urdf.xacro'
@@ -1068,8 +1105,7 @@ class OperatorBridge(Node):
                 self._report(f'Modeled cargo lift clearance failed: {hit}.')
             return clear
         except (OSError, ValueError, TypeError, KeyError) as exc:
-            self._report(f'Cargo clearance unavailable: {exc}.')
-            return False
+            raise ClearanceUnavailable(str(exc)) from exc
 
     def _modeled_loaded_path_clearance(self, poses, cargo_id):
         """Sample the known world with current payload geometry; not a sensor safety layer."""
@@ -1192,6 +1228,12 @@ class OperatorBridge(Node):
         # staleness checks of the handler, which then hold the alignment.
         self._red_frame_waiting = None
         self._red_frame_pose(message)
+
+    def _robot_odom_pose(self):
+        """Robot pose in the continuous odom frame, for short-term tracking."""
+        transform = self._tf.lookup_transform('odom', 'base_footprint', rclpy.time.Time())
+        translation = transform.transform.translation
+        return translation.x, translation.y, _yaw(transform.transform.rotation)
 
     def _robot_pose_at(self, stamp):
         """Robot pose at a message stamp; fails rather than mixing instants."""
@@ -1332,6 +1374,9 @@ class OperatorBridge(Node):
             return
         try:
             pose = self._robot_pose()
+            # Primitives are tracked in odom, which is continuous (REP 105);
+            # the map pose can jump when localization corrects itself.
+            odom_pose = self._robot_odom_pose()
             speed = self._alignment_odom[0] if self._alignment_odom is not None else float('nan')
             stamp = self._alignment_odom_stamp
             if not self._visual_clearance_current(pose):
@@ -1342,7 +1387,7 @@ class OperatorBridge(Node):
                 self._hold_visual_alignment('odometry stale; waiting to replan')
                 return
             result = self._visual_executor.update(
-                pose, speed, now.nanoseconds / 1e9, stamp,
+                odom_pose, speed, now.nanoseconds / 1e9, stamp,
                 self._visual_latest_camera_stamp, identity_ok=True,
                 clearance_ok=True, visible=True)
         except Exception as exc:
@@ -1644,6 +1689,7 @@ class OperatorBridge(Node):
             if self._cargo_clearance_guard is None or not self._cargo_clearance_guard(
                     station, cargo_id, 'pickup' if is_pickup else 'dropoff'):
                 raise ValueError('height-aware cargo operation clearance is unavailable')
+            self._lift_gap = None
             self._cargo_task = CargoOperation(
                 'pickup' if is_pickup else 'dropoff', cargo_id,
                 now.nanoseconds / 1e9, self._cargo_poses[cargo_id][2])
@@ -1690,6 +1736,29 @@ class OperatorBridge(Node):
                 elif not self._cargo_clearance_guard(
                         self.docked_station, task.cargo_id, task.operation):
                     task.result, command = 'clearance_lost_during_lift', 'FAILED'
+                elif getattr(self, '_lift_gap', None) is not None:
+                    # Fresh data again: resume toward the target held back.
+                    target = self._lift_gap[1]
+                    self._lift_gap = None
+                    self._report('Lift resumed: clearance data is fresh again.')
+                    if target is not None:
+                        self.lift(target)
+            except ClearanceUnavailable as exc:
+                # Not a collision: hold the lift still and wait briefly for
+                # fresh data instead of abandoning the pickup.
+                gap = getattr(self, '_lift_gap', None)
+                if gap is None:
+                    self._lift_gap = (now_seconds, getattr(self, '_lift_target', None))
+                    if self._lift_position is not None:
+                        self.lift(self._lift_position, remember=False)
+                    self._report(f'Lift paused: clearance data momentarily unavailable ({exc}).')
+                    return
+                if now_seconds - gap[0] <= LIFT_DATA_GAP_S:
+                    return
+                self._lift_gap = None
+                self._report(f'Cargo clearance unavailable for over {LIFT_DATA_GAP_S:.0f} s '
+                             f'during the lift: {exc}')
+                task.result, command = 'clearance_unavailable_during_lift', 'FAILED'
             except Exception as exc:
                 self._report(f'Cargo clearance check failed during lift: {exc}')
                 task.result, command = 'clearance_unavailable_during_lift', 'FAILED'
@@ -2058,6 +2127,15 @@ class OperatorBridge(Node):
             # Depart a loaded dock using its own height-aware path first.
             # Never ask the ordinary 2D Nav2 global planner to start beneath
             # the stand where the static costmap marks the station occupied.
+            partway = (self._station_partway(pose)
+                       if cargo is not None and self.docked_station is None else None)
+            if partway is not None and partway != destination:
+                # Loaded and partway out of a station (e.g. a cancelled
+                # departure): under a stand no route planner may start, so
+                # finish leaving along the station's own approach first.
+                self._prepare_backout(destination, candidates, station_targets,
+                                      station=partway)
+                return
             if cargo is not None and self.docked_station is not None:
                 # Leaves by its pickup's own approach, or through a gate of a
                 # pass-through stop such as HOME, with loaded clearance checks.
@@ -2742,9 +2820,11 @@ class OperatorBridge(Node):
         self._active_follow.cancel_goal_async()
         self._report('Nav2 trajectory cancellation requested.')
 
-    def lift(self, height):
-        # Never command the lower limit itself: Gazebo latches the lift there.
+    def lift(self, height, remember=True):
+        # Commands stay inside the lift's working range (lift_geometry).
         height = min(max(float(height), LIFT_DOWN_M), LIFT_UP_M)
+        if remember:
+            self._lift_target = height
         message = Float64MultiArray()
         message.data = [height]
         self._lift_pub.publish(message)

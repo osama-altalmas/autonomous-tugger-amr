@@ -3,6 +3,8 @@
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import math
+
 import pytest
 
 pytest.importorskip('rclpy')
@@ -1047,3 +1049,97 @@ def test_last_resort_recovery_connector_failure_stops_with_a_reason():
     OperatorBridge._connector_failed(bridge, 'no safe short connector', 5)
     bridge._start_live_plan.assert_not_called()
     assert 'No plan was sent' in bridge._report.call_args.args[0]
+
+
+def _lifting_bridge(seconds):
+    from rclpy.time import Time
+    from tugger_control.cargo_operation import CargoOperation
+    bridge = _bridge()
+    bridge._motion_armed = True
+    bridge.docked_station = 'cargo_station_3'
+    bridge._cargo_task = CargoOperation('pickup', 3, 1.0, 0.0)
+    bridge._cargo_task.phase = 'WAIT_RAISE'
+    bridge._cargo_task.phase_started = 1.0
+    bridge._cargo_states = {0: 'detached', 3: 'attached'}
+    bridge._lift_target = LIFT_UP_M
+    bridge._lift_gap = None
+    bridge.lift = Mock()
+    bridge._execution_done = Mock()
+
+    def at(second):
+        bridge.get_clock.return_value.now.return_value = Time(seconds=second)
+        bridge._cargo_seen_at = {0: Time(seconds=second), 3: Time(seconds=second)}
+        bridge._lift_seen_at = Time(seconds=second)
+        bridge._cargo_pose_seen_at[3] = Time(seconds=second)
+        bridge._lift_position = 0.06
+    at(seconds)
+    return bridge, at
+
+
+def test_a_momentary_scene_gap_pauses_the_lift_then_resumes():
+    # Seen in Gazebo: one stale scene during the raise aborted a good pickup.
+    from tugger_control.operator_panel import ClearanceUnavailable
+    bridge, at = _lifting_bridge(2.0)
+    bridge._cargo_clearance_guard = Mock(side_effect=ClearanceUnavailable('scene stale'))
+    OperatorBridge._advance_cargo_operation(bridge)
+    bridge.lift.assert_called_once_with(0.06, remember=False)
+    at(2.5)
+    OperatorBridge._advance_cargo_operation(bridge)
+    bridge._execution_done.assert_not_called()
+    bridge._cargo_clearance_guard = Mock(return_value=True)
+    at(2.7)
+    bridge.lift.reset_mock()
+    OperatorBridge._advance_cargo_operation(bridge)
+    bridge.lift.assert_any_call(LIFT_UP_M)
+    assert bridge._lift_gap is None
+    bridge._execution_done.assert_not_called()
+
+
+def test_a_lasting_scene_gap_still_fails_the_lift():
+    from tugger_control.operator_panel import ClearanceUnavailable
+    bridge, at = _lifting_bridge(2.0)
+    bridge._cargo_clearance_guard = Mock(side_effect=ClearanceUnavailable('scene stale'))
+    OperatorBridge._advance_cargo_operation(bridge)
+    at(3.2)
+    OperatorBridge._advance_cargo_operation(bridge)
+    assert bridge._execution_done.call_args.args[0] is False
+    assert bridge._cargo_task is None or bridge._cargo_task.result == (
+        'clearance_unavailable_during_lift')
+
+
+def test_a_real_collision_during_the_lift_fails_at_once():
+    bridge, _at = _lifting_bridge(2.0)
+    bridge._cargo_clearance_guard = Mock(return_value=False)
+    OperatorBridge._advance_cargo_operation(bridge)
+    assert bridge._execution_done.call_args.args[0] is False
+
+
+def _approach_to(dock_x):
+    # Gate 2 m out along +x, dock at dock_x, as at Station 1.
+    return [[dock_x + 2.0 - 0.01 * i, -7.0, math.pi] for i in range(201)]
+
+
+def test_partway_out_of_a_station_is_recognised():
+    bridge = _bridge()
+    bridge._station_approach = lambda station: (
+        _approach_to(-17.5) if station == 'cargo_station_0' else _approach_to(100.0))
+    find = lambda pose: OperatorBridge._station_partway(bridge, pose)
+    assert find((-17.03, -7.0, 0.0)) == 'cargo_station_0'     # reported: 47 cm out
+    assert find((-17.5, -7.0, 0.0)) is None                   # docked, not partway
+    assert find((-15.5, -7.0, 0.0)) is None                   # at the gate: out
+    assert find((-17.0, -6.5, 0.0)) is None                   # off the approach
+
+
+def test_loaded_robot_partway_out_backs_out_then_continues():
+    # Reported: cancelled loaded departure left the robot under the stand and
+    # every later request failed to plan.
+    bridge = _bridge()
+    bridge._confirmed_cargo.return_value = 0
+    bridge._robot_pose.return_value = (-17.03, -7.0, 0.0)
+    bridge.docked_station = None
+    bridge._station_partway = Mock(return_value='cargo_station_0')
+    bridge._prepare_backout = Mock()
+    bridge._recover_loaded_dock_station = Mock()
+    OperatorBridge.execute_destination(bridge, 'cargo_dropoff_northwest', [], [[0, 0, 0]])
+    bridge._prepare_backout.assert_called_once_with(
+        'cargo_dropoff_northwest', [], [[0, 0, 0]], station='cargo_station_0')
