@@ -8,6 +8,8 @@ from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from nav_msgs.msg import Odometry
 
+from tugger_control.turn_in_place import pivot_odometry
+
 
 class FourWSOdometry(Node):
 
@@ -128,7 +130,17 @@ class FourWSOdometry(Node):
         #
         # wz / v = 2*tan(delta_front)/L
         #        = -2*tan(delta_rear)/L
-        if abs(self.wheelbase) > 1e-9:
+        lateral_velocity = 0.0
+        if abs(delta_rl - delta_rr) > 0.05:
+            # Rear wheels not linked (turning in place, or changing between
+            # car-like and pivot steering): fit the rigid-body motion to both
+            # rear wheels instead of the linked-axle model.
+            half_l, half_w = 0.5 * self.wheelbase, 0.5 * self.track_width
+            linear_velocity, lateral_velocity, angular_velocity = pivot_odometry(
+                (delta_rl, delta_rr), (omega_rl_wheel, omega_rr_wheel),
+                wheel_positions=((-half_l, half_w), (-half_l, -half_w)),
+                wheel_radius=self.wheel_radius)
+        elif abs(self.wheelbase) > 1e-9:
             angular_velocity = (
                 -2.0 *
                 linear_velocity *
@@ -162,16 +174,14 @@ class FourWSOdometry(Node):
         )
 
         self.x += (
-            linear_velocity *
-            math.cos(yaw_mid) *
-            dt
-        )
+            linear_velocity * math.cos(yaw_mid) -
+            lateral_velocity * math.sin(yaw_mid)
+        ) * dt
 
         self.y += (
-            linear_velocity *
-            math.sin(yaw_mid) *
-            dt
-        )
+            linear_velocity * math.sin(yaw_mid) +
+            lateral_velocity * math.cos(yaw_mid)
+        ) * dt
 
         self.yaw += delta_yaw
 
@@ -183,14 +193,16 @@ class FourWSOdometry(Node):
         self.publish_odometry(
             current_time,
             linear_velocity,
-            angular_velocity
+            angular_velocity,
+            lateral_velocity
         )
 
     def publish_odometry(
         self,
         current_time,
         linear_velocity,
-        angular_velocity
+        angular_velocity,
+        lateral_velocity=0.0
     ):
 
         half_yaw = 0.5 * self.yaw
@@ -209,7 +221,7 @@ class FourWSOdometry(Node):
         odom.pose.pose.orientation.w = math.cos(half_yaw)
 
         odom.twist.twist.linear.x = linear_velocity
-        odom.twist.twist.linear.y = 0.0
+        odom.twist.twist.linear.y = lateral_velocity
         odom.twist.twist.angular.z = angular_velocity
 
         odom.pose.covariance[0] = 0.02

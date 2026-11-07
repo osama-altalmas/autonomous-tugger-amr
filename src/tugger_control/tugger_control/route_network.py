@@ -41,27 +41,47 @@ def network_edges(candidates_by_destination):
 # A waypoint costs a stop at a gate and possibly a change of driving direction
 # (about 5-10 s); at route speed (about 1 m/s) that is worth roughly 10 m.
 STOP_PENALTY_M = 10.0
+# Chains are compared by time. Route travel averages about 1 m/s (1.2 m/s on
+# straights, 0.6 m/s in curves), so a metre of route is about a second.
+ROUTE_SPEED_MPS = 1.0
+
+
+def route_time_s(length_m, stops=0):
+    """Expected time for ``length_m`` of saved route with ``stops`` waypoints."""
+    return length_m / ROUTE_SPEED_MPS + stops * STOP_PENALTY_M / ROUTE_SPEED_MPS
 
 
 def plan_route_chain(edges, start_station, start_gate, destination, pass_through,
                      stop_penalty_m=STOP_PENALTY_M):
-    """Return the stops of the shortest chain, ending with ``destination``.
+    """Shortest chain leaving by ``start_gate`` (see plan_route_chain_from)."""
+    result = plan_route_chain_from(edges, start_station, {start_gate: 0.0}, destination,
+                                   pass_through, stop_penalty_m=stop_penalty_m)
+    return None if result is None else result[0]
 
-    ``start_gate`` is the gate the robot entered its station by (None at a
-    pass-through stop). Dijkstra over (station, gate): the result has the
-    lowest total cost, path lengths plus ``stop_penalty_m`` per intermediate
-    stop. Returns None when no chain of approved paths exists. A one-element
-    result means the best connection is a direct path.
+
+def plan_route_chain_from(edges, start_station, start_gates, destination, pass_through,
+                          stop_penalty_m=STOP_PENALTY_M):
+    """Return ``(stops, start gate, cost)`` of the cheapest chain, or None.
+
+    ``start_gates`` maps each gate the robot may leave by to its extra cost
+    (for example the time to turn in place to face it); the gate it entered
+    by costs 0, and None means a pass-through stop left by any gate.
+    Dijkstra over (station, gate): the result has the lowest total cost, path
+    lengths plus ``stop_penalty_m`` per intermediate stop (a metre is about a
+    second, ROUTE_SPEED_MPS). A one-element ``stops`` means a direct path.
     """
     pass_through = set(pass_through)
-    start = (start_station, start_gate)
-    queue = [(0.0, 0, start, ())]
-    best = {start: 0.0}
-    counter = 1
+    queue, best, counter = [], {}, 0
+    for gate, extra in start_gates.items():
+        start = (start_station, gate)
+        if extra < best.get(start, float('inf')):
+            best[start] = extra
+            heapq.heappush(queue, (extra, counter, start, (), gate))
+            counter += 1
     while queue:
-        cost, _, (station, gate), stops = heapq.heappop(queue)
+        cost, _, (station, gate), stops, first_gate = heapq.heappop(queue)
         if stops and stops[-1] == destination:
-            return list(stops)
+            return list(stops), first_gate, cost
         if cost > best.get((station, gate), float('inf')):
             continue
         # Docked at a pass-through stop the robot may leave by any gate. At a
@@ -78,6 +98,6 @@ def plan_route_chain(edges, start_station, start_gate, destination, pass_through
             new_cost = cost + edge['length_m'] + (stop_penalty_m if stops else 0.0)
             if new_cost < best.get(node, float('inf')):
                 best[node] = new_cost
-                heapq.heappush(queue, (new_cost, counter, node, stops + (target,)))
+                heapq.heappush(queue, (new_cost, counter, node, stops + (target,), first_gate))
                 counter += 1
     return None

@@ -20,11 +20,14 @@ from tf2_ros import Buffer, TransformListener
 
 from tugger_control.cargo_policy import confirmed_cargo
 from tugger_control.cargo_policy import CARGO_IDS
-from tugger_control.lift_geometry import lift_is_raised
+from tugger_control.lift_geometry import lift_is_down, lift_is_raised
 from tugger_control.loaded_motion_guard import choose_guarded_speed, decode_scene, scene_expected_counts
 from tugger_control.motion_math import speed_profile
 from tugger_control.precision_scene_clearance import (
     FULL_LOCK_CURVATURE, choose_precision_speed)
+from tugger_control.rotation_clearance import rotation_clear, stopping_turn
+from tugger_control.turn_in_place import (MAX_YAW_RATE_LOADED, MAX_YAW_RATE_UNLOADED,
+                                          YAW_ACCELERATION)
 from tugger_control.warehouse_clearance import validate_modeled_geometry
 
 
@@ -96,8 +99,8 @@ class SimMotionGate(Node):
         self._ready = self.create_publisher(Bool, '/tugger/loaded_guard/ready', 10)
         self._dock_ready = self.create_publisher(String, '/tugger/precision_guard/ready', 10)
         self._status = self.create_publisher(String, '/tugger/loaded_guard/status', 10)
-        self._requests = {'NAV': None, 'PRECISION': None, 'DOCK_NAV': None}
-        self._request_at = {'NAV': None, 'PRECISION': None, 'DOCK_NAV': None}
+        self._requests = {'NAV': None, 'PRECISION': None, 'DOCK_NAV': None, 'ROTATE': None}
+        self._request_at = {'NAV': None, 'PRECISION': None, 'DOCK_NAV': None, 'ROTATE': None}
         self._owner, self._owner_at = 'STOP', None
         self._scene, self._scene_at = None, None
         self._states = {key: None for key in CARGO_IDS}
@@ -110,6 +113,7 @@ class SimMotionGate(Node):
         self._lift, self._lift_at = None, None
         self._speed, self._speed_at = None, None
         self._steer, self._steer_at = None, None
+        self._yaw_rate, self._yaw_rate_at = None, None
         self._wheel_speed, self._wheel_speed_at = None, None
         self._last_time = None
         self._last_reason = None
@@ -127,7 +131,8 @@ class SimMotionGate(Node):
         self.create_subscription(String, '/tugger/collision_scene', self._on_scene, 10)
         for name, topic in (('NAV', '/tugger/nav_cmd_vel'),
                             ('DOCK_NAV', '/tugger/dock_nav_cmd_vel'),
-                            ('PRECISION', '/tugger/precision_cmd_vel')):
+                            ('PRECISION', '/tugger/precision_cmd_vel'),
+                            ('ROTATE', '/tugger/rotate_cmd_vel')):
             self.create_subscription(TwistStamped, topic,
                                      lambda msg, key=name: self._on_request(key, msg), 10)
         for station in CARGO_IDS:
@@ -150,7 +155,8 @@ class SimMotionGate(Node):
         return stamp is not None and 0 <= now - stamp <= maximum
 
     def _on_owner(self, msg):
-        owner = msg.data if msg.data in ('NAV', 'PRECISION', 'DOCK_NAV', 'DOCK_CAMERA', 'DOCK_DEPART') else 'STOP'
+        owner = msg.data if msg.data in ('NAV', 'PRECISION', 'DOCK_NAV', 'DOCK_CAMERA',
+                                         'DOCK_DEPART', 'ROTATE') else 'STOP'
         source = {'DOCK_CAMERA': 'PRECISION', 'DOCK_DEPART': 'DOCK_NAV'}.get(owner, owner)
         if owner != self._owner and source in self._request_at:
             self._request_at[source] = None
@@ -203,6 +209,9 @@ class SimMotionGate(Node):
         # [3] is the steering angle the 4WS controller currently applies.
         if len(msg.data) >= 4 and math.isfinite(msg.data[3]):
             self._steer, self._steer_at = float(msg.data[3]), self._now()
+        # [6] is the yaw rate of a turn in place.
+        if len(msg.data) >= 7 and math.isfinite(msg.data[6]):
+            self._yaw_rate, self._yaw_rate_at = float(msg.data[6]), self._now()
 
     def _on_wheel_odom(self, msg):
         if msg.header.frame_id != 'odom' or msg.child_frame_id != 'base_footprint':
@@ -278,7 +287,7 @@ class SimMotionGate(Node):
         now = self._now()
         if self._last_time is not None and now < self._last_time:
             self._owner_at = None
-            self._request_at = {'NAV': None, 'PRECISION': None, 'DOCK_NAV': None}
+            self._request_at = {'NAV': None, 'PRECISION': None, 'DOCK_NAV': None, 'ROTATE': None}
             self._states_at = {key: None for key in CARGO_IDS}
             self._scene_at = None
             self._payloads_at = {key: None for key in CARGO_IDS}
@@ -305,7 +314,13 @@ class SimMotionGate(Node):
                  snapshot is not None and -0.005 <= self._lift <= 0.005) or
                 (owner == 'DOCK_DEPART' and cargo is not None and
                  snapshot is not None and lift_is_raised(self._lift)))
-            if owner != 'STOP' and self._fresh(self._request_at[source], now, 0.25):
+            if owner == 'ROTATE' and self._fresh(self._request_at['ROTATE'], now, 0.25):
+                omega, reason = self._rotate_command(self._requests['ROTATE'], snapshot,
+                                                     cargo, reason, now)
+                output.header.frame_id = 'pivot'
+                output.twist.angular.z = omega
+            elif owner not in ('STOP', 'ROTATE') and self._fresh(
+                    self._request_at[source], now, 0.25):
                 request = self._requests[source]
                 v, omega = float(request.twist.linear.x), float(request.twist.angular.z)
                 if not math.isfinite(v) or not math.isfinite(omega):
@@ -399,6 +414,42 @@ class SimMotionGate(Node):
             message = String()
             message.data = reason
             self._status.publish(message)
+
+    def _rotate_command(self, request, snapshot, cargo, reason, now):
+        """Authorise a turn in place; return (yaw rate, status) or raise.
+
+        No travel; the lift must be down (unloaded) or raised (loaded); the
+        robot, and its cargo, must stay clear over the angle it turns before a
+        stop, from its current yaw in the commanded direction.
+        """
+        v, omega = float(request.twist.linear.x), float(request.twist.angular.z)
+        if not math.isfinite(v) or not math.isfinite(omega):
+            raise ValueError('nonfinite command')
+        if abs(v) > 1e-6:
+            raise ValueError('a turn in place takes no travel command')
+        if snapshot is None:
+            raise ValueError(reason)
+        if cargo is None and not lift_is_down(self._lift):
+            raise ValueError('an unloaded turn in place requires the lift down')
+        if cargo is not None and not lift_is_raised(self._lift):
+            raise ValueError('a loaded turn in place requires the cargo raised')
+        limit = MAX_YAW_RATE_LOADED if cargo is not None else MAX_YAW_RATE_UNLOADED
+        omega = max(-limit, min(limit, omega))
+        rate = getattr(self, '_yaw_rate', None)
+        if rate is None or not self._fresh(getattr(self, '_yaw_rate_at', None), now, 0.3):
+            raise ValueError('turn-in-place yaw-rate feedback stale')
+        turning = max(abs(omega), abs(rate))
+        direction = omega if abs(omega) > 1e-6 else rate
+        if turning > 1e-6:
+            angle = math.copysign(stopping_turn(turning, YAW_ACCELERATION), direction)
+            payload = (getattr(self, '_aligned_payloads', {}).get(cargo, self._payloads[cargo])
+                       if cargo is not None else None)
+            clear, hit = rotation_clear(snapshot[0], self._lift,
+                                        snapshot[1], angle, cargo_id=cargo,
+                                        cargo_pose=payload)
+            if not clear:
+                raise ValueError(f'turn-in-place envelope intersects {hit[1]}')
+        return omega, 'turning in place'
 
 
 def main(args=None):

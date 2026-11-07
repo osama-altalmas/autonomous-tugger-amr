@@ -47,7 +47,13 @@ from tugger_control.visual_maneuver_planner import marker_visible, replan_visual
 from tugger_control.clearance_2_5d import collision_pairs
 from tugger_control.visual_scene_clearance import PreparedVisualClearance
 from tugger_control.backout_path import backout_candidates
-from tugger_control.route_network import network_edges, plan_route_chain
+from tugger_control.route_network import (network_edges, plan_route_chain,
+                                          plan_route_chain_from)
+from tugger_control.rotation_clearance import rotation_clear
+from tugger_control.turn_in_place import (MAX_YAW_RATE_LOADED, MAX_YAW_RATE_UNLOADED,
+                                          ROTATION_MARGIN_M, SETTLE_S,
+                                          TURN_SHIFT_TOLERANCE_M, approach_axis,
+                                          rotation_time_s, rotation_to_axis, wrap)
 from tugger_control.station_occupancy import (
     ATTACH, DETACH, assess_destination, load_occupancy, measure_occupancy, save_occupancy,
     station_label)
@@ -82,6 +88,8 @@ RECOVERY_DELAY_S = 1.0
 RETRYABLE_CARGO_FAILURES = ('attach_rejected', 'timeout', 'cargo_moved_before_attach')
 # Docked means at the station centre; farther away the robot is between stages.
 DOCKED_TOLERANCE_M = 0.10
+# Heading error the car-like station exit accepts without turning in place.
+ENTRY_HEADING_TOLERANCE_DEG = 15.0
 GUARD_NOTE_INTERVAL_S = 15.0
 # Routine guard states: normal operation, not worth a panel line.
 QUIET_GUARD_STATES = ('ready', 'stopped', 'unloaded motion', 'precision guarded',
@@ -175,6 +183,12 @@ class OperatorBridge(Node):
         self._precision_cmd_pub = self.create_publisher(
             TwistStamped, '/tugger/docking/cmd_vel', 10)
         self._motion_owner_pub = self.create_publisher(String, '/tugger/motion_owner', 10)
+        self._rotate_pub = self.create_publisher(TwistStamped, '/tugger/rotate_cmd_vel', 10)
+        # Turn in place: an optional capability (operator panel switch).
+        self.turn_in_place_enabled = False
+        self._pending_rotation = None
+        self._rotation = None
+        self._turn_recentre = None
         self._lift_pub = self.create_publisher(
             Float64MultiArray, '/lift_controller/commands', 10)
         self._attach = {
@@ -293,6 +307,7 @@ class OperatorBridge(Node):
         self.create_timer(0.1, self._qr_alignment_watchdog)
         self.create_timer(0.1, self._advance_cargo_operation)
         self.create_timer(0.1, self._publish_motion_owner)
+        self.create_timer(0.05, self._rotation_step)
         self.create_timer(0.1, self._dock_wait_watchdog)
         self.create_timer(0.2, self._poll_live_plan)
 
@@ -363,7 +378,8 @@ class OperatorBridge(Node):
     def _mission_started(self):
         return (self._follow_goal_pending or self._stage_validation_pending or
                 self._departure_pending is not None or self._departure_active or
-                self._active_follow is not None or self._qr_alignment_active)
+                self._active_follow is not None or self._qr_alignment_active or
+                getattr(self, '_rotation', None) is not None)
 
     def _report_run_block(self, message):
         """Automatic retries stay quiet; only a final failure is reported."""
@@ -611,6 +627,209 @@ class OperatorBridge(Node):
             self.execute_destination(via['final'], via['candidates'], via['targets'])
         timer = self.create_timer(0.5, go)
 
+    # ---- Turn in place (optional; turn_in_place.py) -------------------------
+    def _dock_gate_approaches(self, station):
+        """Network edges, and each gate's approach for leaving ``station``."""
+        provider = self._candidate_provider
+        lists = [provider(name)[0] for name in getattr(self, '_station_centers', {})]
+        approaches = {}
+        for candidates in lists:
+            for key, meta, poses in candidates:
+                gate = meta.get('source_entrance')
+                if (meta.get('source') != station or gate in approaches or not poses or
+                        '(reversed)' in key):
+                    continue
+                start = meta.get('markers', {}).get('route_start', 0)
+                try:
+                    approaches[gate] = self._approach_provider(station, poses[start])[1]
+                except (OSError, ValueError, KeyError, IndexError):
+                    continue
+        return network_edges(lists), approaches
+
+    def _turn_clearance(self, pose, cargo):
+        """Is the whole turning circle clear at the dock? Returns (clear, reason)."""
+        try:
+            now = self.get_clock().now()
+            if self._collision_scene is None:
+                raise ValueError('live simulator collision scene is unavailable')
+            if (self._lift_seen_at is None or
+                    not 0 <= (now - self._lift_seen_at).nanoseconds / 1e9 <= 1.0):
+                raise ValueError('lift feedback is stale')
+            if cargo is None and not lift_is_down(self._lift_position):
+                raise ValueError('the lift is not down')
+            if cargo is not None and not lift_is_raised(self._lift_position):
+                raise ValueError('the cargo is not raised')
+            cargo_pose = None
+            if cargo is not None:
+                seen = self._cargo_pose_seen_at[cargo]
+                if seen is None or not 0 <= (now - seen).nanoseconds / 1e9 <= 1.0:
+                    raise ValueError('simulator payload pose is stale or missing')
+                cargo_pose = self._cargo_poses[cargo]
+            world = Path(get_package_share_directory('tugger_gazebo')) / 'worlds/tugger_warehouse.sdf'
+            scene = decode_scene(self._collision_scene, now.nanoseconds / 1e9,
+                                 expected_counts=scene_expected_counts(world))
+            clear, hit = rotation_clear(tuple(pose), self._lift_position, scene, 2 * math.pi,
+                                        cargo_id=cargo, cargo_pose=cargo_pose,
+                                        margin=ROTATION_MARGIN_M)
+            return clear, (None if clear else f'turning circle meets {hit[1]}')
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            return False, str(exc)
+
+    def _maybe_turn_at_dock(self, destination, candidates, station_targets):
+        """With turn in place on: turn at the dock when another gate is faster.
+
+        Every gate the station can be left by is compared by time: the turn
+        to face it (none for the gate the robot entered by) plus the saved
+        route or chain from it. Other gates are offered only when the whole
+        turning circle, loaded or not, is clear of the stand legs and every
+        other modelled obstacle. Returns True when a turn was previewed.
+        """
+        if not getattr(self, 'turn_in_place_enabled', False):
+            return False
+        station = self.docked_station
+        if (station is None or station in getattr(self, '_pass_through', ()) or
+                getattr(self, '_mission_via', None) is not None or
+                getattr(self, '_candidate_provider', None) is None or
+                self._approach_provider is None):
+            return False
+        cargo = self._confirmed_cargo()
+        loaded = cargo is not None
+        pose = self._robot_pose()
+        entry = self._station_approach(station)
+        entry_gate = entrance_gate(entry)
+        edges, approaches = self._dock_gate_approaches(station)
+        approaches.setdefault(entry_gate, entry)
+        turns = {gate: rotation_to_axis(pose[2], approach_axis(approach))
+                 for gate, approach in approaches.items()}
+        clear, why = self._turn_clearance(pose, cargo)
+        # The car-like exit already accepts the small heading error left by
+        # docking (station_departure: up to 20 degrees); no turn for that.
+        entry_ok = abs(turns[entry_gate]) < math.radians(ENTRY_HEADING_TOLERANCE_DEG)
+        start_gates = {entry_gate: 0.0 if entry_ok else
+                       rotation_time_s(turns[entry_gate], loaded)}
+        if clear:
+            for gate, turn in turns.items():
+                start_gates.setdefault(gate, rotation_time_s(turn, loaded))
+        else:
+            if len(turns) > 1:
+                self._report(f'{station}: turn in place not used ({why}); leaving by the '
+                             f'{entry_gate} gate it entered by.')
+            return False  # the car-like exit decides whether the heading is usable
+        best = plan_route_chain_from(edges, station, start_gates, destination,
+                                     getattr(self, '_pass_through', ()))
+        if best is None:
+            return False
+        stops, gate, cost = best
+        if gate == entry_gate and entry_ok:
+            return False  # leaving by the entry gate without a turn: unchanged
+        baseline = plan_route_chain_from(edges, station, {entry_gate: 0.0}, destination,
+                                         getattr(self, '_pass_through', ()))
+        saving = ('' if baseline is None or gate == entry_gate else
+                  f'; about {baseline[2] - cost:.0f} s faster than leaving by the '
+                  f'{entry_gate} gate it entered by')
+        via = '' if len(stops) < 2 else f' via {" -> ".join(stops[:-1])}'
+        self._pending_rotation = {
+            'station': station, 'gate': gate, 'approach': approaches[gate],
+            'target': wrap(pose[2] + turns[gate]), 'turn': turns[gate], 'loaded': loaded,
+            'mission': (destination, candidates, station_targets)}
+        self._pending_pose = pose
+        self._pending_destination = destination
+        self._pending_execution_approved = True
+        self._plan_ready(
+            f'{station}: TURN IN PLACE {math.degrees(turns[gate]):+.0f} deg at the dock '
+            f'({"loaded" if loaded else "unloaded"}; turning circle clear), then leave by '
+            f'the {gate} gate to {destination}{via}{saving}. Press RUN; the mission '
+            'continues automatically.', False)
+        return True
+
+    def _start_rotation(self):
+        pending = self._pending_rotation
+        self._pending_rotation = None
+        now = self.get_clock().now().nanoseconds / 1e9
+        error = abs(wrap(pending['target'] - self._robot_pose()[2]))
+        self._rotation = dict(pending, started=now, best=error, progress_at=now,
+                              still_since=None, start_pose=tuple(self._robot_pose()))
+        self._mission_phase = 'turn'
+        self._report(f'{pending["station"]}: turning in place '
+                     f'{math.degrees(pending["turn"]):+.0f} deg.')
+
+    def _send_rotation(self, omega):
+        message = TwistStamped()
+        message.header.stamp = self.get_clock().now().to_msg()
+        message.header.frame_id = 'pivot'
+        message.twist.angular.z = float(omega)
+        self._rotate_pub.publish(message)
+
+    def _rotation_step(self):
+        """Turn toward the target heading; settle; then continue the mission."""
+        rotation = getattr(self, '_rotation', None)
+        if rotation is None:
+            return
+        if self._cancel_requested or not self._motion_armed:
+            self._end_rotation(False, 'turn in place stopped: motion disarmed or cancelled')
+            return
+        now = self.get_clock().now().nanoseconds / 1e9
+        try:
+            yaw = self._robot_pose()[2]
+        except Exception as exc:  # TF unavailable: stop rather than guess
+            self._end_rotation(False, f'turn in place stopped: robot pose unavailable: {exc}')
+            return
+        error = wrap(rotation['target'] - yaw)
+        if abs(error) < rotation['best'] - math.radians(0.5):
+            rotation['best'], rotation['progress_at'] = abs(error), now
+        if abs(error) <= math.radians(0.4):
+            self._send_rotation(0.0)
+            if rotation['still_since'] is None:
+                rotation['still_since'] = now
+            elif now - rotation['still_since'] >= SETTLE_S:
+                self._end_rotation(True, None)
+            return
+        rotation['still_since'] = None
+        if now - rotation['progress_at'] > 6.0:
+            status = getattr(self, '_last_guard_status', None)
+            self._end_rotation(False, 'turn in place made no progress for 6 s'
+                               + (f' ({status})' if status else ''))
+            return
+        limit = MAX_YAW_RATE_LOADED if rotation['loaded'] else MAX_YAW_RATE_UNLOADED
+        self._send_rotation(math.copysign(min(limit, max(0.06, 0.9 * abs(error))), error))
+
+    def _end_rotation(self, succeeded, reason):
+        rotation = self._rotation
+        self._rotation = None
+        self._send_rotation(0.0)
+        if not succeeded:
+            self._report(f'{rotation["station"]}: {reason}. Robot stopped.')
+            self._execution_done(False, GoalStatus.STATUS_ABORTED)
+            return
+        # A turn in place shifts the centre a little (wheel scrub, on a real
+        # robot as in Gazebo). A small shift: the exit is planned from the
+        # measured pose (3D-checked, blending onto the exit line). A larger
+        # one: re-centre on the station's floor marker with the camera stage
+        # (10 mm, 1 degree), as AGVs do with their downward camera, first.
+        station = rotation['station']
+        pose = self._robot_pose()
+        shift = math.hypot(pose[0] - rotation['start_pose'][0],
+                           pose[1] - rotation['start_pose'][1])
+        if shift <= TURN_SHIFT_TOLERANCE_M:
+            self._report(f'{station}: turned in place (centre shifted {shift * 100:.1f} cm).')
+            self._continue_after_turn(rotation)
+            return
+        self._turn_recentre = rotation
+        self._precision_handoff_yaw = rotation['target']
+        self._dock_precision_mode = True
+        self._report(f'{station}: turned in place; the centre shifted {shift * 100:.1f} cm, '
+                     're-centring on the station marker before leaving.')
+        self._start_qr_alignment(station)
+
+    def _continue_after_turn(self, rotation):
+        station, gate = rotation['station'], rotation['gate']
+        self._arrival_approach = (station, rotation['approach'])
+        self._report(f'{station}: turn complete; leaving by the {gate} gate. Planning the '
+                     'exit from the measured pose; it continues automatically.')
+        self._continue_after_undock = True
+        self._mission_phase = 'turn'
+        self.execute_destination(*rotation['mission'])
+
     def _same_gate_routes(self, station, approach, candidates, destination):
         """Restrict the next leg to routes leaving by the gate used to enter."""
         gate = entrance_gate(approach)
@@ -713,7 +932,7 @@ class OperatorBridge(Node):
         timer = self.create_timer(RECOVERY_DELAY_S, recover)
 
     def _recoverable(self, phase):
-        if phase in ('route', 'approach', 'camera'):
+        if phase in ('route', 'approach', 'camera', 'turn'):
             return True
         failure = getattr(self, '_last_cargo_failure', None)
         return (phase == 'cargo' and failure is not None and failure[0] == 'pickup' and
@@ -721,8 +940,9 @@ class OperatorBridge(Node):
 
     def _recover(self, phase, retry):
         destination = retry['destination']
-        if phase == 'route':
-            # Replan from where the robot stands: rejoin, connector or live plan.
+        if phase in ('route', 'turn'):
+            # Replan from where the robot stands: rejoin, connector or live plan
+            # (after a stopped turn: the turn needed from the current heading).
             self._continue_after_undock = True
             self.execute_destination(destination, retry['candidates'], retry['targets'])
             return
@@ -1128,7 +1348,9 @@ class OperatorBridge(Node):
     def _publish_motion_owner(self):
         owner = 'STOP'
         if self._motion_armed and not self._cancel_requested:
-            if self._departure_pending is not None or self._departure_active:
+            if getattr(self, '_rotation', None) is not None:
+                owner = 'ROTATE'
+            elif self._departure_pending is not None or self._departure_active:
                 owner = 'DOCK_DEPART'
             elif self._qr_alignment_active:
                 owner = 'DOCK_CAMERA' if self._dock_precision_mode else 'PRECISION'
@@ -1785,6 +2007,11 @@ class OperatorBridge(Node):
             f'forward error={marker_x:.3f} m, lateral error={marker_y:.3f} m '
             f'within 10 mm and heading within 1 degree for '
             f'{QR_ALIGNMENT_STABLE_FRAMES} stationary frames.')
+        turn = getattr(self, '_turn_recentre', None)
+        if turn is not None and turn['station'] == station:
+            self._turn_recentre = None
+            self._continue_after_turn(turn)
+            return
         if station == 'HOME':
             self._execution_done(True, GoalStatus.STATUS_SUCCEEDED)
             return
@@ -1971,6 +2198,7 @@ class OperatorBridge(Node):
         self._visual_executor = None
         self._visual_replan_requested = False
         self._alignment_target_yaw = None
+        self._turn_recentre = None
         self._publish_precision_stop()
         self._report(f'PRECISION ALIGNMENT FAILED: {reason}. Robot stopped.')
         self._execution_done(False, GoalStatus.STATUS_ABORTED)
@@ -2114,7 +2342,7 @@ class OperatorBridge(Node):
         if (self._follow_goal_pending or self._stage_validation_pending or
                 self._departure_pending is not None or self._departure_active or
                 self._active_follow is not None or self._qr_alignment_active or
-                self._cargo_task is not None):
+                self._cargo_task is not None or getattr(self, '_rotation', None) is not None):
             self._report('Planning blocked: cancel the active mission first.')
             return
         generation = self._begin_preflight()
@@ -2228,7 +2456,7 @@ class OperatorBridge(Node):
         if (self._follow_goal_pending or self._stage_validation_pending or
                 self._departure_pending is not None or self._departure_active or
                 self._active_follow is not None or self._qr_alignment_active or
-                self._cargo_task is not None):
+                self._cargo_task is not None or getattr(self, '_rotation', None) is not None):
             self._report('Planning blocked: cancel the active mission first.')
             return
         generation = self._begin_preflight()
@@ -2295,6 +2523,8 @@ class OperatorBridge(Node):
                 # finish leaving along the station's own approach first.
                 self._prepare_backout(destination, candidates, station_targets,
                                       station=partway)
+                return
+            if self._maybe_turn_at_dock(destination, candidates, station_targets):
                 return
             if self._start_route_chain(destination, candidates, station_targets):
                 return
@@ -2647,12 +2877,13 @@ class OperatorBridge(Node):
         if (self._follow_goal_pending or self._stage_validation_pending or
                 self._departure_pending is not None or self._departure_active or
                 self._active_follow is not None or self._qr_alignment_active or
-                self._cargo_task is not None):
+                self._cargo_task is not None or getattr(self, '_rotation', None) is not None):
             self._report_run_block('RUN blocked: a navigation or precision alignment is already active.')
             return
         if (self._pending_path is None and self._pending_alignment_station is None and
                 self._pending_departure is None and
-                getattr(self, '_pending_precision_start', None) is None):
+                getattr(self, '_pending_precision_start', None) is None and
+                getattr(self, '_pending_rotation', None) is None):
             self._report_run_block('RUN blocked: select and validate a mission first.')
             return
         if not self._pending_execution_approved:
@@ -2705,6 +2936,12 @@ class OperatorBridge(Node):
             pending['started'] = self.get_clock().now()
             self._departure_pending = pending
             self._report('Loaded departure RUN accepted; waiting for DOCK_DEPART guard.')
+            return
+        if getattr(self, '_pending_rotation', None) is not None:
+            self._pending_pose = None
+            self._motion_armed = True
+            self._cancel_requested = False
+            self._start_rotation()
             return
         pending_start = getattr(self, '_pending_precision_start', None)
         if pending_start is not None:
@@ -2987,6 +3224,10 @@ class OperatorBridge(Node):
         self._cancel_requested = True
         self._motion_armed = False
         self._continue_after_undock = False
+        self._pending_rotation = None
+        if getattr(self, '_rotation', None) is not None:
+            self._end_rotation(False, 'operator cancelled the turn in place')
+            return
         if self._cargo_task is not None:
             self._advance_cargo_operation()
             return
@@ -3063,6 +3304,13 @@ class OperatorPanel(Plugin):
         self._armed.setToolTip('Unchecked is preview-only. Arming is required for every command.')
         self._armed.toggled.connect(self._arming_changed)
         layout.addWidget(self._armed)
+        self._turn_in_place = QCheckBox('Turn in place (54-degree steering; only where the '
+                                        'turning circle is clear)')
+        self._turn_in_place.setToolTip(
+            'Off: car-like driving only, exactly as before. On: at a station the robot may '
+            'turn in place and leave by another gate when that is faster.')
+        self._turn_in_place.toggled.connect(self._turn_in_place_changed)
+        layout.addWidget(self._turn_in_place)
 
         mission_box = QGroupBox('Destination missions (saved-route rejoin or live recovery)')
         mission_layout = QGridLayout(mission_box)
@@ -3198,6 +3446,12 @@ class OperatorPanel(Plugin):
 
     def _report(self, message):
         self._status.append(_status_html(message))
+
+    def _turn_in_place_changed(self, enabled):
+        self._bridge.turn_in_place_enabled = bool(enabled)
+        self._report('Turn in place ' + ('ON: used at a station when it is faster and the '
+                                         'turning circle is clear.' if enabled else
+                                         'OFF: car-like driving only.'))
 
     def _arming_changed(self, armed):
         if armed:
