@@ -545,6 +545,8 @@ def main():
                         help='test only: seconds after that owner takes over')
     parser.add_argument('--force-live', action='store_true',
                         help='test only: ignore preplanned paths so live planning runs')
+    parser.add_argument('--turn-in-place', action='store_true',
+                        help='switch the panel\'s turn-in-place capability on')
     parser.add_argument('--settle', type=float, default=30.0,
                         help='seconds to wait after the stack reports ready')
     args = parser.parse_args()
@@ -565,6 +567,7 @@ def main():
     results = []
     destinations = list(args.destinations)
     runner.force_live = args.force_live
+    runner.bridge.turn_in_place_enabled = args.turn_in_place
     runner.disturb = tuple(args.disturb_camera) if args.disturb_camera else None
     runner.confirm_warnings = args.confirm_warnings
     runner.disturb_at = args.disturb_at

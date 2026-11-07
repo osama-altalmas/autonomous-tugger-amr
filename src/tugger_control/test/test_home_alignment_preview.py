@@ -53,6 +53,7 @@ def _bridge():
         _station_centers={'HOME': [0.0, 0.0]},
         _infer_pass_through_dock=Mock(),
         _start_route_chain=Mock(return_value=False),
+        _maybe_turn_at_dock=Mock(return_value=False),
     )
     bridge._report_run_block = lambda message: OperatorBridge._report_run_block(
         bridge, message)

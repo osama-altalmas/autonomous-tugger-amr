@@ -167,9 +167,12 @@
 
       <axis xyz="0 0 1"/>
 
+      <!-- 54 degrees: turning in place needs atan(0.29/0.22) = 52.8 degrees
+           per wheel; car-like driving is limited to 45 degrees by the
+           4WS controller. -->
       <limit
-        lower="-0.7854"
-        upper="0.7854"
+        lower="-0.9425"
+        upper="0.9425"
         effort="500"
         velocity="1.5"/>
 
@@ -801,14 +804,20 @@
     </joint>
 
 
-    <!-- Passive front-wheel state interfaces -->
+    <!-- Front-wheel traction interfaces. All four wheels are driven: when
+         turning in place the rear pair alone pushes the robot sideways (their
+         side components add up); the front pair cancels it, as on real
+         turn-in-place platforms. In car-like driving each front wheel turns
+         at its own side's rear wheel speed (counter-phase symmetry). -->
 
     <joint name="front_left_wheel_joint">
+      <command_interface name="velocity"/>
       <state_interface name="position"/>
       <state_interface name="velocity"/>
     </joint>
 
     <joint name="front_right_wheel_joint">
+      <command_interface name="velocity"/>
       <state_interface name="position"/>
       <state_interface name="velocity"/>
     </joint>
@@ -823,7 +832,7 @@
     </joint>
 
 
-    <!-- Rear-wheel-drive traction interfaces -->
+    <!-- Rear-wheel traction interfaces -->
 
     <joint name="rear_left_wheel_joint">
       <command_interface name="velocity"/>
