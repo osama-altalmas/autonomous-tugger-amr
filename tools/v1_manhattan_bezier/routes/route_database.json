@@ -1,6 +1,6 @@
 {
   "version": "AMR_V1_FIVE_STATION_DATABASE",
-  "map_sha256": "7455e51ecdfb1f4c853776f69cabaf7981283228b0ee0fdb09fe1a0b435d2d29",
+  "map_sha256": "59caec8bc4b5189fe73f5129ccaf590b47daee35e67ddc0aa676841dd131d9a3",
   "stations": [
     "HOME",
     "cargo_dropoff_northwest",
@@ -10,7 +10,7 @@
   ],
   "staging_distance_m": 2.0,
   "clearance_radius_m": 1.05,
-  "clearance_bias": 0.05,
+  "centre_weight": 2.0,
   "nodes": {
     "HOME": {
       "east": {
@@ -337,112 +337,6 @@
     ]
   },
   "routes": {
-    "HOME__TO__cargo_dropoff_northwest": {
-      "source": "HOME",
-      "target": "cargo_dropoff_northwest",
-      "status": "VALIDATED_STATIC_CANDIDATE",
-      "attempts": [
-        {
-          "source_entrance": "east",
-          "target_entrance": "east",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 23.6388,
-          "departure_heading_error_deg": 0.0
-        },
-        {
-          "source_entrance": "east",
-          "target_entrance": "north",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "east",
-          "target_entrance": "south",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 24.0694,
-          "departure_heading_error_deg": 0.0
-        },
-        {
-          "source_entrance": "west",
-          "target_entrance": "east",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 19.6388,
-          "departure_heading_error_deg": 0.0
-        },
-        {
-          "source_entrance": "west",
-          "target_entrance": "north",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "west",
-          "target_entrance": "south",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 20.0694,
-          "departure_heading_error_deg": 0.0
-        }
-      ],
-      "execution_approved": true,
-      "route_file": "HOME__TO__cargo_dropoff_northwest.json",
-      "length_m": 19.6388,
-      "source_entrance": "west",
-      "target_entrance": "east",
-      "terminal_heading_validated": true,
-      "departure_transition_validated": true
-    },
-    "HOME__TO__cargo_dropoff_southeast": {
-      "source": "HOME",
-      "target": "cargo_dropoff_southeast",
-      "status": "VALIDATED_STATIC_CANDIDATE",
-      "attempts": [
-        {
-          "source_entrance": "east",
-          "target_entrance": "north",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 20.0694,
-          "departure_heading_error_deg": 0.0
-        },
-        {
-          "source_entrance": "east",
-          "target_entrance": "west",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "east",
-          "target_entrance": "south",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "west",
-          "target_entrance": "north",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 24.0694,
-          "departure_heading_error_deg": 0.0
-        },
-        {
-          "source_entrance": "west",
-          "target_entrance": "west",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "west",
-          "target_entrance": "south",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        }
-      ],
-      "execution_approved": true,
-      "route_file": "HOME__TO__cargo_dropoff_southeast.json",
-      "length_m": 20.0694,
-      "source_entrance": "east",
-      "target_entrance": "north",
-      "terminal_heading_validated": true,
-      "departure_transition_validated": true
-    },
     "HOME__TO__cargo_station_0": {
       "source": "HOME",
       "target": "cargo_station_0",
@@ -493,60 +387,43 @@
       ],
       "execution_approved": true,
       "route_file": "HOME__TO__cargo_station_0.json",
-      "length_m": 19.6388,
+      "length_m": 20.0694,
       "source_entrance": "west",
-      "target_entrance": "east",
+      "target_entrance": "north",
       "terminal_heading_validated": true,
       "departure_transition_validated": true
     },
-    "HOME__TO__cargo_station_3": {
-      "source": "HOME",
-      "target": "cargo_station_3",
+    "cargo_station_0__TO__cargo_dropoff_northwest": {
+      "source": "cargo_station_0",
+      "target": "cargo_dropoff_northwest",
       "status": "VALIDATED_STATIC_CANDIDATE",
       "attempts": [
         {
-          "source_entrance": "east",
-          "target_entrance": "north",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "east",
-          "target_entrance": "west",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "east",
-          "target_entrance": "south",
+          "source_entrance": "north",
+          "target_entrance": "east",
           "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 20.0694,
+          "length_m": 30.1082,
           "departure_heading_error_deg": 0.0
         },
         {
-          "source_entrance": "west",
+          "source_entrance": "north",
           "target_entrance": "north",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 36.8175,
+          "departure_heading_error_deg": 0.0
         },
         {
-          "source_entrance": "west",
-          "target_entrance": "west",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "west",
+          "source_entrance": "north",
           "target_entrance": "south",
           "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 24.0694,
+          "length_m": 10.0,
           "departure_heading_error_deg": 0.0
         }
       ],
       "execution_approved": true,
-      "route_file": "HOME__TO__cargo_station_3.json",
-      "length_m": 20.0694,
-      "source_entrance": "east",
+      "route_file": "cargo_station_0__TO__cargo_dropoff_northwest.json",
+      "length_m": 10.0,
+      "source_entrance": "north",
       "target_entrance": "south",
       "terminal_heading_validated": true,
       "departure_transition_validated": true
@@ -578,225 +455,96 @@
       "terminal_heading_validated": true,
       "departure_transition_validated": true
     },
-    "cargo_dropoff_northwest__TO__cargo_dropoff_southeast": {
-      "source": "cargo_dropoff_northwest",
-      "target": "cargo_dropoff_southeast",
-      "status": "VALIDATED_STATIC_CANDIDATE",
-      "attempts": [
-        {
-          "source_entrance": "east",
-          "target_entrance": "north",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "east",
-          "target_entrance": "west",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "east",
-          "target_entrance": "south",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "north",
-          "target_entrance": "north",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 48.2787,
-          "departure_heading_error_deg": 0.0
-        },
-        {
-          "source_entrance": "north",
-          "target_entrance": "west",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "north",
-          "target_entrance": "south",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "south",
-          "target_entrance": "north",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 44.2787,
-          "departure_heading_error_deg": 180.0
-        },
-        {
-          "source_entrance": "south",
-          "target_entrance": "west",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "south",
-          "target_entrance": "south",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        }
-      ],
-      "execution_approved": true,
-      "route_file": "cargo_dropoff_northwest__TO__cargo_dropoff_southeast.json",
-      "length_m": 44.2787,
-      "source_entrance": "south",
-      "target_entrance": "north",
-      "terminal_heading_validated": true,
-      "departure_transition_validated": false
-    },
-    "cargo_dropoff_northwest__TO__cargo_station_0": {
-      "source": "cargo_dropoff_northwest",
-      "target": "cargo_station_0",
-      "status": "VALIDATED_STATIC_CANDIDATE",
-      "attempts": [
-        {
-          "source_entrance": "east",
-          "target_entrance": "east",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 30.5388,
-          "departure_heading_error_deg": 180.0
-        },
-        {
-          "source_entrance": "east",
-          "target_entrance": "north",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 13.6125,
-          "departure_heading_error_deg": 0.0
-        },
-        {
-          "source_entrance": "east",
-          "target_entrance": "south",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 37.3384,
-          "departure_heading_error_deg": 180.0
-        },
-        {
-          "source_entrance": "north",
-          "target_entrance": "east",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 34.1082,
-          "departure_heading_error_deg": 0.0
-        },
-        {
-          "source_entrance": "north",
-          "target_entrance": "north",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 14.0,
-          "departure_heading_error_deg": 0.0
-        },
-        {
-          "source_entrance": "north",
-          "target_entrance": "south",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 40.9078,
-          "departure_heading_error_deg": 0.0
-        },
-        {
-          "source_entrance": "south",
-          "target_entrance": "east",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 30.1082,
-          "departure_heading_error_deg": 180.0
-        },
-        {
-          "source_entrance": "south",
-          "target_entrance": "north",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 10.0,
-          "departure_heading_error_deg": 180.0
-        },
-        {
-          "source_entrance": "south",
-          "target_entrance": "south",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 36.9078,
-          "departure_heading_error_deg": 180.0
-        }
-      ],
-      "execution_approved": true,
-      "route_file": "cargo_dropoff_northwest__TO__cargo_station_0.json",
-      "length_m": 10.0,
-      "source_entrance": "south",
-      "target_entrance": "north",
-      "terminal_heading_validated": true,
-      "departure_transition_validated": false
-    },
-    "cargo_dropoff_northwest__TO__cargo_station_3": {
-      "source": "cargo_dropoff_northwest",
+    "HOME__TO__cargo_station_3": {
+      "source": "HOME",
       "target": "cargo_station_3",
       "status": "VALIDATED_STATIC_CANDIDATE",
       "attempts": [
         {
           "source_entrance": "east",
           "target_entrance": "north",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 26.3481,
+          "departure_heading_error_deg": 0.0
         },
         {
           "source_entrance": "east",
           "target_entrance": "west",
           "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 31.0,
-          "departure_heading_error_deg": 180.0
+          "length_m": 19.6388,
+          "departure_heading_error_deg": 0.0
         },
         {
           "source_entrance": "east",
           "target_entrance": "south",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "north",
-          "target_entrance": "north",
           "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 37.4186,
-          "departure_heading_error_deg": 180.0
-        },
-        {
-          "source_entrance": "north",
-          "target_entrance": "west",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 34.6125,
+          "length_m": 20.0694,
           "departure_heading_error_deg": 0.0
         },
         {
-          "source_entrance": "north",
-          "target_entrance": "south",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "south",
+          "source_entrance": "west",
           "target_entrance": "north",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "south",
-          "target_entrance": "west",
           "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 34.6125,
+          "length_m": 30.3481,
           "departure_heading_error_deg": 0.0
         },
         {
-          "source_entrance": "south",
+          "source_entrance": "west",
+          "target_entrance": "west",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 23.6388,
+          "departure_heading_error_deg": 0.0
+        },
+        {
+          "source_entrance": "west",
           "target_entrance": "south",
           "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 37.4993,
-          "departure_heading_error_deg": 180.0
+          "length_m": 24.0694,
+          "departure_heading_error_deg": 0.0
         }
       ],
       "execution_approved": true,
-      "route_file": "cargo_dropoff_northwest__TO__cargo_station_3.json",
-      "length_m": 31.0,
+      "route_file": "HOME__TO__cargo_station_3.json",
+      "length_m": 20.0694,
       "source_entrance": "east",
-      "target_entrance": "west",
+      "target_entrance": "south",
       "terminal_heading_validated": true,
-      "departure_transition_validated": false
+      "departure_transition_validated": true
+    },
+    "cargo_station_3__TO__cargo_dropoff_southeast": {
+      "source": "cargo_station_3",
+      "target": "cargo_dropoff_southeast",
+      "status": "VALIDATED_STATIC_CANDIDATE",
+      "attempts": [
+        {
+          "source_entrance": "south",
+          "target_entrance": "north",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 10.0,
+          "departure_heading_error_deg": 0.0
+        },
+        {
+          "source_entrance": "south",
+          "target_entrance": "west",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 34.2082,
+          "departure_heading_error_deg": 0.0
+        },
+        {
+          "source_entrance": "south",
+          "target_entrance": "south",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 41.0078,
+          "departure_heading_error_deg": 0.0
+        }
+      ],
+      "execution_approved": true,
+      "route_file": "cargo_station_3__TO__cargo_dropoff_southeast.json",
+      "length_m": 10.0,
+      "source_entrance": "south",
+      "target_entrance": "north",
+      "terminal_heading_validated": true,
+      "departure_transition_validated": true
     },
     "cargo_dropoff_southeast__TO__HOME": {
       "source": "cargo_dropoff_southeast",
@@ -825,79 +573,257 @@
       "terminal_heading_validated": true,
       "departure_transition_validated": true
     },
+    "HOME__TO__cargo_dropoff_northwest": {
+      "source": "HOME",
+      "target": "cargo_dropoff_northwest",
+      "status": "VALIDATED_STATIC_CANDIDATE",
+      "attempts": [
+        {
+          "source_entrance": "east",
+          "target_entrance": "east",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 23.6388,
+          "departure_heading_error_deg": 0.0
+        },
+        {
+          "source_entrance": "east",
+          "target_entrance": "north",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 30.3481,
+          "departure_heading_error_deg": 0.0
+        },
+        {
+          "source_entrance": "east",
+          "target_entrance": "south",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 24.0694,
+          "departure_heading_error_deg": 0.0
+        },
+        {
+          "source_entrance": "west",
+          "target_entrance": "east",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 19.6388,
+          "departure_heading_error_deg": 0.0
+        },
+        {
+          "source_entrance": "west",
+          "target_entrance": "north",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 26.3481,
+          "departure_heading_error_deg": 0.0
+        },
+        {
+          "source_entrance": "west",
+          "target_entrance": "south",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 20.0694,
+          "departure_heading_error_deg": 0.0
+        }
+      ],
+      "execution_approved": true,
+      "route_file": "HOME__TO__cargo_dropoff_northwest.json",
+      "length_m": 19.6388,
+      "source_entrance": "west",
+      "target_entrance": "east",
+      "terminal_heading_validated": true,
+      "departure_transition_validated": true
+    },
+    "HOME__TO__cargo_dropoff_southeast": {
+      "source": "HOME",
+      "target": "cargo_dropoff_southeast",
+      "status": "VALIDATED_STATIC_CANDIDATE",
+      "attempts": [
+        {
+          "source_entrance": "east",
+          "target_entrance": "north",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 20.0694,
+          "departure_heading_error_deg": 0.0
+        },
+        {
+          "source_entrance": "east",
+          "target_entrance": "west",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 19.6388,
+          "departure_heading_error_deg": 0.0
+        },
+        {
+          "source_entrance": "east",
+          "target_entrance": "south",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 26.4384,
+          "departure_heading_error_deg": 0.0
+        },
+        {
+          "source_entrance": "west",
+          "target_entrance": "north",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 24.0694,
+          "departure_heading_error_deg": 0.0
+        },
+        {
+          "source_entrance": "west",
+          "target_entrance": "west",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 23.6388,
+          "departure_heading_error_deg": 0.0
+        },
+        {
+          "source_entrance": "west",
+          "target_entrance": "south",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 30.4384,
+          "departure_heading_error_deg": 0.0
+        }
+      ],
+      "execution_approved": true,
+      "route_file": "HOME__TO__cargo_dropoff_southeast.json",
+      "length_m": 19.6388,
+      "source_entrance": "east",
+      "target_entrance": "west",
+      "terminal_heading_validated": true,
+      "departure_transition_validated": true
+    },
+    "cargo_dropoff_northwest__TO__cargo_dropoff_southeast": {
+      "source": "cargo_dropoff_northwest",
+      "target": "cargo_dropoff_southeast",
+      "status": "VALIDATED_STATIC_CANDIDATE",
+      "attempts": [
+        {
+          "source_entrance": "east",
+          "target_entrance": "north",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 43.7082,
+          "departure_heading_error_deg": 0.0
+        },
+        {
+          "source_entrance": "east",
+          "target_entrance": "west",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 44.1388,
+          "departure_heading_error_deg": 0.0
+        },
+        {
+          "source_entrance": "east",
+          "target_entrance": "south",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 50.9384,
+          "departure_heading_error_deg": 0.0
+        }
+      ],
+      "execution_approved": true,
+      "route_file": "cargo_dropoff_northwest__TO__cargo_dropoff_southeast.json",
+      "length_m": 43.7082,
+      "source_entrance": "east",
+      "target_entrance": "north",
+      "terminal_heading_validated": true,
+      "departure_transition_validated": true
+    },
+    "cargo_dropoff_northwest__TO__cargo_station_0": {
+      "source": "cargo_dropoff_northwest",
+      "target": "cargo_station_0",
+      "status": "VALIDATED_STATIC_CANDIDATE",
+      "attempts": [
+        {
+          "source_entrance": "east",
+          "target_entrance": "east",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 31.0388,
+          "departure_heading_error_deg": 0.0
+        },
+        {
+          "source_entrance": "east",
+          "target_entrance": "north",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 30.6082,
+          "departure_heading_error_deg": 0.0
+        },
+        {
+          "source_entrance": "east",
+          "target_entrance": "south",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 38.1094,
+          "departure_heading_error_deg": 0.0
+        }
+      ],
+      "execution_approved": true,
+      "route_file": "cargo_dropoff_northwest__TO__cargo_station_0.json",
+      "length_m": 30.6082,
+      "source_entrance": "east",
+      "target_entrance": "north",
+      "terminal_heading_validated": true,
+      "departure_transition_validated": true
+    },
+    "cargo_dropoff_northwest__TO__cargo_station_3": {
+      "source": "cargo_dropoff_northwest",
+      "target": "cargo_station_3",
+      "status": "VALIDATED_STATIC_CANDIDATE",
+      "attempts": [
+        {
+          "source_entrance": "east",
+          "target_entrance": "north",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 36.8481,
+          "departure_heading_error_deg": 0.0
+        },
+        {
+          "source_entrance": "east",
+          "target_entrance": "west",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 31.0,
+          "departure_heading_error_deg": 0.0
+        },
+        {
+          "source_entrance": "east",
+          "target_entrance": "south",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 36.9384,
+          "departure_heading_error_deg": 0.0
+        }
+      ],
+      "execution_approved": true,
+      "route_file": "cargo_dropoff_northwest__TO__cargo_station_3.json",
+      "length_m": 31.0,
+      "source_entrance": "east",
+      "target_entrance": "west",
+      "terminal_heading_validated": true,
+      "departure_transition_validated": true
+    },
     "cargo_dropoff_southeast__TO__cargo_dropoff_northwest": {
       "source": "cargo_dropoff_southeast",
       "target": "cargo_dropoff_northwest",
       "status": "VALIDATED_STATIC_CANDIDATE",
       "attempts": [
         {
-          "source_entrance": "north",
+          "source_entrance": "west",
           "target_entrance": "east",
           "status": "VALIDATED_STATIC_CANDIDATE",
           "length_m": 44.1388,
-          "departure_heading_error_deg": 90.0
-        },
-        {
-          "source_entrance": "north",
-          "target_entrance": "north",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "north",
-          "target_entrance": "south",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 44.269,
-          "departure_heading_error_deg": 180.0
-        },
-        {
-          "source_entrance": "west",
-          "target_entrance": "east",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 44.5694,
-          "departure_heading_error_deg": 90.0
+          "departure_heading_error_deg": 0.0
         },
         {
           "source_entrance": "west",
           "target_entrance": "north",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 51.2094,
+          "departure_heading_error_deg": 0.0
         },
         {
           "source_entrance": "west",
           "target_entrance": "south",
           "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 44.269,
-          "departure_heading_error_deg": 90.0
-        },
-        {
-          "source_entrance": "south",
-          "target_entrance": "east",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 48.1388,
-          "departure_heading_error_deg": 90.0
-        },
-        {
-          "source_entrance": "south",
-          "target_entrance": "north",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "south",
-          "target_entrance": "south",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 48.269,
+          "length_m": 43.7082,
           "departure_heading_error_deg": 0.0
         }
       ],
       "execution_approved": true,
       "route_file": "cargo_dropoff_southeast__TO__cargo_dropoff_northwest.json",
-      "length_m": 44.1388,
-      "source_entrance": "north",
-      "target_entrance": "east",
+      "length_m": 43.7082,
+      "source_entrance": "west",
+      "target_entrance": "south",
       "terminal_heading_validated": true,
-      "departure_transition_validated": false
+      "departure_transition_validated": true
     },
     "cargo_dropoff_southeast__TO__cargo_station_0": {
       "source": "cargo_dropoff_southeast",
@@ -905,67 +831,25 @@
       "status": "VALIDATED_STATIC_CANDIDATE",
       "attempts": [
         {
-          "source_entrance": "north",
-          "target_entrance": "east",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 34.6125,
-          "departure_heading_error_deg": 0.0
-        },
-        {
-          "source_entrance": "north",
-          "target_entrance": "north",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 37.4186,
-          "departure_heading_error_deg": 180.0
-        },
-        {
-          "source_entrance": "north",
-          "target_entrance": "south",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 41.369,
-          "departure_heading_error_deg": 0.0
-        },
-        {
           "source_entrance": "west",
           "target_entrance": "east",
           "status": "VALIDATED_STATIC_CANDIDATE",
           "length_m": 31.0,
-          "departure_heading_error_deg": 180.0
+          "departure_heading_error_deg": 0.0
         },
         {
           "source_entrance": "west",
           "target_entrance": "north",
           "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 37.2787,
-          "departure_heading_error_deg": 90.0
+          "length_m": 36.8481,
+          "departure_heading_error_deg": 0.0
         },
         {
           "source_entrance": "west",
           "target_entrance": "south",
           "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 37.369,
-          "departure_heading_error_deg": 90.0
-        },
-        {
-          "source_entrance": "south",
-          "target_entrance": "east",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 34.6125,
+          "length_m": 36.9384,
           "departure_heading_error_deg": 0.0
-        },
-        {
-          "source_entrance": "south",
-          "target_entrance": "north",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 41.2787,
-          "departure_heading_error_deg": 0.0
-        },
-        {
-          "source_entrance": "south",
-          "target_entrance": "south",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 37.4993,
-          "departure_heading_error_deg": 180.0
         }
       ],
       "execution_approved": true,
@@ -974,7 +858,7 @@
       "source_entrance": "west",
       "target_entrance": "east",
       "terminal_heading_validated": true,
-      "departure_transition_validated": false
+      "departure_transition_validated": true
     },
     "cargo_dropoff_southeast__TO__cargo_station_3": {
       "source": "cargo_dropoff_southeast",
@@ -982,25 +866,6 @@
       "status": "VALIDATED_STATIC_CANDIDATE",
       "attempts": [
         {
-          "source_entrance": "north",
-          "target_entrance": "north",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "north",
-          "target_entrance": "west",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "north",
-          "target_entrance": "south",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 10.0,
-          "departure_heading_error_deg": 180.0
-        },
-        {
           "source_entrance": "west",
           "target_entrance": "north",
           "status": "REJECTED",
@@ -1009,43 +874,25 @@
         {
           "source_entrance": "west",
           "target_entrance": "west",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "west",
-          "target_entrance": "south",
           "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 13.6125,
+          "length_m": 35.1388,
           "departure_heading_error_deg": 0.0
         },
         {
-          "source_entrance": "south",
-          "target_entrance": "north",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "south",
-          "target_entrance": "west",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "south",
+          "source_entrance": "west",
           "target_entrance": "south",
           "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 14.0,
+          "length_m": 34.7082,
           "departure_heading_error_deg": 0.0
         }
       ],
       "execution_approved": true,
       "route_file": "cargo_dropoff_southeast__TO__cargo_station_3.json",
-      "length_m": 10.0,
-      "source_entrance": "north",
+      "length_m": 34.7082,
+      "source_entrance": "west",
       "target_entrance": "south",
       "terminal_heading_validated": true,
-      "departure_transition_validated": false
+      "departure_transition_validated": true
     },
     "cargo_station_0__TO__HOME": {
       "source": "cargo_station_0",
@@ -1074,79 +921,6 @@
       "terminal_heading_validated": true,
       "departure_transition_validated": true
     },
-    "cargo_station_0__TO__cargo_dropoff_northwest": {
-      "source": "cargo_station_0",
-      "target": "cargo_dropoff_northwest",
-      "status": "VALIDATED_STATIC_CANDIDATE",
-      "attempts": [
-        {
-          "source_entrance": "east",
-          "target_entrance": "east",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 30.5388,
-          "departure_heading_error_deg": 180.0
-        },
-        {
-          "source_entrance": "east",
-          "target_entrance": "north",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "east",
-          "target_entrance": "south",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 30.2384,
-          "departure_heading_error_deg": 180.0
-        },
-        {
-          "source_entrance": "north",
-          "target_entrance": "east",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "north",
-          "target_entrance": "north",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "north",
-          "target_entrance": "south",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 10.0,
-          "departure_heading_error_deg": 180.0
-        },
-        {
-          "source_entrance": "south",
-          "target_entrance": "east",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 37.3384,
-          "departure_heading_error_deg": 180.0
-        },
-        {
-          "source_entrance": "south",
-          "target_entrance": "north",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "south",
-          "target_entrance": "south",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 37.0381,
-          "departure_heading_error_deg": 180.0
-        }
-      ],
-      "execution_approved": true,
-      "route_file": "cargo_station_0__TO__cargo_dropoff_northwest.json",
-      "length_m": 30.1082,
-      "source_entrance": "east",
-      "target_entrance": "south",
-      "terminal_heading_validated": true,
-      "departure_transition_validated": true
-    },
     "cargo_station_0__TO__cargo_dropoff_southeast": {
       "source": "cargo_station_0",
       "target": "cargo_dropoff_southeast",
@@ -1155,59 +929,23 @@
         {
           "source_entrance": "east",
           "target_entrance": "north",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 36.8481,
+          "departure_heading_error_deg": 0.0
         },
         {
           "source_entrance": "east",
           "target_entrance": "west",
           "status": "VALIDATED_STATIC_CANDIDATE",
           "length_m": 31.0,
-          "departure_heading_error_deg": 180.0
+          "departure_heading_error_deg": 0.0
         },
         {
           "source_entrance": "east",
           "target_entrance": "south",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "north",
-          "target_entrance": "north",
           "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 37.4186,
-          "departure_heading_error_deg": 180.0
-        },
-        {
-          "source_entrance": "north",
-          "target_entrance": "west",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "north",
-          "target_entrance": "south",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "south",
-          "target_entrance": "north",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "south",
-          "target_entrance": "west",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "south",
-          "target_entrance": "south",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 37.4993,
-          "departure_heading_error_deg": 180.0
+          "length_m": 36.9384,
+          "departure_heading_error_deg": 0.0
         }
       ],
       "execution_approved": true,
@@ -1216,7 +954,7 @@
       "source_entrance": "east",
       "target_entrance": "west",
       "terminal_heading_validated": true,
-      "departure_transition_validated": false
+      "departure_transition_validated": true
     },
     "cargo_station_0__TO__cargo_station_3": {
       "source": "cargo_station_0",
@@ -1226,69 +964,32 @@
         {
           "source_entrance": "east",
           "target_entrance": "north",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 50.8481,
+          "departure_heading_error_deg": 0.0
         },
         {
           "source_entrance": "east",
           "target_entrance": "west",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 44.1388,
+          "departure_heading_error_deg": 0.0
         },
         {
           "source_entrance": "east",
           "target_entrance": "south",
           "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 44.5694,
-          "departure_heading_error_deg": 180.0
-        },
-        {
-          "source_entrance": "north",
-          "target_entrance": "north",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "north",
-          "target_entrance": "west",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 44.5694,
-          "departure_heading_error_deg": 180.0
-        },
-        {
-          "source_entrance": "north",
-          "target_entrance": "south",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 44.269,
-          "departure_heading_error_deg": 180.0
-        },
-        {
-          "source_entrance": "south",
-          "target_entrance": "north",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "south",
-          "target_entrance": "west",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "south",
-          "target_entrance": "south",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 51.369,
-          "departure_heading_error_deg": 180.0
+          "length_m": 43.7082,
+          "departure_heading_error_deg": 0.0
         }
       ],
       "execution_approved": true,
       "route_file": "cargo_station_0__TO__cargo_station_3.json",
-      "length_m": 44.269,
-      "source_entrance": "north",
+      "length_m": 43.7082,
+      "source_entrance": "east",
       "target_entrance": "south",
       "terminal_heading_validated": true,
-      "departure_transition_validated": false
+      "departure_transition_validated": true
     },
     "cargo_station_3__TO__HOME": {
       "source": "cargo_station_3",
@@ -1305,8 +1006,9 @@
         {
           "source_entrance": "south",
           "target_entrance": "west",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 32.703,
+          "departure_heading_error_deg": 0.0
         }
       ],
       "execution_approved": true,
@@ -1323,63 +1025,25 @@
       "status": "VALIDATED_STATIC_CANDIDATE",
       "attempts": [
         {
-          "source_entrance": "north",
-          "target_entrance": "east",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 34.2249,
-          "departure_heading_error_deg": 90.0
-        },
-        {
-          "source_entrance": "north",
-          "target_entrance": "north",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 37.4186,
-          "departure_heading_error_deg": 180.0
-        },
-        {
-          "source_entrance": "north",
-          "target_entrance": "south",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
           "source_entrance": "west",
           "target_entrance": "east",
           "status": "VALIDATED_STATIC_CANDIDATE",
           "length_m": 31.0,
-          "departure_heading_error_deg": 180.0
+          "departure_heading_error_deg": 0.0
         },
         {
           "source_entrance": "west",
           "target_entrance": "north",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 36.8481,
+          "departure_heading_error_deg": 0.0
         },
         {
           "source_entrance": "west",
           "target_entrance": "south",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "south",
-          "target_entrance": "east",
           "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 34.2249,
-          "departure_heading_error_deg": 90.0
-        },
-        {
-          "source_entrance": "south",
-          "target_entrance": "north",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "south",
-          "target_entrance": "south",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 37.4993,
-          "departure_heading_error_deg": 180.0
+          "length_m": 36.9384,
+          "departure_heading_error_deg": 0.0
         }
       ],
       "execution_approved": true,
@@ -1387,75 +1051,6 @@
       "length_m": 31.0,
       "source_entrance": "west",
       "target_entrance": "east",
-      "terminal_heading_validated": true,
-      "departure_transition_validated": false
-    },
-    "cargo_station_3__TO__cargo_dropoff_southeast": {
-      "source": "cargo_station_3",
-      "target": "cargo_dropoff_southeast",
-      "status": "VALIDATED_STATIC_CANDIDATE",
-      "attempts": [
-        {
-          "source_entrance": "north",
-          "target_entrance": "north",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "north",
-          "target_entrance": "west",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "north",
-          "target_entrance": "south",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "west",
-          "target_entrance": "north",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "west",
-          "target_entrance": "west",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "west",
-          "target_entrance": "south",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "south",
-          "target_entrance": "north",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 10.0,
-          "departure_heading_error_deg": 180.0
-        },
-        {
-          "source_entrance": "south",
-          "target_entrance": "west",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        },
-        {
-          "source_entrance": "south",
-          "target_entrance": "south",
-          "status": "REJECTED",
-          "reason": "Curvature 61.359 exceeds 2.500"
-        }
-      ],
-      "execution_approved": true,
-      "route_file": "cargo_station_3__TO__cargo_dropoff_southeast.json",
-      "length_m": 10.0,
-      "source_entrance": "south",
-      "target_entrance": "north",
       "terminal_heading_validated": true,
       "departure_transition_validated": true
     },
@@ -1465,79 +1060,578 @@
       "status": "VALIDATED_STATIC_CANDIDATE",
       "attempts": [
         {
-          "source_entrance": "north",
-          "target_entrance": "east",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 48.1388,
-          "departure_heading_error_deg": 90.0
-        },
-        {
-          "source_entrance": "north",
-          "target_entrance": "north",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 47.8481,
-          "departure_heading_error_deg": 90.0
-        },
-        {
-          "source_entrance": "north",
-          "target_entrance": "south",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 54.9384,
-          "departure_heading_error_deg": 90.0
-        },
-        {
-          "source_entrance": "west",
-          "target_entrance": "east",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 44.5694,
-          "departure_heading_error_deg": 90.0
-        },
-        {
-          "source_entrance": "west",
-          "target_entrance": "north",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 44.5694,
-          "departure_heading_error_deg": 180.0
-        },
-        {
-          "source_entrance": "west",
-          "target_entrance": "south",
-          "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 51.369,
-          "departure_heading_error_deg": 90.0
-        },
-        {
           "source_entrance": "south",
           "target_entrance": "east",
           "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 44.5694,
-          "departure_heading_error_deg": 180.0
+          "length_m": 43.7082,
+          "departure_heading_error_deg": 0.0
         },
         {
           "source_entrance": "south",
           "target_entrance": "north",
           "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 44.2787,
-          "departure_heading_error_deg": 180.0
+          "length_m": 44.1388,
+          "departure_heading_error_deg": 0.0
         },
         {
           "source_entrance": "south",
           "target_entrance": "south",
           "status": "VALIDATED_STATIC_CANDIDATE",
-          "length_m": 51.369,
-          "departure_heading_error_deg": 180.0
+          "length_m": 50.7788,
+          "departure_heading_error_deg": 0.0
         }
       ],
       "execution_approved": true,
       "route_file": "cargo_station_3__TO__cargo_station_0.json",
-      "length_m": 44.2787,
+      "length_m": 43.7082,
+      "source_entrance": "south",
+      "target_entrance": "east",
+      "terminal_heading_validated": true,
+      "departure_transition_validated": true
+    },
+    "cargo_dropoff_northwest__east__TO__HOME": {
+      "source": "cargo_dropoff_northwest",
+      "target": "HOME",
+      "status": "VALIDATED_STATIC_CANDIDATE",
+      "attempts": [
+        {
+          "source_entrance": "east",
+          "target_entrance": "east",
+          "status": "REJECTED",
+          "reason": "Curvature 61.359 exceeds 2.500"
+        },
+        {
+          "source_entrance": "east",
+          "target_entrance": "west",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 19.6388,
+          "departure_heading_error_deg": 0.0
+        }
+      ],
+      "execution_approved": true,
+      "gate_variant_of": "cargo_dropoff_northwest__TO__HOME",
+      "route_file": "cargo_dropoff_northwest__east__TO__HOME.json",
+      "length_m": 19.6388,
+      "source_entrance": "east",
+      "target_entrance": "west",
+      "terminal_heading_validated": true,
+      "departure_transition_validated": true
+    },
+    "cargo_dropoff_northwest__south__TO__cargo_dropoff_southeast": {
+      "source": "cargo_dropoff_northwest",
+      "target": "cargo_dropoff_southeast",
+      "status": "VALIDATED_STATIC_CANDIDATE",
+      "attempts": [
+        {
+          "source_entrance": "south",
+          "target_entrance": "north",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 44.1388,
+          "departure_heading_error_deg": 0.0
+        },
+        {
+          "source_entrance": "south",
+          "target_entrance": "west",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 43.7082,
+          "departure_heading_error_deg": 0.0
+        },
+        {
+          "source_entrance": "south",
+          "target_entrance": "south",
+          "status": "REJECTED",
+          "reason": "Curvature 61.359 exceeds 2.500"
+        }
+      ],
+      "execution_approved": true,
+      "gate_variant_of": "cargo_dropoff_northwest__TO__cargo_dropoff_southeast",
+      "route_file": "cargo_dropoff_northwest__south__TO__cargo_dropoff_southeast.json",
+      "length_m": 43.7082,
+      "source_entrance": "south",
+      "target_entrance": "west",
+      "terminal_heading_validated": true,
+      "departure_transition_validated": true
+    },
+    "cargo_dropoff_northwest__south__TO__cargo_station_0": {
+      "source": "cargo_dropoff_northwest",
+      "target": "cargo_station_0",
+      "status": "VALIDATED_STATIC_CANDIDATE",
+      "attempts": [
+        {
+          "source_entrance": "south",
+          "target_entrance": "east",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 30.1082,
+          "departure_heading_error_deg": 0.0
+        },
+        {
+          "source_entrance": "south",
+          "target_entrance": "north",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 10.0,
+          "departure_heading_error_deg": 0.0
+        },
+        {
+          "source_entrance": "south",
+          "target_entrance": "south",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 36.9078,
+          "departure_heading_error_deg": 0.0
+        }
+      ],
+      "execution_approved": true,
+      "gate_variant_of": "cargo_dropoff_northwest__TO__cargo_station_0",
+      "route_file": "cargo_dropoff_northwest__south__TO__cargo_station_0.json",
+      "length_m": 10.0,
       "source_entrance": "south",
       "target_entrance": "north",
       "terminal_heading_validated": true,
-      "departure_transition_validated": false
+      "departure_transition_validated": true
+    },
+    "cargo_dropoff_northwest__south__TO__cargo_station_3": {
+      "source": "cargo_dropoff_northwest",
+      "target": "cargo_station_3",
+      "status": "VALIDATED_STATIC_CANDIDATE",
+      "attempts": [
+        {
+          "source_entrance": "south",
+          "target_entrance": "north",
+          "status": "REJECTED",
+          "reason": "Curvature 61.359 exceeds 2.500"
+        },
+        {
+          "source_entrance": "south",
+          "target_entrance": "west",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 43.7082,
+          "departure_heading_error_deg": 0.0
+        },
+        {
+          "source_entrance": "south",
+          "target_entrance": "south",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 44.1388,
+          "departure_heading_error_deg": 0.0
+        }
+      ],
+      "execution_approved": true,
+      "gate_variant_of": "cargo_dropoff_northwest__TO__cargo_station_3",
+      "route_file": "cargo_dropoff_northwest__south__TO__cargo_station_3.json",
+      "length_m": 43.7082,
+      "source_entrance": "south",
+      "target_entrance": "west",
+      "terminal_heading_validated": true,
+      "departure_transition_validated": true
+    },
+    "cargo_dropoff_southeast__north__TO__cargo_dropoff_northwest": {
+      "source": "cargo_dropoff_southeast",
+      "target": "cargo_dropoff_northwest",
+      "status": "VALIDATED_STATIC_CANDIDATE",
+      "attempts": [
+        {
+          "source_entrance": "north",
+          "target_entrance": "east",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 43.7082,
+          "departure_heading_error_deg": 0.0
+        },
+        {
+          "source_entrance": "north",
+          "target_entrance": "north",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 50.4175,
+          "departure_heading_error_deg": 0.0
+        },
+        {
+          "source_entrance": "north",
+          "target_entrance": "south",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 44.1388,
+          "departure_heading_error_deg": 0.0
+        }
+      ],
+      "execution_approved": true,
+      "gate_variant_of": "cargo_dropoff_southeast__TO__cargo_dropoff_northwest",
+      "route_file": "cargo_dropoff_southeast__north__TO__cargo_dropoff_northwest.json",
+      "length_m": 43.7082,
+      "source_entrance": "north",
+      "target_entrance": "east",
+      "terminal_heading_validated": true,
+      "departure_transition_validated": true
+    },
+    "cargo_dropoff_southeast__north__TO__cargo_station_0": {
+      "source": "cargo_dropoff_southeast",
+      "target": "cargo_station_0",
+      "status": "VALIDATED_STATIC_CANDIDATE",
+      "attempts": [
+        {
+          "source_entrance": "north",
+          "target_entrance": "east",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 43.6082,
+          "departure_heading_error_deg": 0.0
+        },
+        {
+          "source_entrance": "north",
+          "target_entrance": "north",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 44.0388,
+          "departure_heading_error_deg": 0.0
+        },
+        {
+          "source_entrance": "north",
+          "target_entrance": "south",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 44.7315,
+          "departure_heading_error_deg": 0.0
+        }
+      ],
+      "execution_approved": true,
+      "gate_variant_of": "cargo_dropoff_southeast__TO__cargo_station_0",
+      "route_file": "cargo_dropoff_southeast__north__TO__cargo_station_0.json",
+      "length_m": 43.6082,
+      "source_entrance": "north",
+      "target_entrance": "east",
+      "terminal_heading_validated": true,
+      "departure_transition_validated": true
+    },
+    "cargo_dropoff_southeast__north__TO__cargo_station_3": {
+      "source": "cargo_dropoff_southeast",
+      "target": "cargo_station_3",
+      "status": "VALIDATED_STATIC_CANDIDATE",
+      "attempts": [
+        {
+          "source_entrance": "north",
+          "target_entrance": "north",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 40.9175,
+          "departure_heading_error_deg": 0.0
+        },
+        {
+          "source_entrance": "north",
+          "target_entrance": "west",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 34.2082,
+          "departure_heading_error_deg": 0.0
+        },
+        {
+          "source_entrance": "north",
+          "target_entrance": "south",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 10.0,
+          "departure_heading_error_deg": 0.0
+        }
+      ],
+      "execution_approved": true,
+      "gate_variant_of": "cargo_dropoff_southeast__TO__cargo_station_3",
+      "route_file": "cargo_dropoff_southeast__north__TO__cargo_station_3.json",
+      "length_m": 10.0,
+      "source_entrance": "north",
+      "target_entrance": "south",
+      "terminal_heading_validated": true,
+      "departure_transition_validated": true
+    },
+    "cargo_dropoff_southeast__west__TO__HOME": {
+      "source": "cargo_dropoff_southeast",
+      "target": "HOME",
+      "status": "VALIDATED_STATIC_CANDIDATE",
+      "attempts": [
+        {
+          "source_entrance": "west",
+          "target_entrance": "east",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 19.6388,
+          "departure_heading_error_deg": 0.0
+        },
+        {
+          "source_entrance": "west",
+          "target_entrance": "west",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 32.6388,
+          "departure_heading_error_deg": 0.0
+        }
+      ],
+      "execution_approved": true,
+      "gate_variant_of": "cargo_dropoff_southeast__TO__HOME",
+      "route_file": "cargo_dropoff_southeast__west__TO__HOME.json",
+      "length_m": 19.6388,
+      "source_entrance": "west",
+      "target_entrance": "east",
+      "terminal_heading_validated": true,
+      "departure_transition_validated": true
+    },
+    "cargo_station_0__east__TO__cargo_dropoff_northwest": {
+      "source": "cargo_station_0",
+      "target": "cargo_dropoff_northwest",
+      "status": "VALIDATED_STATIC_CANDIDATE",
+      "attempts": [
+        {
+          "source_entrance": "east",
+          "target_entrance": "east",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 31.0388,
+          "departure_heading_error_deg": 0.0
+        },
+        {
+          "source_entrance": "east",
+          "target_entrance": "north",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 38.1094,
+          "departure_heading_error_deg": 0.0
+        },
+        {
+          "source_entrance": "east",
+          "target_entrance": "south",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 30.6082,
+          "departure_heading_error_deg": 0.0
+        }
+      ],
+      "execution_approved": true,
+      "gate_variant_of": "cargo_station_0__TO__cargo_dropoff_northwest",
+      "route_file": "cargo_station_0__east__TO__cargo_dropoff_northwest.json",
+      "length_m": 30.6082,
+      "source_entrance": "east",
+      "target_entrance": "south",
+      "terminal_heading_validated": true,
+      "departure_transition_validated": true
+    },
+    "cargo_station_0__north__TO__HOME": {
+      "source": "cargo_station_0",
+      "target": "HOME",
+      "status": "VALIDATED_STATIC_CANDIDATE",
+      "attempts": [
+        {
+          "source_entrance": "north",
+          "target_entrance": "east",
+          "status": "REJECTED",
+          "reason": "Curvature 61.359 exceeds 2.500"
+        },
+        {
+          "source_entrance": "north",
+          "target_entrance": "west",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 20.0694,
+          "departure_heading_error_deg": 0.0
+        }
+      ],
+      "execution_approved": true,
+      "gate_variant_of": "cargo_station_0__TO__HOME",
+      "route_file": "cargo_station_0__north__TO__HOME.json",
+      "length_m": 20.0694,
+      "source_entrance": "north",
+      "target_entrance": "west",
+      "terminal_heading_validated": true,
+      "departure_transition_validated": true
+    },
+    "cargo_station_0__north__TO__cargo_dropoff_southeast": {
+      "source": "cargo_station_0",
+      "target": "cargo_dropoff_southeast",
+      "status": "VALIDATED_STATIC_CANDIDATE",
+      "attempts": [
+        {
+          "source_entrance": "north",
+          "target_entrance": "north",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 44.0388,
+          "departure_heading_error_deg": 0.0
+        },
+        {
+          "source_entrance": "north",
+          "target_entrance": "west",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 43.6082,
+          "departure_heading_error_deg": 0.0
+        },
+        {
+          "source_entrance": "north",
+          "target_entrance": "south",
+          "status": "REJECTED",
+          "reason": "Curvature 61.359 exceeds 2.500"
+        }
+      ],
+      "execution_approved": true,
+      "gate_variant_of": "cargo_station_0__TO__cargo_dropoff_southeast",
+      "route_file": "cargo_station_0__north__TO__cargo_dropoff_southeast.json",
+      "length_m": 43.6082,
+      "source_entrance": "north",
+      "target_entrance": "west",
+      "terminal_heading_validated": true,
+      "departure_transition_validated": true
+    },
+    "cargo_station_0__north__TO__cargo_station_3": {
+      "source": "cargo_station_0",
+      "target": "cargo_station_3",
+      "status": "VALIDATED_STATIC_CANDIDATE",
+      "attempts": [
+        {
+          "source_entrance": "north",
+          "target_entrance": "north",
+          "status": "REJECTED",
+          "reason": "Curvature 61.359 exceeds 2.500"
+        },
+        {
+          "source_entrance": "north",
+          "target_entrance": "west",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 43.7082,
+          "departure_heading_error_deg": 0.0
+        },
+        {
+          "source_entrance": "north",
+          "target_entrance": "south",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 44.1388,
+          "departure_heading_error_deg": 0.0
+        }
+      ],
+      "execution_approved": true,
+      "gate_variant_of": "cargo_station_0__TO__cargo_station_3",
+      "route_file": "cargo_station_0__north__TO__cargo_station_3.json",
+      "length_m": 43.7082,
+      "source_entrance": "north",
+      "target_entrance": "west",
+      "terminal_heading_validated": true,
+      "departure_transition_validated": true
+    },
+    "cargo_station_3__south__TO__cargo_dropoff_northwest": {
+      "source": "cargo_station_3",
+      "target": "cargo_dropoff_northwest",
+      "status": "VALIDATED_STATIC_CANDIDATE",
+      "attempts": [
+        {
+          "source_entrance": "south",
+          "target_entrance": "east",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 43.7082,
+          "departure_heading_error_deg": 0.0
+        },
+        {
+          "source_entrance": "south",
+          "target_entrance": "north",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 44.6412,
+          "departure_heading_error_deg": 0.0
+        },
+        {
+          "source_entrance": "south",
+          "target_entrance": "south",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 44.1388,
+          "departure_heading_error_deg": 0.0
+        }
+      ],
+      "execution_approved": true,
+      "gate_variant_of": "cargo_station_3__TO__cargo_dropoff_northwest",
+      "route_file": "cargo_station_3__south__TO__cargo_dropoff_northwest.json",
+      "length_m": 43.7082,
+      "source_entrance": "south",
+      "target_entrance": "east",
+      "terminal_heading_validated": true,
+      "departure_transition_validated": true
+    },
+    "cargo_station_3__west__TO__cargo_dropoff_southeast": {
+      "source": "cargo_station_3",
+      "target": "cargo_dropoff_southeast",
+      "status": "VALIDATED_STATIC_CANDIDATE",
+      "attempts": [
+        {
+          "source_entrance": "west",
+          "target_entrance": "north",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 34.7082,
+          "departure_heading_error_deg": 0.0
+        },
+        {
+          "source_entrance": "west",
+          "target_entrance": "west",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 35.1388,
+          "departure_heading_error_deg": 0.0
+        },
+        {
+          "source_entrance": "west",
+          "target_entrance": "south",
+          "status": "REJECTED",
+          "reason": "Curvature 61.359 exceeds 2.500"
+        }
+      ],
+      "execution_approved": true,
+      "gate_variant_of": "cargo_station_3__TO__cargo_dropoff_southeast",
+      "route_file": "cargo_station_3__west__TO__cargo_dropoff_southeast.json",
+      "length_m": 34.7082,
+      "source_entrance": "west",
+      "target_entrance": "north",
+      "terminal_heading_validated": true,
+      "departure_transition_validated": true
+    },
+    "cargo_station_3__west__TO__HOME": {
+      "source": "cargo_station_3",
+      "target": "HOME",
+      "status": "VALIDATED_STATIC_CANDIDATE",
+      "attempts": [
+        {
+          "source_entrance": "west",
+          "target_entrance": "east",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 19.6388,
+          "departure_heading_error_deg": 0.0
+        },
+        {
+          "source_entrance": "west",
+          "target_entrance": "west",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 32.6388,
+          "departure_heading_error_deg": 0.0
+        }
+      ],
+      "execution_approved": true,
+      "gate_variant_of": "cargo_station_3__TO__HOME",
+      "route_file": "cargo_station_3__west__TO__HOME.json",
+      "length_m": 19.6388,
+      "source_entrance": "west",
+      "target_entrance": "east",
+      "terminal_heading_validated": true,
+      "departure_transition_validated": true
+    },
+    "cargo_station_3__west__TO__cargo_station_0": {
+      "source": "cargo_station_3",
+      "target": "cargo_station_0",
+      "status": "VALIDATED_STATIC_CANDIDATE",
+      "attempts": [
+        {
+          "source_entrance": "west",
+          "target_entrance": "east",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 44.1388,
+          "departure_heading_error_deg": 0.0
+        },
+        {
+          "source_entrance": "west",
+          "target_entrance": "north",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 43.7082,
+          "departure_heading_error_deg": 0.0
+        },
+        {
+          "source_entrance": "west",
+          "target_entrance": "south",
+          "status": "VALIDATED_STATIC_CANDIDATE",
+          "length_m": 51.2094,
+          "departure_heading_error_deg": 0.0
+        }
+      ],
+      "execution_approved": true,
+      "gate_variant_of": "cargo_station_3__TO__cargo_station_0",
+      "route_file": "cargo_station_3__west__TO__cargo_station_0.json",
+      "length_m": 43.7082,
+      "source_entrance": "west",
+      "target_entrance": "north",
+      "terminal_heading_validated": true,
+      "departure_transition_validated": true
     }
   },
-  "execution_approved": true,
+  "execution_approved": false,
   "notes": [
     "Routes connect warehouse staging poses",
     "Cargo approach and lift are not included",
@@ -1547,10 +1641,10 @@
     "Robot control and localization not validated"
   ],
   "summary": {
-    "connections_requested": 20,
-    "static_candidates_found": 20,
+    "connections_requested": 36,
+    "static_candidates_found": 36,
     "connections_without_candidate": 0,
-    "elapsed_seconds": 96.01,
+    "elapsed_seconds": 2.17,
     "complete_mission_execution_approved": false
   }
 }

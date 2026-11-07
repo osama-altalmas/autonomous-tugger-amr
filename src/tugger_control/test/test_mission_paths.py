@@ -18,7 +18,10 @@ def _gap(a, b):
 
 def test_every_mission_path_is_one_continuous_dock_to_dock_path():
     index = json.loads((PATHS / 'mission_paths.json').read_text())
-    assert len(index['paths']) == 20 and not index['failures']
+    database = json.loads((PATHS.parent / 'routes/route_database.json').read_text())
+    validated = [e for e in database['routes'].values()
+                 if e['status'] == 'VALIDATED_STATIC_CANDIDATE']
+    assert len(index['paths']) == len(validated) >= 35 and not index['failures']
     for key, entry in index['paths'].items():
         data = json.loads((PATHS / entry['file']).read_text())
         poses = data['poses']
@@ -27,6 +30,35 @@ def test_every_mission_path_is_one_continuous_dock_to_dock_path():
         assert max(_gap(a, b) for a, b in zip(poses, poses[1:])) < 0.06, key
         markers = data['markers']
         assert 0 < markers['route_start'] < markers['approach_start'] < len(poses) - 1
+
+
+def test_no_mission_path_starts_its_route_sideways():
+    # A car-like 4WS robot cannot start a 90-degree turn from rest at a gate.
+    import math
+    index = json.loads((PATHS / 'mission_paths.json').read_text())
+    for key, entry in index['paths'].items():
+        poses = json.loads((PATHS / entry['file']).read_text())['poses']
+        start = json.loads((PATHS / entry['file']).read_text())['markers']['route_start']
+        a, b, c = poses[start - 3], poses[start], poses[start + 3]
+        before = math.atan2(b[1] - a[1], b[0] - a[0])
+        after = math.atan2(c[1] - b[1], c[0] - b[0])
+        turn = abs(math.degrees(math.atan2(math.sin(after - before), math.cos(after - before))))
+        assert not 30 < turn < 150, (key, round(turn))
+
+
+def test_no_route_passes_through_a_station():
+    # Found 2026-11-07: a stale map let four routes drive under a stand.
+    import math
+    index = json.loads((PATHS / 'mission_paths.json').read_text())
+    database = json.loads((PATHS.parent / 'routes/route_database.json').read_text())
+    stands = {k: v for k, v in database['station_centers'].items()
+              if k not in database['pass_through']}
+    for key, entry in index['paths'].items():
+        data = json.loads((PATHS / entry['file']).read_text())
+        start, end = data['markers']['route_start'], data['markers']['approach_start']
+        for station, (cx, cy) in stands.items():
+            closest = min(math.hypot(p[0] - cx, p[1] - cy) for p in data['poses'][start:end + 1])
+            assert closest >= 1.5, (key, station, round(closest, 2))
 
 
 def test_reversed_path_ends_where_the_original_starts_with_swapped_markers():
@@ -97,3 +129,18 @@ def test_the_audit_catches_a_path_through_a_stand():
     report = audit_path({'source': 'HOME', 'target': 'cargo_station_3', 'poses': poses},
                         CENTERS, world)
     assert report['passed'] is False
+
+
+def test_static_map_has_no_movable_cargo():
+    # Cargo moves between stations; only fixed structure belongs in the map.
+    import yaml
+    maps = ROOT / 'src/tugger_navigation/maps'
+    meta = yaml.safe_load((maps / 'warehouse_map.yaml').read_text())
+    raw = (maps / meta['image']).read_bytes().split(b'\n', 3)
+    width, height = map(int, raw[1].split())
+    pixels = raw[3]
+    res, (ox, oy) = meta['resolution'], meta['origin'][:2]
+    database = json.loads((PATHS.parent / 'routes/route_database.json').read_text())
+    for station, (x, y) in database['station_centers'].items():
+        col, row = int((x - ox) / res), height - 1 - int((y - oy) / res)
+        assert pixels[row * width + col] == 254, f'{station} centre is not free in the map'

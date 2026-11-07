@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import re
 import math
 import json
 import xml.etree.ElementTree as ET
@@ -51,6 +52,9 @@ ROBOT_Z_MAX = 0.50
 
 # Exclude the floor from horizontal obstacle detection.
 FLOOR_NAME_HINTS = ("floor", "ground_plane")
+# Movable cargo (the models the robot attaches to) is not static structure:
+# it moves between stations, so live checks track it, never the static map.
+MOVABLE_MODEL_PATTERN = re.compile(r"cargo_station_\d+_stand$")
 
 # Ignore decorative models without collision geometry.
 
@@ -110,7 +114,7 @@ def collect_collision_boxes(world):
         if any(
             hint in model_name.lower()
             for hint in FLOOR_NAME_HINTS
-        ):
+        ) or MOVABLE_MODEL_PATTERN.match(model_name):
             continue
 
         model_tf = transform(parse_pose(model.find("pose")))

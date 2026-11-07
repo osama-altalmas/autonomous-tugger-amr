@@ -52,6 +52,7 @@ def _bridge():
         _pass_through=('HOME',),
         _station_centers={'HOME': [0.0, 0.0]},
         _infer_pass_through_dock=Mock(),
+        _start_route_chain=Mock(return_value=False),
     )
     bridge._report_run_block = lambda message: OperatorBridge._report_run_block(
         bridge, message)
@@ -255,9 +256,10 @@ def test_loaded_guard_heartbeat_must_be_fresh():
     assert not OperatorBridge._loaded_guard_is_ready(bridge)
 
 
-def test_run_rechecks_cargo_pairing_after_preview():
-    # Station 3 cargo at Station 2 is unusual: RUN refuses it until confirmed.
+def test_run_rechecks_the_chosen_cargo_action_after_preview():
+    # ATTACH was chosen, but the robot is already carrying cargo at RUN time.
     bridge = _bridge()
+    bridge._mission_action = 'attach'
     bridge._pending_alignment_station = 'cargo_dropoff_northwest'
     bridge._pending_destination = 'cargo_dropoff_northwest'
     bridge._pending_execution_approved = True
@@ -265,7 +267,7 @@ def test_run_rechecks_cargo_pairing_after_preview():
     bridge._confirmed_cargo.return_value = 3
     OperatorBridge.run_selected_mission(bridge, True)
     bridge._start_qr_alignment.assert_not_called()
-    assert any('unconfirmed: Station 3 cargo belongs at Station 4' in call.args[0]
+    assert any('Robot already carries Station 3 cargo: nothing more to attach' in call.args[0]
                for call in bridge._report.call_args_list)
 
 
@@ -280,14 +282,16 @@ def test_run_rejects_unapproved_saved_or_precision_path():
                for call in bridge._report.call_args_list)
 
 
-def test_wrong_dropoff_is_a_warning_the_operator_must_confirm():
+def test_no_cargo_action_selected_asks_for_a_second_run():
     bridge = _bridge()
-    bridge._confirmed_cargo.return_value = 0
+    bridge._confirmed_cargo.return_value = None
     bridge._mission_confirm = None
-    bridge._approach_provider = Mock()
+    bridge._mission_action = None
+    bridge._approach_provider = Mock(side_effect=ValueError('not needed for this check'))
+    bridge._robot_pose.return_value = (0.0, 0.0, 0.0)
     OperatorBridge.execute_destination(bridge, 'cargo_dropoff_southeast', [], [[0, 0, 0]])
     assert bridge._mission_confirm['confirmed'] is False
-    assert any('WARNING: Station 1 cargo belongs at Station 2, not Station 4' in call.args[0]
+    assert any('no cargo action selected' in call.args[0]
                for call in bridge._report.call_args_list)
 
 
@@ -297,8 +301,9 @@ def test_carrying_cargo_to_a_pickup_station_is_blocked():
     bridge._approach_provider = Mock()
     OperatorBridge.execute_destination(bridge, 'cargo_station_3', [], [[0, 0, 0]])
     bridge._approach_provider.assert_not_called()
-    assert any('Robot is carrying Station 1 cargo: drop it off first (at Station 2)'
-               in call.args[0] for call in bridge._report.call_args_list)
+    assert any('Robot is carrying Station 1 cargo and Station 3 holds Station 3 cargo: '
+               'drop the carried cargo off first' in call.args[0]
+               for call in bridge._report.call_args_list)
 
 
 def test_first_run_warns_and_second_run_proceeds():
@@ -377,6 +382,7 @@ def test_successful_current_validation_enables_exact_preview():
 
 def test_centering_at_cargo_station_is_not_reported_as_completed_pickup():
     bridge = _bridge()
+    bridge._mission_action = 'attach'   # chosen by the operator
     bridge._qr_alignment_active = True
     bridge._qr_alignment_station = 'cargo_station_0'
     bridge._red_frame_error = (0.001, 0.002)
@@ -432,6 +438,7 @@ def test_pickup_is_blocked_if_height_aware_clearance_is_unavailable():
 def test_pickup_sequence_waits_for_post_command_attachment_and_lift_feedback():
     from rclpy.time import Time
     bridge = _bridge()
+    bridge._mission_action = 'attach'   # chosen by the operator
     clock = bridge.get_clock.return_value
     clock.now.return_value = Time(seconds=10)
     bridge._motion_armed = True
@@ -504,6 +511,7 @@ def test_lift_holds_and_mission_fails_if_clearance_is_lost():
 def test_paired_dropoff_waits_for_lowering_then_detachment_feedback():
     from rclpy.time import Time
     bridge = _bridge()
+    bridge._mission_action = 'detach'   # chosen by the operator
     clock = bridge.get_clock.return_value
     clock.now.return_value = Time(seconds=10)
     bridge._motion_armed = True
@@ -686,6 +694,7 @@ def test_unloaded_precision_waits_for_docking_guard_before_following():
     from rclpy.time import Time
     from tugger_control.clearance_2_5d import Box
     bridge = _bridge()
+    bridge._mission_action = 'attach'   # chosen by the operator
     bridge._motion_armed = True
     bridge._plan_generation = 7
     bridge._robot_pose.return_value = (0.0, 0.0, 0.0)
@@ -1143,3 +1152,162 @@ def test_loaded_robot_partway_out_backs_out_then_continues():
     OperatorBridge.execute_destination(bridge, 'cargo_dropoff_northwest', [], [[0, 0, 0]])
     bridge._prepare_backout.assert_called_once_with(
         'cargo_dropoff_northwest', [], [[0, 0, 0]], station='cargo_station_0')
+
+
+def test_no_saved_route_from_the_entry_gate_falls_back_to_live_planning():
+    # Reported: a shuffled cycle entered Station 4 by its west gate and every
+    # destination without a west-gate route was rejected.
+    approach = [[19.5, -7.0, 3.14], [17.5, -7.0, 3.14]]       # a gate other than north
+    north_only = [('cargo_dropoff_southeast__TO__cargo_station_3',
+                   {'source': 'cargo_dropoff_southeast', 'source_entrance': 'north'}, [])]
+    bridge = _bridge()
+    bridge._live_planner = Mock()
+    routes = OperatorBridge._same_gate_routes(
+        bridge, 'cargo_dropoff_southeast', approach, north_only, 'cargo_station_3')
+    assert routes == []
+    assert 'planned live' in bridge._report.call_args.args[0]
+    bridge._live_planner = None
+    with pytest.raises(ValueError, match='leaves by the'):
+        OperatorBridge._same_gate_routes(
+            bridge, 'cargo_dropoff_southeast', approach, north_only, 'cargo_station_3')
+
+
+def test_mission_goes_via_home_when_no_path_leaves_the_entry_gate():
+    bridge = _bridge()
+    bridge.docked_station = 'cargo_station_3'
+    bridge._pass_through = ('HOME',)
+    bridge._station_centers = {'HOME': [0, 0], 'cargo_station_3': [17.5, 7.0],
+                               'cargo_dropoff_southeast': [17.5, -7.0]}
+    bridge._mission_via = None
+    bridge._mission_retry = {'destination': 'cargo_dropoff_southeast', 'candidates': [],
+                             'targets': [], 'attempts': 0}
+    west_exit = [[15.5, 7.0, 0.0], [17.5, 7.0, 0.0]]          # gate west of the dock
+    bridge._station_approach = Mock(return_value=west_exit)
+    meta = lambda s, go, t, gi: {'source': s, 'target': t, 'source_entrance': go,
+                                 'target_entrance': gi, 'length_m': 20.0,
+                                 'execution_approved': True}
+    paths = {'HOME': [('a', meta('cargo_station_3', 'west', 'HOME', 'east'), [])],
+             'cargo_dropoff_southeast': [('b', meta('HOME', 'east', 'cargo_dropoff_southeast',
+                                                    'north'), []),
+                                         ('c', meta('cargo_station_3', 'south',
+                                                    'cargo_dropoff_southeast', 'north'), [])],
+             'cargo_station_3': []}
+    bridge._candidate_provider = lambda d: (paths[d], [[0, 0, 0]])
+    bridge.execute_destination = Mock()
+    started = OperatorBridge._start_route_chain(
+        bridge, 'cargo_dropoff_southeast', paths['cargo_dropoff_southeast'], [[1, 1, 0]])
+    assert started
+    bridge.execute_destination.assert_called_once_with('HOME', paths['HOME'], [[0, 0, 0]])
+    assert bridge._mission_via['final'] == 'cargo_dropoff_southeast'
+    assert bridge._mission_retry['destination'] == 'HOME'
+    assert 'going via HOME -> cargo_dropoff_southeast' in bridge._report.call_args.args[0]
+
+
+def test_a_waypoint_station_has_no_cargo_rules_and_no_docking():
+    # A loaded robot passing a pickup station's gate is not going to it.
+    bridge = _bridge()
+    bridge._mission_via = {'final': 'cargo_dropoff_southeast', 'hop': 'cargo_station_0',
+                           'candidates': [], 'targets': []}
+    OperatorBridge._check_destination_allowed(bridge, 'cargo_station_0', 3)
+    with pytest.raises(ValueError, match='drop the carried cargo off first'):
+        bridge._mission_via = None
+        OperatorBridge._check_destination_allowed(bridge, 'cargo_station_0', 3)
+
+
+def test_robot_at_a_station_gate_is_not_partway_inside():
+    bridge = _bridge()
+    bridge._station_approach = lambda station: (
+        _approach_to(-17.5) if station == 'cargo_station_0' else _approach_to(100.0))
+    find = lambda pose: OperatorBridge._station_partway(bridge, pose)
+    assert find((-15.75, -7.0, 0.0)) is None      # stopped 25 cm short of the gate
+    assert find((-17.03, -7.0, 0.0)) == 'cargo_station_0'
+
+
+def test_attach_in_place_with_no_cargo_at_the_station_never_moves_the_lift():
+    bridge = _bridge()
+    bridge.docked_station = 'cargo_dropoff_northwest'          # holds no cargo
+    bridge._pending_destination = None
+    bridge._mission_retry = None
+    bridge._motion_armed = True
+    bridge._confirmed_cargo.return_value = None
+    bridge._start_cargo_operation = Mock()
+    bridge.lift = Mock()
+    bridge._manual_cargo_action = lambda action, cargo: OperatorBridge._manual_cargo_action(
+        bridge, action, cargo)
+    OperatorBridge.select_cargo_action(bridge, 'attach')
+    bridge._start_cargo_operation.assert_not_called()
+    bridge.lift.assert_not_called()
+    assert 'Station 2 has no cargo to attach' in bridge._report.call_args.args[0]
+
+
+def test_attach_in_place_where_cargo_rests_starts_the_pickup():
+    bridge = _bridge()
+    bridge.docked_station = 'cargo_station_3'                  # holds Station 3 cargo
+    bridge._pending_destination = None
+    bridge._mission_retry = None
+    bridge._motion_armed = True
+    bridge._confirmed_cargo.return_value = None
+    bridge._start_cargo_operation = Mock()
+    bridge._manual_cargo_action = lambda action, cargo: OperatorBridge._manual_cargo_action(
+        bridge, action, cargo)
+    OperatorBridge.select_cargo_action(bridge, 'attach')
+    bridge._start_cargo_operation.assert_called_once_with('cargo_station_3')
+    assert bridge._mission_action == 'attach'
+
+
+def test_selecting_an_action_for_a_planned_mission_is_checked_first():
+    bridge = _bridge()
+    bridge._pending_destination = 'cargo_dropoff_northwest'
+    bridge._mission_retry = {'destination': 'cargo_dropoff_northwest', 'candidates': [],
+                             'targets': [], 'attempts': 0}
+    bridge._mission_confirm = {'destination': 'cargo_dropoff_northwest',
+                               'warnings': ['no cargo action selected'], 'dock_only': True,
+                               'confirmed': False}
+    bridge._confirmed_cargo.return_value = None
+    OperatorBridge.select_cargo_action(bridge, 'detach')       # empty robot
+    assert 'nothing to detach' in bridge._report.call_args.args[0]
+    bridge._confirmed_cargo.return_value = 0
+    OperatorBridge.select_cargo_action(bridge, 'detach')
+    assert bridge._mission_action == 'detach' and bridge._mission_confirm is None
+
+
+def test_cargo_action_during_a_chained_mission_is_for_the_final_station():
+    # Reported in validation: DETACH was checked against the HOME waypoint.
+    bridge = _bridge()
+    bridge._mission_via = {'final': 'cargo_dropoff_southeast', 'hop': 'HOME',
+                           'candidates': [], 'targets': []}
+    bridge._mission_retry = {'destination': 'HOME', 'candidates': [], 'targets': [],
+                             'attempts': 0}
+    bridge._pending_destination = 'HOME'
+    bridge._confirmed_cargo.return_value = 3
+    OperatorBridge.select_cargo_action(bridge, 'detach')
+    assert bridge._mission_action == 'detach'
+    assert 'DETACH selected for Station 4' in bridge._report.call_args.args[0]
+
+
+def test_loaded_approach_checks_only_the_open_part_against_the_2d_costmap():
+    # Validation 2026-11-07: the flat costmap rejected every loaded approach
+    # between real stand legs; under the stand the 3D loaded check decides.
+    from rclpy.time import Time
+    bridge = _bridge()
+    bridge._motion_armed = True
+    bridge._mission_action = 'detach'
+    bridge._confirmed_cargo.return_value = 3
+    bridge._station_centers = {'cargo_dropoff_southeast': [17.5, -7.0]}
+    bridge._plan_generation = 4
+    approach = [[17.5, -5.0 - 0.1 * i, -math.pi / 2] for i in range(21)]
+    bridge._queued_precision_station = 'cargo_dropoff_southeast'
+    bridge._queued_precision_poses = approach
+    bridge._robot_pose.return_value = (17.5, -5.0, -math.pi / 2)
+    bridge.get_clock.return_value.now.return_value = Time(seconds=10)
+    bridge._modeled_loaded_path_clearance = Mock(return_value=100)
+    bridge._pose = lambda values: OperatorBridge._pose(bridge, values)
+    bridge._path_validator = Mock()
+    bridge._path_validator.service_is_ready.return_value = True
+    bridge._follow = Mock()
+    bridge._execution_done = Mock()
+    OperatorBridge._start_precision_segment(bridge)
+    request = bridge._path_validator.call_async.call_args.args[0]
+    checked = [(p.pose.position.x, p.pose.position.y) for p in request.path.poses]
+    assert checked and all(math.hypot(x - 17.5, y + 7.0) > 1.5 for x, y in checked)
+    bridge._modeled_loaded_path_clearance.assert_called_once()   # full path in 3D

@@ -14,7 +14,7 @@ import json
 import math
 from pathlib import Path
 
-from .cargo_policy import CARGO_STATIONS, DROPOFF_CARGO, PICKUP_CARGO
+from .cargo_policy import CARGO_STATIONS, PICKUP_CARGO
 
 STATION_LABELS = {
     'HOME': 'HOME',
@@ -66,44 +66,40 @@ def load_occupancy(path=STATE_FILE):
         return None
 
 
-def assess_destination(destination, carried, occupancy):
+ATTACH, DETACH = 'attach', 'detach'
+
+
+def assess_destination(destination, carried, occupancy, action=None):
     """Return (blocks, warnings, dock_only) for sending the robot there.
 
-    blocks: reasons the mission must not run. warnings: reasons it is unusual;
-    the operator confirms them with a second RUN. dock_only: the robot docks
-    but performs no cargo operation there.
+    ``action`` is the operator's choice for this mission: ATTACH, DETACH or
+    None (only dock). blocks: reasons the mission must not run. warnings:
+    reasons it needs the operator's second RUN. dock_only: dock without any
+    lift or cargo action.
     """
     blocks, warnings = [], []
-    if destination == 'HOME' or destination not in CARGO_STATIONS:
-        return blocks, warnings, False
     name = station_label(destination)
+    if destination not in CARGO_STATIONS:
+        if action is not None:
+            blocks.append(f'{name} has no stand: ATTACH and DETACH are not available there')
+        return blocks, warnings, True
     occupant = None if occupancy is None else occupancy.get(destination)
     if occupancy is None:
         warnings.append('station cargo state is unknown; cargo positions are not available')
-    if destination in PICKUP_CARGO:
+    if carried is not None and occupant is not None:
+        # Two loads under one stand would collide: physically impossible.
+        blocks.append(f'Robot is carrying {cargo_label(carried)} and {name} holds '
+                      f'{cargo_label(occupant)}: drop the carried cargo off first')
+        return blocks, warnings, False
+    if action == ATTACH:
         if carried is not None:
-            target = next((s for s, k in DROPOFF_CARGO.items() if k == carried), None)
-            where = f' (at {station_label(target)})' if target else ''
-            blocks.append(f'Robot is carrying {cargo_label(carried)}: drop it off first{where}')
-            return blocks, warnings, False
-        if occupancy is not None and occupant is None:
-            warnings.append(f'{name} has no cargo to pick up; the robot will only dock there')
-            return blocks, warnings, True
+            blocks.append(f'Robot already carries {cargo_label(carried)}: nothing more to attach')
+        elif occupancy is not None and occupant is None:
+            blocks.append(f'{name} has no cargo to attach')
         return blocks, warnings, False
-    # A drop-off station.
-    if carried is None:
-        if occupant is not None:
-            warnings.append(f'{name} holds {cargo_label(occupant)} and the robot has no '
-                            'cargo; it will only dock there')
-        else:
-            warnings.append(f'Robot has no cargo to drop off; it will only dock at {name}')
-        return blocks, warnings, True
-    if occupant is not None:
-        blocks.append(f'{name} already holds {cargo_label(occupant)}; it cannot take '
-                      f'{cargo_label(carried)}')
+    if action == DETACH:
+        if carried is None:
+            blocks.append('Robot carries no cargo: nothing to detach')
         return blocks, warnings, False
-    if DROPOFF_CARGO.get(destination) != carried:
-        target = next((s for s, k in DROPOFF_CARGO.items() if k == carried), None)
-        warnings.append(f'{cargo_label(carried)} belongs at {station_label(target)}, '
-                        f'not {name}; it will be set down at {name}')
-    return blocks, warnings, False
+    warnings.append('no cargo action selected (ATTACH or DETACH); the robot will only dock')
+    return blocks, warnings, True

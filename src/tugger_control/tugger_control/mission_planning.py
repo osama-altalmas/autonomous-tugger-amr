@@ -141,8 +141,13 @@ def select_destination_plan(destination, candidates, robot_pose,
             'reason': 'No route to destination has a safe, heading-compatible rejoin',
         }
 
+    # Prefer a path the robot can join without a connector, then the
+    # shortest remaining path, then the nearest join; the key only breaks
+    # exact ties so the choice is deterministic.
     gap, index, key, route, suffix, direction, mode = min(
-        valid, key=lambda item: (item[0], -item[1], item[2]))
+        valid, key=lambda item: (item[6] != 'SAVED_REJOIN',
+                                 round(_remaining_length(item[4], 0), 2),
+                                 item[0], item[2]))
     return {
         'mode': mode,
         'destination': destination,

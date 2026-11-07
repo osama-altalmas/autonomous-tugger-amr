@@ -18,6 +18,11 @@ python3 tools/v1_manhattan_bezier/build_route_database_v1.py \
     --map src/tugger_navigation/maps/warehouse_map.yaml \
     --geometry tools/v1_manhattan_bezier/geometry/cargo_geometry.json \
     --output tools/v1_manhattan_bezier/routes
+echo "3b/7 gate variants: a route from every other gate a station can be left by"
+python3 tools/v1_manhattan_bezier/build_route_database_v1.py \
+    --map src/tugger_navigation/maps/warehouse_map.yaml \
+    --geometry tools/v1_manhattan_bezier/geometry/cargo_geometry.json \
+    --output tools/v1_manhattan_bezier/routes --gate-variants
 echo "4/7 routes the forward search cannot build, by reversing their opposite"
 (cd tools/v1_manhattan_bezier && python3 complete_reverse_routes.py \
     --database routes/route_database.json \

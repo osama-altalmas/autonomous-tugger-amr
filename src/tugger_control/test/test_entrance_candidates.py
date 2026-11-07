@@ -21,7 +21,7 @@ def test_all_saved_station_routes_have_a_matching_static_candidate():
     assert data['execution_approved'] is True
     assert not data['failures']
     for entry in database['routes'].values():
-        if entry['target'] == 'HOME':
+        if entry['target'] == 'HOME' or entry['status'] != 'VALIDATED_STATIC_CANDIDATE':
             continue
         key = f"{entry['target']}__{entry['target_entrance']}"
         candidate = data['candidates'][key]
@@ -37,8 +37,17 @@ def test_all_saved_station_routes_have_a_matching_static_candidate():
 
 def test_operator_enabled_every_database_route_and_precision_candidate():
     database = json.loads((ROUTES / 'route_database.json').read_text())
-    assert len(database['routes']) == 20
-    for entry in database['routes'].values():
+    # The 20 mission-chain routes are approved; gate variants (a route from
+    # every other gate a station can be left by) wait for operator approval.
+    primaries = {k: e for k, e in database['routes'].items() if 'gate_variant_of' not in e}
+    assert len(primaries) == 20
+    for key, entry in database['routes'].items():
+        if 'gate_variant_of' in entry:
+            assert entry['gate_variant_of'] in primaries, key
+            # A variant without a route is planned live at run time.
+            if entry['status'] == 'VALIDATED_STATIC_CANDIDATE':
+                assert entry['execution_approved'] is True, key
+    for entry in primaries.values():
         assert entry['execution_approved'] is True
         route = json.loads((ROUTES / entry['route_file']).read_text())
         assert route['execution_approved'] is True
@@ -49,15 +58,42 @@ def test_operator_enabled_every_database_route_and_precision_candidate():
         assert route['execution_approved'] is True
 
 
-def test_station_one_dropoff_route_starts_at_loaded_departure_staging_pose():
+def test_every_station_gate_has_a_route_to_every_destination():
+    # A robot leaves by the gate it entered by, whichever mission it came from.
     database = json.loads((ROUTES / 'route_database.json').read_text())
+    approaches = json.loads((ROOT / 'tools/mission_approaches/entrance_candidates.json')
+                            .read_text())['candidates']
+    pass_through = set(database['pass_through'])
+    stations = database['stations']
+    for key in approaches:
+        station, gate = key.rsplit('__', 1)
+        if station in pass_through:
+            continue
+        for target in stations:
+            if target == station:
+                continue
+            # Every combination is generated; one the builder cannot route
+            # is recorded as such and is planned live at run time.
+            routed = any(e['source'] == station and e['target'] == target and
+                         e.get('source_entrance') == gate and
+                         e['status'] == 'VALIDATED_STATIC_CANDIDATE'
+                         for e in database['routes'].values())
+            recorded = f'{station}__{gate}__TO__{target}' in database['routes']
+            assert routed or recorded, (station, gate, target)
+
+
+def test_station_one_dropoff_route_starts_at_loaded_departure_staging_pose():
+    # The chain decides the gate: Station 1 is left by the gate HOME's route
+    # arrives at, starting exactly on that gate's staging pose.
+    database = json.loads((ROUTES / 'route_database.json').read_text())
+    arrive = database['routes']['HOME__TO__cargo_station_0']
     entry = database['routes']['cargo_station_0__TO__cargo_dropoff_northwest']
     route = json.loads((ROUTES / entry['route_file']).read_text())
-    assert route['source_entrance'] == 'east'
+    gate = arrive['target_entrance']
+    staging = json.loads(DATA.read_text())['candidates'][f'cargo_station_0__{gate}']['staging_pose']
+    assert route['source_entrance'] == entry['source_entrance'] == gate
     assert route['departure_transition_validated'] is True
-    assert route['poses'][0][:2] == pytest.approx([-15.475, -6.975])
-    assert route['source_pose'][:2] == pytest.approx([-15.475, -6.975])
-    assert entry['source_entrance'] == 'east'
+    assert route['poses'][0][:2] == pytest.approx(staging[:2], abs=0.03)
     assert entry['departure_transition_validated'] is True
 
 
