@@ -126,7 +126,9 @@ def test_planner_executor_with_acceleration_and_steering_slew(target):
             executor = None
             continue
         desired = command['linear_x']
-        desired_steering = steering_for_twist(desired, command['angular_z'], .58, math.pi / 4)
+        # The 4WS controller holds the wheel angle when commanded to stop.
+        desired_steering = (steering if abs(desired) < 1e-4 else
+                            steering_for_twist(desired, command['angular_z'], .58, math.pi / 4))
         speed = approach(speed, desired, .25 if speed * desired >= 0 else .35, dt)
         steering = approach(steering, desired_steering, .8, dt)
         pose = propagate(pose, speed * dt, 2 * math.tan(steering) / .58)
@@ -160,7 +162,9 @@ def test_feedback_replanning_corrects_remaining_sideways_error(lateral):
             executor = None
             continue
         desired = command['linear_x']
-        desired_steering = steering_for_twist(desired, command['angular_z'], .58, math.pi / 4)
+        # The 4WS controller holds the wheel angle when commanded to stop.
+        desired_steering = (steering if abs(desired) < 1e-4 else
+                            steering_for_twist(desired, command['angular_z'], .58, math.pi / 4))
         speed = approach(speed, desired, .25 if speed * desired >= 0 else .35, dt)
         steering = approach(steering, desired_steering, .8, dt)
         pose = propagate(pose, speed * dt, 2 * math.tan(steering) / .58)

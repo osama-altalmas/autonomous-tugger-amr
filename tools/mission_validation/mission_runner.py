@@ -149,7 +149,12 @@ class Runner:
         self.trial_routes = set(trial_routes)
         self.trial_candidates = set(trial_candidates)
         self.force_live = False
-        self.disturb = None          # (dx, dy): shove once when the camera stage starts
+        self.disturb = None          # (dx, dy, dyaw): shove once, see _maybe_disturb
+        self.disturb_at = None       # only during the mission to this destination
+        self.disturb_owner = 'CAMERA'
+        self.disturb_delay = 0.0     # seconds after that owner takes over
+        self.current_destination = None
+        self._owner_since = (None, 0.0)
         self._disturbed = False
         self.reports = []
         self.finished = None
@@ -197,15 +202,54 @@ class Runner:
                 bridge._cargo_task is not None)
 
     def _maybe_disturb(self):
-        """Test only: shove the robot once at the camera stage to force a failure."""
-        if (self.disturb is None or self._disturbed or
-                self.recorder.owner != 'DOCK_CAMERA' or self.recorder.pose is None):
+        """Test only: shove the robot once in a chosen stage to force a failure.
+
+        Attached cargo moves with the robot by the same rigid motion, as in a
+        real knock. A shove that would put the robot inside a modelled
+        obstacle is refused: the test must not create an impossible state.
+        """
+        owner = self.recorder.owner
+        if owner != self._owner_since[0]:
+            self._owner_since = (owner, time.monotonic())
+        # 'CAMERA' means the camera stage itself, whatever the motion owner
+        # (a loaded robot aligns under PRECISION, an empty one under DOCK_CAMERA).
+        in_stage = (self.bridge._qr_alignment_active if self.disturb_owner == 'CAMERA'
+                    else owner == self.disturb_owner)
+        if (self.disturb is None or self._disturbed or self.recorder.pose is None or
+                not in_stage or
+                (self.disturb_at is not None and self.current_destination != self.disturb_at) or
+                time.monotonic() - self._owner_since[1] < self.disturb_delay):
             return
         self._disturbed = True
         x, y, yaw = self.recorder.pose
-        print(f'disturbing robot by {self.disturb} at the camera stage', flush=True)
+        dx, dy = self.disturb[0], self.disturb[1]
         dyaw = self.disturb[2] if len(self.disturb) > 2 else 0.0
-        self._set_pose(x + self.disturb[0], y + self.disturb[1], yaw + dyaw)
+        target = (x + dx, y + dy, yaw + dyaw)
+        try:
+            cargo = self.bridge._confirmed_cargo()
+        except ValueError:
+            cargo = None
+        if cargo is None and not self._pose_is_clear(target):
+            print(f'disturbance {self.disturb} refused: target pose is not clear', flush=True)
+            return
+        print(f'disturbing robot by {self.disturb} during {owner} '
+              f'to {self.current_destination}{" with cargo" if cargo is not None else ""}',
+              flush=True)
+        self._set_pose(*target)
+        if cargo is not None:
+            cx, cy, cz, cyaw = self.bridge._cargo_poses[cargo]
+            c, s = math.cos(dyaw), math.sin(dyaw)
+            rx, ry = cx - x, cy - y
+            self._set_pose(x + c * rx - s * ry + dx, y + s * rx + c * ry + dy, cyaw + dyaw,
+                           model=f'cargo_station_{cargo}_stand', z=cz)
+
+    def _pose_is_clear(self, pose):
+        from tugger_control.precision_scene_clearance import sampled_precision_clearance
+        from tugger_control.warehouse_clearance import static_world_boxes
+        from tugger_control.lift_geometry import LIFT_DOWN_M
+        world = Path(__file__).resolve().parents[2] / 'src/tugger_gazebo/worlds/tugger_warehouse.sdf'
+        return sampled_precision_clearance([pose, pose], static_world_boxes(world),
+                                           LIFT_DOWN_M)[0]
 
     def spin_until(self, condition, seconds):
         deadline = time.monotonic() + seconds
@@ -230,16 +274,26 @@ class Runner:
                     self.recorder.map_received)
         return self.spin_until(ready, seconds)
 
-    def cancel_after(self, destination, seconds):
-        """Start a mission, cancel it part-way, and report where it stopped."""
+    def cancel_after(self, destination, seconds, moved=None):
+        """Start a mission, cancel it part-way, and report where it stopped.
+
+        With moved, cancel once the robot is that far from where RUN was
+        pressed (seconds is then only a time limit).
+        """
         self.finished, self.planned = None, False
         self.bridge.execute_destination(
             destination, self.mission_paths.paths_to(destination),
             self.entries.get(destination, []))
         self.spin_until(lambda: self.planned, 60)
         self.bridge._motion_armed = True
+        start = self.recorder.pose
         self.bridge.run_selected_mission_with_retry(True)
-        self.spin_until(lambda: False, seconds)
+        if moved is None:
+            self.spin_until(lambda: False, seconds)
+        else:
+            self.spin_until(lambda: self.recorder.pose is not None and math.hypot(
+                self.recorder.pose[0] - start[0], self.recorder.pose[1] - start[1]) >= moved,
+                seconds)
         self.bridge.cancel_navigation()
         self.spin_until(lambda: False, 5.0)
         self.bridge._cancel_requested = False
@@ -250,9 +304,9 @@ class Runner:
                 'lift': self.bridge._lift_position, 'docked_station': None,
                 'guard_reasons': {}}
 
-    def _set_pose(self, x, y, yaw):
+    def _set_pose(self, x, y, yaw, model='autonomous_tugger', z=0.0):
         assert os.environ.get('GZ_PARTITION', '').startswith('tugger_validation_')
-        request = (f'name: "autonomous_tugger" position {{x: {x} y: {y} z: 0.0}} '
+        request = (f'name: "{model}" position {{x: {x} y: {y} z: {z}}} '
                    f'orientation {{z: {math.sin(yaw / 2)} w: {math.cos(yaw / 2)}}}')
         subprocess.run(['gz', 'service', '-s', '/world/tugger_test/set_pose',
                         '--reqtype', 'gz.msgs.Pose', '--reptype', 'gz.msgs.Boolean',
@@ -265,6 +319,7 @@ class Runner:
         self.bridge.docked_station = None
 
     def mission(self, destination):
+        self.current_destination = destination
         self.finished, self.planned = None, False
         self.recorder.reset()
         first_report = len(self.reports)
@@ -424,10 +479,20 @@ def main():
                         help='Allow this unapproved STATION__gate approach in this run only')
     parser.add_argument('--cancel-first-after', type=float,
                         help='cancel the first mission after this many seconds')
+    parser.add_argument('--cancel-index', type=int,
+                        help='test only: cancel the mission with this index (0-based)')
+    parser.add_argument('--cancel-when-moved', type=float, default=0.4,
+                        help='with --cancel-index: cancel once the robot moved this far (m)')
     parser.add_argument('--teleport', nargs=3, type=float, metavar=('X', 'Y', 'YAW'),
                         help='move the robot here (isolated world only) before missions')
     parser.add_argument('--disturb-camera', nargs=3, type=float, metavar=('DX', 'DY', 'DYAW'),
                         help='test only: shove the robot once when the camera stage starts')
+    parser.add_argument('--disturb-at', metavar='DESTINATION',
+                        help='test only: disturb only during the mission to this destination')
+    parser.add_argument('--disturb-owner', default='CAMERA',
+                        help='test only: CAMERA (the camera stage) or a motion owner such as NAV')
+    parser.add_argument('--disturb-delay', type=float, default=0.0,
+                        help='test only: seconds after that owner takes over')
     parser.add_argument('--force-live', action='store_true',
                         help='test only: ignore preplanned paths so live planning runs')
     parser.add_argument('--settle', type=float, default=30.0,
@@ -451,12 +516,19 @@ def main():
     destinations = list(args.destinations)
     runner.force_live = args.force_live
     runner.disturb = tuple(args.disturb_camera) if args.disturb_camera else None
+    runner.disturb_at = args.disturb_at
+    runner.disturb_owner = args.disturb_owner
+    runner.disturb_delay = args.disturb_delay
     if args.teleport:
         runner.teleport(*args.teleport)
     if args.cancel_first_after and destinations:
         results.append(runner.cancel_after(destinations.pop(0), args.cancel_first_after))
         print('cancelled on purpose at', runner.recorder.pose, flush=True)
-    for destination in destinations:
+    for index, destination in enumerate(destinations):
+        if args.cancel_index is not None and index == args.cancel_index:
+            results.append(runner.cancel_after(destination, 600.0, args.cancel_when_moved))
+            print('cancelled on purpose at', runner.recorder.pose, flush=True)
+            continue
         result = runner.mission(destination)
         results.append(result)
         Path(args.output).write_text(json.dumps(results, indent=1))

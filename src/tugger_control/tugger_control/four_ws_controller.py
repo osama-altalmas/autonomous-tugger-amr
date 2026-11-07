@@ -48,10 +48,13 @@ class FourWSController(Node):
         self.last_cmd = self.get_clock().now()
         self.timed_out = False
         self.target_v = max(-self.max_linear_speed, min(self.max_linear_speed, v))
-        self.target_delta = steering_for_twist(v, omega, self.wheelbase, self.max_steering_angle)
         if abs(v) < 1e-4:
+            # A stop holds the wheel angle, as on a real 4WS vehicle. Steering
+            # back to straight on every stop made a guarded arc (paused near
+            # stand legs) resume with unwound wheels and leave its path.
             self.target_v = 0.
-            self.target_delta = 0.
+            return
+        self.target_delta = steering_for_twist(v, omega, self.wheelbase, self.max_steering_angle)
 
     def publish(self):
         rl, rr, omega = wheel_speeds(self.v, self.delta, self.wheelbase,

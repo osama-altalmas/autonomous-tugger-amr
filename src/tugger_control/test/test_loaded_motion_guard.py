@@ -111,3 +111,14 @@ def test_station_one_departure_has_nonzero_guarded_speed_in_modeled_world():
         (-17.5, -7, 0), (-17.5, -7, 0.065, 0), LIFT_UP_M, 0,
         obstacles, 0.0, 0.5)
     assert hit is None and 0 < speed <= 0.5
+
+
+def test_scene_age_errors_say_which_way_the_clock_is_off():
+    import json
+    import pytest
+    from tugger_control.loaded_motion_guard import decode_scene
+    payload = json.dumps({'stamp': 10.0, 'valid': True, 'boxes': []})
+    with pytest.raises(ValueError, match='future clock epoch'):
+        decode_scene(payload, 9.9)
+    with pytest.raises(ValueError, match=r'stale \(0\.500 s old\)'):
+        decode_scene(payload, 10.5)
