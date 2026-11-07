@@ -164,6 +164,20 @@ def main():
             opposite_key
         )
 
+        if entry.get("gate_variant_of"):
+            # A gate variant leaves by a fixed gate, so its reverse must be a
+            # route that ENTERS that gate. Use the shortest validated one.
+            gate = key.split("__TO__")[0].rsplit("__", 1)[1]
+            matches = sorted(
+                ((other_key, other)
+                 for other_key, other in db["routes"].items()
+                 if other.get("source") == new_target and
+                 other.get("target") == new_source and
+                 other.get("target_entrance") == gate and
+                 other.get("status") == "VALIDATED_STATIC_CANDIDATE"),
+                key=lambda item: item[1].get("length_m", float("inf")))
+            opposite_key, opposite_entry = matches[0] if matches else (None, None)
+
         print(
             f"\nAttempting: {new_source} -> {new_target}"
         )

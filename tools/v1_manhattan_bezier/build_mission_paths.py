@@ -100,10 +100,15 @@ def main():
     candidates_bytes = args.candidates.read_bytes()
     candidates = json.loads(candidates_bytes)['candidates']
     args.output.mkdir(parents=True, exist_ok=True)
-    index, failures = {}, {}
+    index, failures, planned_live = {}, {}, {}
     for key, entry in sorted(database['routes'].items()):
         if entry.get('status') != 'VALIDATED_STATIC_CANDIDATE':
-            failures[key] = 'no validated route'
+            if entry.get('gate_variant_of'):
+                # A gate combination the builder cannot route: the robot
+                # still leaves by that gate and the leg is planned live.
+                planned_live[key] = 'no validated route; planned live at run time'
+            else:
+                failures[key] = 'no validated route'
             continue
         try:
             route = json.loads((args.routes / entry['route_file']).read_text())
@@ -124,9 +129,11 @@ def main():
         },
         'paths': index,
         'failures': failures,
+        'planned_live': planned_live,
     }
     (args.output / 'mission_paths.json').write_text(json.dumps(summary, indent=2) + '\n')
-    print(f'{len(index)} mission paths; {len(failures)} failures')
+    print(f'{len(index)} mission paths; {len(failures)} failures; '
+          f'{len(planned_live)} gate combinations planned live')
     for key, reason in failures.items():
         print(f'  {key}: {reason}')
     raise SystemExit(1 if failures else 0)

@@ -18,7 +18,7 @@ from nav2_msgs.action import ComputePathToPose, FollowPath
 from nav2_msgs.srv import IsPathValid
 from python_qt_binding.QtCore import QTimer
 from python_qt_binding.QtWidgets import (
-    QCheckBox, QGridLayout, QGroupBox, QLabel, QMessageBox, QPushButton,
+    QCheckBox, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QMessageBox, QPushButton,
     QTextEdit, QVBoxLayout, QWidget,
 )
 from qt_gui.plugin import Plugin
@@ -47,8 +47,10 @@ from tugger_control.visual_maneuver_planner import marker_visible, replan_visual
 from tugger_control.clearance_2_5d import collision_pairs
 from tugger_control.visual_scene_clearance import PreparedVisualClearance
 from tugger_control.backout_path import backout_candidates
+from tugger_control.route_network import network_edges, plan_route_chain
 from tugger_control.station_occupancy import (
-    assess_destination, load_occupancy, measure_occupancy, save_occupancy, station_label)
+    ATTACH, DETACH, assess_destination, load_occupancy, measure_occupancy, save_occupancy,
+    station_label)
 from tugger_control.visual_heading_gate import relative_qr_heading_consistent
 from tugger_control.visual_marker_guard import FixedMarkerGuard
 from tugger_control.docking_markers import expected_marker
@@ -120,6 +122,9 @@ class ClearanceUnavailable(ValueError):
 
 
 LIFT_DATA_GAP_S = 1.0
+# Inside this radius of a station centre the robot is under or beside the
+# stand; the same radius keeps saved routes out of stations (route audit).
+STAND_AREA_RADIUS_M = 1.5
 
 
 def _marker_in_map(robot_pose, marker):
@@ -410,7 +415,8 @@ class OperatorBridge(Node):
         return load_occupancy()
 
     def _assess_destination(self, destination, cargo):
-        return assess_destination(destination, cargo, self._station_occupancy())
+        return assess_destination(destination, cargo, self._station_occupancy(),
+                                  getattr(self, '_mission_action', None))
 
     def _deviation_confirmed(self, destination):
         confirm = getattr(self, '_mission_confirm', None)
@@ -419,6 +425,9 @@ class OperatorBridge(Node):
 
     def _check_destination_allowed(self, destination, cargo):
         """Hard blocks always stop; warnings need the operator's confirmation."""
+        via = getattr(self, '_mission_via', None)
+        if via is not None and destination == via['hop']:
+            return  # a waypoint gate, not a destination
         blocks, warnings, _dock_only = self._assess_destination(destination, cargo)
         if blocks:
             raise ValueError(blocks[0])
@@ -426,9 +435,75 @@ class OperatorBridge(Node):
             raise ValueError(f'unconfirmed: {warnings[0]}; press RUN twice to confirm')
 
     def _dock_only(self, station):
-        confirm = getattr(self, '_mission_confirm', None)
-        return (confirm is not None and confirm['destination'] == station and
-                confirm['dock_only'])
+        """Dock without a lift action: no ATTACH or DETACH was chosen."""
+        return getattr(self, '_mission_action', None) is None
+
+    def select_cargo_action(self, action):
+        """Operator ATTACH/DETACH: for the planned mission, or at once when docked.
+
+        With a mission previewed and not yet running, the choice applies to
+        it and is checked against the station memory. With no mission and the
+        robot docked at a station, the action runs in place. A choice the
+        station memory rules out is refused and the lift does not move.
+        """
+        if action not in (ATTACH, DETACH):
+            raise ValueError(f'unknown cargo action {action}')
+        busy = (self._follow_goal_pending or self._stage_validation_pending or
+                self._departure_pending is not None or self._departure_active or
+                self._active_follow is not None or self._qr_alignment_active or
+                self._cargo_task is not None)
+        # During a chained mission the choice is for the final station, not
+        # for a waypoint on the way.
+        via = getattr(self, '_mission_via', None)
+        destination = (via['final'] if via is not None else
+                       getattr(self, '_mission_retry', None) and
+                       self._mission_retry['destination'])
+        if busy:
+            self._report(f'{action.upper()} not accepted: a mission is running.')
+            return
+        try:
+            cargo = self._confirmed_cargo()
+        except ValueError as exc:
+            self._report(f'{action.upper()} not accepted: {exc}.')
+            return
+        if self._pending_destination is not None and destination is not None:
+            blocks, warnings, _ = assess_destination(
+                destination, cargo, self._station_occupancy(), action)
+            if blocks:
+                self._report(f'{action.upper()} not accepted for {station_label(destination)}: '
+                             f'{blocks[0]}.')
+                return
+            self._mission_action = action
+            if warnings:
+                self._mission_confirm = {'destination': destination, 'warnings': warnings,
+                                         'dock_only': False, 'confirmed': False}
+            else:
+                self._mission_confirm = None
+            self._report(f'{action.upper()} selected for {station_label(destination)}. '
+                         'Press RUN.')
+            return
+        self._manual_cargo_action(action, cargo)
+
+    def _manual_cargo_action(self, action, cargo):
+        """ATTACH/DETACH at the station the robot is docked at, no driving."""
+        station = self.docked_station
+        if station is None or station in getattr(self, '_pass_through', ()):
+            self._report(f'{action.upper()} not accepted: select a station first, or dock '
+                         'at a station with a stand.')
+            return
+        blocks, _warnings, _ = assess_destination(
+            station, cargo, self._station_occupancy(), action)
+        if blocks:
+            self._report(f'{action.upper()} not accepted at {station_label(station)}: '
+                         f'{blocks[0]}. The lift does not move.')
+            return
+        if not self._motion_armed:
+            self._report(f'{action.upper()} not accepted: arm simulator commands first.')
+            return
+        self._mission_action = action
+        self._mission_retry = None
+        self._report(f'{action.upper()} at {station_label(station)}: starting in place.')
+        self._start_cargo_operation(station)
 
     def _continue_attempt(self, attempt):
         """Press RUN for the planned leg; retry briefly if a check was momentary.
@@ -464,8 +539,12 @@ class OperatorBridge(Node):
             if not approach:
                 continue
             gate, dock = approach[0], approach[-1]
-            if (math.hypot(pose[0] - dock[0], pose[1] - dock[1]) <= DOCKED_TOLERANCE_M or
-                    math.hypot(pose[0] - gate[0], pose[1] - gate[1]) <= 0.15):
+            from_dock = math.hypot(pose[0] - dock[0], pose[1] - dock[1])
+            # Partway means inside the station's approach zone: off the dock,
+            # and clearly closer to it than the gate (a robot stopped at a
+            # gate, e.g. as a waypoint, is outside the station).
+            if (from_dock <= DOCKED_TOLERANCE_M or
+                    from_dock >= math.hypot(gate[0] - dock[0], gate[1] - dock[1]) - 0.30):
                 continue
             if min(math.hypot(p[0] - pose[0], p[1] - pose[1]) for p in approach) <= 0.30:
                 return station
@@ -480,14 +559,72 @@ class OperatorBridge(Node):
             raise ValueError('No configured station approach is available for departure')
         return self._approach_provider(station)[1]
 
+    def _start_route_chain(self, destination, candidates, station_targets):
+        """Go via a pass-through stop when no saved path leaves the entry gate.
+
+        The saved paths form a network; a chain of them through HOME can reach
+        a destination that no single path from this gate reaches. Returns True
+        when the first leg of a chain was started.
+        """
+        station = self.docked_station
+        provider = getattr(self, '_candidate_provider', None)
+        pass_through = tuple(getattr(self, '_pass_through', ()))
+        if (station is None or station in pass_through or provider is None or
+                getattr(self, '_mission_via', None) is not None):
+            return False
+        gate = entrance_gate(self._station_approach(station))
+        # The cheapest connection decides, direct or chained; a stop counts as
+        # extra distance (route_network.STOP_PENALTY_M).
+        stations = list(getattr(self, '_station_centers', {}))
+        edges = network_edges(provider(name)[0] for name in stations)
+        stops = plan_route_chain(edges, station, gate, destination, pass_through)
+        if not stops or len(stops) < 2:
+            return False  # the best connection is direct (or none exists)
+        hop = stops[0]
+        self._report(f'{station}: no saved route to {destination} leaves by the {gate} gate '
+                     f'the robot entered by; going via {" -> ".join(stops)} '
+                     f'(saved routes, one RUN; {hop} is only a waypoint at its gate: no docking).')
+        self._mission_via = {'final': destination, 'candidates': candidates,
+                             'targets': station_targets, 'hop': hop}
+        hop_candidates, hop_targets = provider(hop)
+        retry = getattr(self, '_mission_retry', None)
+        if retry is not None:
+            retry.update(destination=hop, candidates=hop_candidates, targets=hop_targets)
+        self.execute_destination(hop, hop_candidates, hop_targets)
+        return True
+
+    def _continue_route_chain(self):
+        """After reaching a chain's intermediate stop, head for the destination."""
+        via = self._mission_via
+        self._mission_via = None
+        retry = getattr(self, '_mission_retry', None)
+        if retry is not None:
+            retry.update(destination=via['final'], candidates=via['candidates'],
+                         targets=via['targets'])
+        self._report(f'{via["hop"]} gate reached (waypoint, no docking); continuing to '
+                     f'{via["final"]} automatically.')
+        self._continue_after_undock = True
+        timer = None
+
+        def go():
+            timer.cancel()
+            self.execute_destination(via['final'], via['candidates'], via['targets'])
+        timer = self.create_timer(0.5, go)
+
     def _same_gate_routes(self, station, approach, candidates, destination):
         """Restrict the next leg to routes leaving by the gate used to enter."""
         gate = entrance_gate(approach)
         routes = routes_from_gate(candidates, station, gate)
         if not routes:
-            raise ValueError(
-                f'no saved route from {station} to {destination} leaves by the '
-                f'{gate} gate the robot entered by; generate one')
+            if getattr(self, '_live_planner', None) is None:
+                raise ValueError(
+                    f'no saved route from {station} to {destination} leaves by the '
+                    f'{gate} gate the robot entered by; generate one')
+            # Still leave by the entry gate; the next leg is then planned
+            # live from that gate with the offline generator's rules.
+            self._report(f'{station}: no saved route to {destination} leaves by the '
+                         f'{gate} gate the robot entered by; it leaves by that gate '
+                         'and the next leg is planned live.')
         return routes
 
     def _infer_pass_through_dock(self, pose, tolerance=0.02):
@@ -523,10 +660,16 @@ class OperatorBridge(Node):
         self._mission_retry = {'destination': destination, 'candidates': candidates,
                                'targets': station_targets, 'attempts': 0}
         self._mission_confirm = None
+        self._mission_via = None
+        self._mission_action = None
         self.execute_destination(destination, candidates, station_targets)
 
     def _finish_mission(self, report_done, succeeded, status):
         """Report the outcome, or recover from a failure and try again."""
+        if (succeeded and getattr(self, '_mission_via', None) is not None and
+                self._motion_armed and not self._cancel_requested):
+            self._continue_route_chain()
+            return
         retry = getattr(self, '_mission_retry', None)
         phase = getattr(self, '_mission_phase', None)
         if (succeeded or retry is None or status == GoalStatus.STATUS_CANCELED or
@@ -534,11 +677,15 @@ class OperatorBridge(Node):
             if succeeded or status == GoalStatus.STATUS_CANCELED:
                 self._mission_retry = None
             self._mission_confirm = None
+            self._mission_via = None
+            self._mission_action = None
             report_done(succeeded, status)
             return
         if not self._recoverable(phase):
             self._mission_retry = None
             self._mission_confirm = None
+            self._mission_via = None
+            self._mission_action = None
             report_done(succeeded, status)
             return
         if retry['attempts'] >= MAX_MISSION_RETRIES:
@@ -546,6 +693,8 @@ class OperatorBridge(Node):
                          f'{MAX_MISSION_RETRIES} recovery attempts. Robot stopped.')
             self._mission_retry = None
             self._mission_confirm = None
+            self._mission_via = None
+            self._mission_action = None
             report_done(succeeded, status)
             return
         retry['attempts'] += 1
@@ -880,9 +1029,9 @@ class OperatorBridge(Node):
                               else default_poses)
             candidates = self._same_gate_routes(station, approach_poses, candidates,
                                                 destination)
-        if not any(route.get('execution_approved') is True and
-                   route.get('_database_execution_approved') is True
-                   for _, route, _ in candidates):
+        if candidates and not any(route.get('execution_approved') is True and
+                                  route.get('_database_execution_approved') is True
+                                  for _, route, _ in candidates):
             raise ValueError('No approved outgoing route exists for this destination')
         decision = plan_station_departure(current_pose, approach_poses)
         samples = self._modeled_loaded_path_clearance(decision['poses'], cargo_id)
@@ -1640,8 +1789,7 @@ class OperatorBridge(Node):
             self._execution_done(True, GoalStatus.STATUS_SUCCEEDED)
             return
         if self._dock_only(station):
-            self._report(f'{station_label(station)}: docked; no cargo operation, as '
-                         'confirmed.')
+            self._report(f'{station_label(station)}: docked; no cargo action was selected.')
             self._execution_done(True, GoalStatus.STATUS_SUCCEEDED)
             return
         self._start_cargo_operation(station)
@@ -1652,10 +1800,10 @@ class OperatorBridge(Node):
 
     def _start_cargo_operation_now(self, station):
         """Begin a cargo operation only with fresh telemetry and clearance."""
-        pickup, dropoff = PICKUP_CARGO, DROPOFF_CARGO
+        pickup = PICKUP_CARGO
         try:
-            if not self._motion_armed or station not in pickup and station not in dropoff:
-                raise ValueError('armed, known cargo destination is required')
+            if not self._motion_armed or station not in CARGO_STATIONS:
+                raise ValueError('armed, known cargo station is required')
             if not self._loaded_guard_is_ready():
                 raise ValueError('loaded planner and controller clearance are not ready')
             if not self._expected_qr_is_fresh(station):
@@ -1666,18 +1814,21 @@ class OperatorBridge(Node):
             if (self._lift_seen_at is None or
                     not 0 <= (now - self._lift_seen_at).nanoseconds / 1e9 <= 1.0):
                 raise ValueError('lift position feedback is missing or stale')
-            is_pickup = station in pickup
+            action = getattr(self, '_mission_action', None)
+            if action not in (ATTACH, DETACH):
+                raise ValueError('no cargo action (ATTACH or DETACH) was selected')
+            is_pickup = action == ATTACH
             if is_pickup:
-                # Pick up whichever cargo the station actually holds.
+                # Attach whichever cargo the station actually holds.
                 occupancy = self._station_occupancy()
-                cargo_id = occupancy.get(station) if occupancy else pickup[station]
+                cargo_id = occupancy.get(station) if occupancy else pickup.get(station)
                 if cargo_id is None:
-                    raise ValueError(f'{station_label(station)} has no cargo to pick up')
+                    raise ValueError(f'{station_label(station)} has no cargo to attach')
             else:
-                # Set down the cargo actually carried (confirmed if unusual).
+                # Set down the cargo actually carried.
                 cargo_id = cargo
                 if cargo_id is None:
-                    raise ValueError('no attached cargo to set down')
+                    raise ValueError('no attached cargo to detach')
             pose_seen = self._cargo_pose_seen_at[cargo_id]
             if (pose_seen is None or self._cargo_poses[cargo_id] is None or
                     not 0 <= (now - pose_seen).nanoseconds / 1e9 <= 1.0):
@@ -2083,7 +2234,12 @@ class OperatorBridge(Node):
         generation = self._begin_preflight()
         try:
             cargo = self._confirmed_cargo()
-            blocks, warnings, dock_only = self._assess_destination(destination, cargo)
+            via = getattr(self, '_mission_via', None)
+            if via is not None and destination == via['hop']:
+                # A waypoint is only driven to its gate: no cargo rules apply.
+                blocks, warnings, dock_only = [], [], False
+            else:
+                blocks, warnings, dock_only = self._assess_destination(destination, cargo)
             if blocks:
                 raise ValueError(blocks[0])
             confirm = getattr(self, '_mission_confirm', None)
@@ -2094,7 +2250,8 @@ class OperatorBridge(Node):
                                              'dock_only': dock_only, 'confirmed': False}
                     self._report('WARNING: ' + '; '.join(warnings) +
                                  '. RUN will ask you to confirm.')
-            elif confirm is not None and confirm['destination'] != destination:
+            elif (confirm is not None and confirm['destination'] != destination and
+                  getattr(self, '_mission_via', None) is None):
                 self._mission_confirm = None
             pose = self._robot_pose()
             center = getattr(self, '_station_centers', {}).get(self.docked_station)
@@ -2107,7 +2264,10 @@ class OperatorBridge(Node):
             if self.docked_station is None:
                 self._infer_pass_through_dock(pose)
             if self.docked_station is not None and self.docked_station == destination:
-                raise ValueError(f'the robot is already docked at {destination}')
+                if destination in getattr(self, '_pass_through', ()):
+                    raise ValueError(f'the robot is already docked at {destination}')
+                raise ValueError(f'the robot is already docked at {station_label(destination)}; '
+                                 'use ATTACH or DETACH to act here')
             center = getattr(self, '_station_centers', {}).get(destination)
             if (destination in getattr(self, '_pass_through', ()) and center is not None and
                     self.docked_station is None and
@@ -2135,6 +2295,8 @@ class OperatorBridge(Node):
                 # finish leaving along the station's own approach first.
                 self._prepare_backout(destination, candidates, station_targets,
                                       station=partway)
+                return
+            if self._start_route_chain(destination, candidates, station_targets):
                 return
             if cargo is not None and self.docked_station is not None:
                 # Leaves by its pickup's own approach, or through a gate of a
@@ -2182,6 +2344,19 @@ class OperatorBridge(Node):
                 destination, decision, pose, station_targets)
             if approach is None:
                 return
+        via = getattr(self, '_mission_via', None)
+        if (via is not None and destination == via['hop'] and
+                decision['mode'] in ('SAVED_REJOIN', 'SHORT_CONNECTOR') and
+                route_meta.get('markers')):
+            # A waypoint: follow the route to the waypoint's gate and stop
+            # there; no segment 2 and no docking at the waypoint.
+            route = decision['route']
+            self.execute_saved_route(
+                f'{route["source"]} → {destination} gate (waypoint)', decision['poses'],
+                mission_destination=destination,
+                execution_approved=(route.get('_database_execution_approved') is True and
+                                    route.get('execution_approved') is True))
+            return
         if decision['mode'] == 'LIVE_RECOVERY_REQUIRED' and getattr(
                 self, '_live_planner', None) is not None and station_targets:
             self._start_live_plan(destination, pose, station_targets, generation,
@@ -2738,24 +2913,44 @@ class OperatorBridge(Node):
                 self._report(f'{station}: precision scene checked ({sample} samples); '
                              'waiting for the simulator docking guard.')
                 return
+            # The loaded path was checked above in 3D (robot, cargo, legs and
+            # stand heights). A flat 2D costmap cannot represent driving
+            # between the stand legs, so it checks only the open part of the
+            # approach, outside the stand area; under the stand the 3D check
+            # decides, as for an empty robot.
+            center = getattr(self, '_station_centers', {}).get(station)
+            outside = NavPath()
+            outside.header = path.header
+            outside.poses = [point for point in path.poses if center is None or math.hypot(
+                point.pose.position.x - center[0],
+                point.pose.position.y - center[1]) > STAND_AREA_RADIUS_M]
+            if len(outside.poses) < 2:
+                self._report(f'{station}: already inside the stand area; the 3D loaded '
+                             'clearance check decides segment 2.')
+                self._queued_precision_poses = None
+                self._precision_station = station
+                self._report(f'{station}: starting precision segment 2 automatically.')
+                self._follow(path)
+                return
             if not self._path_validator.service_is_ready():
                 raise ValueError('path validation service unavailable')
             request = IsPathValid.Request()
-            request.path = path
+            request.path = outside
             request.consider_unknown_as_obstacle = True
             self._stage_validation_pending = True
             token = self._plan_generation
             self._report(f'{station}: segment 1 complete; validating precision segment 2.')
             future = self._path_validator.call_async(request)
             future.add_done_callback(lambda response: self._on_precision_validated(
-                response, token, station, path, current))
+                response, token, station, path, current, checked=outside))
         except Exception as exc:
             self._stage_validation_pending = False
             self._queued_precision_poses = None
             self._report(f'Precision segment blocked: {exc}. Robot stopped.')
             self._execution_done(False, GoalStatus.STATUS_ABORTED)
 
-    def _on_precision_validated(self, future, generation, station, path, preview_pose):
+    def _on_precision_validated(self, future, generation, station, path, preview_pose,
+                                checked=None):
         if generation != self._plan_generation or not self._stage_validation_pending:
             return
         self._stage_validation_pending = False
@@ -2765,9 +2960,10 @@ class OperatorBridge(Node):
                 raise ValueError('segment 2 costmap validation service failed')
             if not result.is_valid:
                 indices = list(result.invalid_pose_indices)
-                if indices and 0 <= indices[0] < len(path.poses):
+                validated = checked if checked is not None else path
+                if indices and 0 <= indices[0] < len(validated.poses):
                     index = indices[0]
-                    position = path.poses[index].pose.position
+                    position = validated.poses[index].pose.position
                     raise ValueError(
                         f'segment 2 global costmap rejected pose {index} '
                         f'at map x={position.x:.3f}, y={position.y:.3f}; '
@@ -2884,22 +3080,28 @@ class OperatorPanel(Plugin):
         home = QPushButton('Check / plan HOME from current pose')
         home.clicked.connect(lambda: self._request_destination('HOME'))
         mission_layout.addWidget(home, len(buttons), 0)
+        attach = QPushButton('ATTACH cargo (lift up)')
+        attach.clicked.connect(lambda: self._bridge.select_cargo_action('attach'))
+        detach = QPushButton('DETACH cargo (set down)')
+        detach.clicked.connect(lambda: self._bridge.select_cargo_action('detach'))
+        actions = QHBoxLayout()
+        actions.addWidget(attach)
+        actions.addWidget(detach)
+        mission_layout.addLayout(actions, len(buttons) + 1, 0)
         run = QPushButton('RUN selected mission')
         run.clicked.connect(
             lambda: self._bridge.run_selected_mission_with_retry(self._armed.isChecked()))
-        mission_layout.addWidget(run, len(buttons) + 1, 0)
+        mission_layout.addWidget(run, len(buttons) + 2, 0)
         cancel = QPushButton('Cancel active navigation')
         cancel.clicked.connect(lambda: self._bridge.cancel_navigation())
-        mission_layout.addWidget(cancel, len(buttons) + 2, 0)
+        mission_layout.addWidget(cancel, len(buttons) + 3, 0)
         layout.addWidget(mission_box)
 
-        cargo_box = QGroupBox('Cargo and lift (only when armed)')
+        # Cargo is attached and detached with ATTACH/DETACH above, which check
+        # the station memory. These are service controls for the lift only.
+        cargo_box = QGroupBox('Service: lift only (when armed)')
         cargo_layout = QGridLayout(cargo_box)
         controls = [
-            ('Attach cargo at Station 1', lambda: self._cargo(0, True)),
-            ('Detach cargo at Station 2', lambda: self._cargo(0, False)),
-            ('Attach cargo at Station 3', lambda: self._cargo(3, True)),
-            ('Detach cargo at Station 4', lambda: self._cargo(3, False)),
             ('Lift up', lambda: self._lift(LIFT_UP_M)),
             ('Lift down', lambda: self._lift(LIFT_DOWN_M)),
         ]
@@ -2919,6 +3121,10 @@ class OperatorPanel(Plugin):
             approach_provider=self._docking_routes.approach,
             station_layout=self._routes.database,
             live_planner=self._make_live_planner())
+        # Paths to any station, so a mission can be chained through HOME.
+        self._bridge._candidate_provider = lambda destination: (
+            self._mission_paths.paths_to(destination),
+            self._station_entries.get(destination, []))
         self._timer = QTimer(self._widget)
         self._timer.timeout.connect(self._spin_ros)
         self._timer.start(20)

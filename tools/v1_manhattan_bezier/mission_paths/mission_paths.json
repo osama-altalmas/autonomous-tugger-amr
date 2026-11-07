@@ -1,8 +1,8 @@
 {
   "schema": "amr_single_segment_mission_path_v1_index",
   "source_sha256": {
-    "route_database": "8f7a1233da564135f1d2989c6c134507e90363e08a3e7fa25f0622adf9de0135",
-    "candidates": "bb297f987cd43d8031b00d190befe1b36a663996d3f76deb43f616e71a6967a8"
+    "route_database": "e348cabe32ad433af8c6bc1fb3f236842ac377d62f0545ecc66466b46711c99e",
+    "candidates": "224631e87ebf6416042bf8ec69129b4960c1d7462c2898541f9c18e13b399563"
   },
   "paths": {
     "HOME__TO__cargo_dropoff_northwest": {
@@ -18,8 +18,8 @@
       "source": "HOME",
       "target": "cargo_dropoff_southeast",
       "source_entrance": "east",
-      "target_entrance": "north",
-      "length_m": 24.1201,
+      "target_entrance": "west",
+      "length_m": 23.6395,
       "execution_approved": true,
       "file": "HOME__TO__cargo_dropoff_southeast.json"
     },
@@ -27,8 +27,8 @@
       "source": "HOME",
       "target": "cargo_station_0",
       "source_entrance": "west",
-      "target_entrance": "east",
-      "length_m": 23.6395,
+      "target_entrance": "north",
+      "length_m": 24.0701,
       "execution_approved": true,
       "file": "HOME__TO__cargo_station_0.json"
     },
@@ -53,18 +53,18 @@
     "cargo_dropoff_northwest__TO__cargo_dropoff_southeast": {
       "source": "cargo_dropoff_northwest",
       "target": "cargo_dropoff_southeast",
-      "source_entrance": "south",
+      "source_entrance": "east",
       "target_entrance": "north",
-      "length_m": 48.2796,
+      "length_m": 47.7591,
       "execution_approved": true,
       "file": "cargo_dropoff_northwest__TO__cargo_dropoff_southeast.json"
     },
     "cargo_dropoff_northwest__TO__cargo_station_0": {
       "source": "cargo_dropoff_northwest",
       "target": "cargo_station_0",
-      "source_entrance": "south",
+      "source_entrance": "east",
       "target_entrance": "north",
-      "length_m": 14.0009,
+      "length_m": 34.6591,
       "execution_approved": true,
       "file": "cargo_dropoff_northwest__TO__cargo_station_0.json"
     },
@@ -76,6 +76,42 @@
       "length_m": 35.0009,
       "execution_approved": true,
       "file": "cargo_dropoff_northwest__TO__cargo_station_3.json"
+    },
+    "cargo_dropoff_northwest__east__TO__HOME": {
+      "source": "cargo_dropoff_northwest",
+      "target": "HOME",
+      "source_entrance": "east",
+      "target_entrance": "west",
+      "length_m": 23.6395,
+      "execution_approved": true,
+      "file": "cargo_dropoff_northwest__east__TO__HOME.json"
+    },
+    "cargo_dropoff_northwest__south__TO__cargo_dropoff_southeast": {
+      "source": "cargo_dropoff_northwest",
+      "target": "cargo_dropoff_southeast",
+      "source_entrance": "south",
+      "target_entrance": "west",
+      "length_m": 47.6591,
+      "execution_approved": true,
+      "file": "cargo_dropoff_northwest__south__TO__cargo_dropoff_southeast.json"
+    },
+    "cargo_dropoff_northwest__south__TO__cargo_station_0": {
+      "source": "cargo_dropoff_northwest",
+      "target": "cargo_station_0",
+      "source_entrance": "south",
+      "target_entrance": "north",
+      "length_m": 14.0009,
+      "execution_approved": true,
+      "file": "cargo_dropoff_northwest__south__TO__cargo_station_0.json"
+    },
+    "cargo_dropoff_northwest__south__TO__cargo_station_3": {
+      "source": "cargo_dropoff_northwest",
+      "target": "cargo_station_3",
+      "source_entrance": "south",
+      "target_entrance": "west",
+      "length_m": 47.6591,
+      "execution_approved": true,
+      "file": "cargo_dropoff_northwest__south__TO__cargo_station_3.json"
     },
     "cargo_dropoff_southeast__TO__HOME": {
       "source": "cargo_dropoff_southeast",
@@ -89,9 +125,9 @@
     "cargo_dropoff_southeast__TO__cargo_dropoff_northwest": {
       "source": "cargo_dropoff_southeast",
       "target": "cargo_dropoff_northwest",
-      "source_entrance": "north",
-      "target_entrance": "east",
-      "length_m": 48.1897,
+      "source_entrance": "west",
+      "target_entrance": "south",
+      "length_m": 47.6591,
       "execution_approved": true,
       "file": "cargo_dropoff_southeast__TO__cargo_dropoff_northwest.json"
     },
@@ -107,11 +143,47 @@
     "cargo_dropoff_southeast__TO__cargo_station_3": {
       "source": "cargo_dropoff_southeast",
       "target": "cargo_station_3",
+      "source_entrance": "west",
+      "target_entrance": "south",
+      "length_m": 38.6591,
+      "execution_approved": true,
+      "file": "cargo_dropoff_southeast__TO__cargo_station_3.json"
+    },
+    "cargo_dropoff_southeast__north__TO__cargo_dropoff_northwest": {
+      "source": "cargo_dropoff_southeast",
+      "target": "cargo_dropoff_northwest",
+      "source_entrance": "north",
+      "target_entrance": "east",
+      "length_m": 47.7591,
+      "execution_approved": true,
+      "file": "cargo_dropoff_southeast__north__TO__cargo_dropoff_northwest.json"
+    },
+    "cargo_dropoff_southeast__north__TO__cargo_station_0": {
+      "source": "cargo_dropoff_southeast",
+      "target": "cargo_station_0",
+      "source_entrance": "north",
+      "target_entrance": "east",
+      "length_m": 47.6591,
+      "execution_approved": true,
+      "file": "cargo_dropoff_southeast__north__TO__cargo_station_0.json"
+    },
+    "cargo_dropoff_southeast__north__TO__cargo_station_3": {
+      "source": "cargo_dropoff_southeast",
+      "target": "cargo_station_3",
       "source_entrance": "north",
       "target_entrance": "south",
       "length_m": 14.0009,
       "execution_approved": true,
-      "file": "cargo_dropoff_southeast__TO__cargo_station_3.json"
+      "file": "cargo_dropoff_southeast__north__TO__cargo_station_3.json"
+    },
+    "cargo_dropoff_southeast__west__TO__HOME": {
+      "source": "cargo_dropoff_southeast",
+      "target": "HOME",
+      "source_entrance": "west",
+      "target_entrance": "east",
+      "length_m": 23.6395,
+      "execution_approved": true,
+      "file": "cargo_dropoff_southeast__west__TO__HOME.json"
     },
     "cargo_station_0__TO__HOME": {
       "source": "cargo_station_0",
@@ -125,9 +197,9 @@
     "cargo_station_0__TO__cargo_dropoff_northwest": {
       "source": "cargo_station_0",
       "target": "cargo_dropoff_northwest",
-      "source_entrance": "east",
+      "source_entrance": "north",
       "target_entrance": "south",
-      "length_m": 34.1091,
+      "length_m": 14.0009,
       "execution_approved": true,
       "file": "cargo_station_0__TO__cargo_dropoff_northwest.json"
     },
@@ -143,11 +215,47 @@
     "cargo_station_0__TO__cargo_station_3": {
       "source": "cargo_station_0",
       "target": "cargo_station_3",
-      "source_entrance": "north",
+      "source_entrance": "east",
       "target_entrance": "south",
-      "length_m": 48.2699,
+      "length_m": 47.7091,
       "execution_approved": true,
       "file": "cargo_station_0__TO__cargo_station_3.json"
+    },
+    "cargo_station_0__east__TO__cargo_dropoff_northwest": {
+      "source": "cargo_station_0",
+      "target": "cargo_dropoff_northwest",
+      "source_entrance": "east",
+      "target_entrance": "south",
+      "length_m": 34.6091,
+      "execution_approved": true,
+      "file": "cargo_station_0__east__TO__cargo_dropoff_northwest.json"
+    },
+    "cargo_station_0__north__TO__HOME": {
+      "source": "cargo_station_0",
+      "target": "HOME",
+      "source_entrance": "north",
+      "target_entrance": "west",
+      "length_m": 24.0701,
+      "execution_approved": true,
+      "file": "cargo_station_0__north__TO__HOME.json"
+    },
+    "cargo_station_0__north__TO__cargo_dropoff_southeast": {
+      "source": "cargo_station_0",
+      "target": "cargo_dropoff_southeast",
+      "source_entrance": "north",
+      "target_entrance": "west",
+      "length_m": 47.6091,
+      "execution_approved": true,
+      "file": "cargo_station_0__north__TO__cargo_dropoff_southeast.json"
+    },
+    "cargo_station_0__north__TO__cargo_station_3": {
+      "source": "cargo_station_0",
+      "target": "cargo_station_3",
+      "source_entrance": "north",
+      "target_entrance": "west",
+      "length_m": 47.7091,
+      "execution_approved": true,
+      "file": "cargo_station_0__north__TO__cargo_station_3.json"
     },
     "cargo_station_3__TO__HOME": {
       "source": "cargo_station_3",
@@ -180,13 +288,50 @@
       "source": "cargo_station_3",
       "target": "cargo_station_0",
       "source_entrance": "south",
-      "target_entrance": "north",
-      "length_m": 48.2796,
+      "target_entrance": "east",
+      "length_m": 47.7091,
       "execution_approved": true,
       "file": "cargo_station_3__TO__cargo_station_0.json"
+    },
+    "cargo_station_3__south__TO__cargo_dropoff_northwest": {
+      "source": "cargo_station_3",
+      "target": "cargo_dropoff_northwest",
+      "source_entrance": "south",
+      "target_entrance": "east",
+      "length_m": 47.7091,
+      "execution_approved": true,
+      "file": "cargo_station_3__south__TO__cargo_dropoff_northwest.json"
+    },
+    "cargo_station_3__west__TO__HOME": {
+      "source": "cargo_station_3",
+      "target": "HOME",
+      "source_entrance": "west",
+      "target_entrance": "east",
+      "length_m": 23.6395,
+      "execution_approved": true,
+      "file": "cargo_station_3__west__TO__HOME.json"
+    },
+    "cargo_station_3__west__TO__cargo_dropoff_southeast": {
+      "source": "cargo_station_3",
+      "target": "cargo_dropoff_southeast",
+      "source_entrance": "west",
+      "target_entrance": "north",
+      "length_m": 38.7091,
+      "execution_approved": true,
+      "file": "cargo_station_3__west__TO__cargo_dropoff_southeast.json"
+    },
+    "cargo_station_3__west__TO__cargo_station_0": {
+      "source": "cargo_station_3",
+      "target": "cargo_station_0",
+      "source_entrance": "west",
+      "target_entrance": "north",
+      "length_m": 47.7091,
+      "execution_approved": true,
+      "file": "cargo_station_3__west__TO__cargo_station_0.json"
     }
   },
   "failures": {},
+  "planned_live": {},
   "lift_audit": {
     "cargo_station_0 pickup": true,
     "cargo_station_3 pickup": true,

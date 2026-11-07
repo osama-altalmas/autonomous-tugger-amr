@@ -6039,13 +6039,17 @@
  "execution_approved": true,
  "validation": {
   "articulated_wheel_sweep": "PASSED (wheel bounds cover all steering angles)",
-  "surrounding_obstacle_clearance": "PASSED (403 sampled poses, unloaded)",
+  "surrounding_obstacle_clearance": "PASSED (403 sampled poses, unloaded, loaded_cargo_0, loaded_cargo_3)",
   "audit": {
-   "loaded": false,
+   "loaded": true,
+   "states": {
+    "unloaded": true,
+    "loaded_cargo_0": true,
+    "loaded_cargo_3": true
+   },
    "passed": true,
    "samples": 403,
-   "first_collision": null,
-   "sample_index": null
+   "first_collision": null
   }
  }
 }

@@ -31,6 +31,32 @@ def sampled_precision_clearance(poses, obstacles, lift, *, margin=0.01):
     if not obstacles or any(not isinstance(obstacle, Box) for obstacle in obstacles):
         raise ValueError('A nonempty, validated collision scene is required')
 
+    # Spatial index: obstacles bucketed by 1 m cell over their bounding
+    # circles, so each sampled pose is tested only against nearby boxes.
+    # Exact: a box outside the robot's reach cannot touch it.
+    buckets = {}
+    for obstacle in obstacles:
+        radius = math.hypot(obstacle.half_x, obstacle.half_y) + margin
+        for cx in range(math.floor(obstacle.x - radius), math.floor(obstacle.x + radius) + 1):
+            for cy in range(math.floor(obstacle.y - radius), math.floor(obstacle.y + radius) + 1):
+                buckets.setdefault((cx, cy), []).append(obstacle)
+
+    def nearby(parts):
+        found, seen = [], set()
+        for part in parts:
+            reach = math.hypot(part.half_x, part.half_y)
+            for cx in range(math.floor(part.x - reach), math.floor(part.x + reach) + 1):
+                for cy in range(math.floor(part.y - reach), math.floor(part.y + reach) + 1):
+                    for obstacle in buckets.get((cx, cy), ()):
+                        if id(obstacle) not in seen:
+                            seen.add(id(obstacle))
+                            found.append(obstacle)
+        return found
+
+    def hits_at(pose):
+        parts = robot_boxes(pose, lift)
+        return collision_pairs(parts, nearby(parts), margin=margin)
+
     sample_index = 0
     for start, end in zip(points, points[1:]):
         rotation = math.atan2(math.sin(end[2] - start[2]),
@@ -42,11 +68,11 @@ def sampled_precision_clearance(poses, obstacles, lift, *, margin=0.01):
             pose = (start[0] + (end[0] - start[0]) * fraction,
                     start[1] + (end[1] - start[1]) * fraction,
                     start[2] + rotation * fraction)
-            hits = collision_pairs(robot_boxes(pose, lift), obstacles, margin=margin)
+            hits = hits_at(pose)
             if hits:
                 return False, sample_index, hits[0]
             sample_index += 1
-    hits = collision_pairs(robot_boxes(points[-1], lift), obstacles, margin=margin)
+    hits = hits_at(points[-1])
     if hits:
         return False, sample_index, hits[0]
     return True, sample_index + 1, None

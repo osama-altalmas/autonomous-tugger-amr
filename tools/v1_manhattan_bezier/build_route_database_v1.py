@@ -85,8 +85,38 @@ def direction_index(yaw):
     )
 
 
+def centre_cost_map(blocked, resolution):
+    """Per-cell cost of leaving the centre line of free space, 0 to 1.
+
+    Routes are meant to keep equal distance to the obstacles on either side.
+    The centre lines are the ridges of the distance-to-obstacle map: cells
+    farther from obstacles than their neighbours across the corridor (a
+    strict peak along x or y; the grid is axis-aligned, so this traces the
+    generalised Voronoi diagram between racks, walls and stands). The cost is
+    the Voronoi field share d_V / (d_O + d_V) (Dolgov et al., "Path Planning
+    for Autonomous Vehicles in Unknown Semi-structured Environments", 2010):
+    0 on a centre line, 1 at an obstacle, and relative to the local width, so
+    the same offset costs more in a narrow gap than in an open crossing.
+    """
+    free = ~blocked
+    d_obstacle = distance_transform_edt(free) * resolution
+    p = np.pad(d_obstacle, 1)
+    mid = p[1:-1, 1:-1]
+    left, right, up, down = p[1:-1, :-2], p[1:-1, 2:], p[:-2, 1:-1], p[2:, 1:-1]
+    along_x = (mid >= left) & (mid >= right) & ((mid > left) | (mid > right))
+    along_y = (mid >= up) & (mid >= down) & ((mid > up) | (mid > down))
+    ridge = free & (along_x | along_y) & (mid > 2.0 * resolution)
+    if not ridge.any():
+        return np.where(free, 0.0, 1.0)
+    d_centre = distance_transform_edt(~ridge) * resolution
+    cost = d_centre / np.maximum(d_obstacle + d_centre, 1e-9)
+    cost[blocked] = 1.0
+    return cost
+
+
 def constrained_astar(start, goal, safe, terminal_direction,
-                      clearance_map=None, clearance_weight=0.0):
+                      centre_cost=None, centre_weight=0.0, initial_direction=-1,
+                      corner_penalty=0.2):
     """
     Cardinal-grid A* with final direction as part of
     the goal condition.
@@ -108,7 +138,7 @@ def constrained_astar(start, goal, safe, terminal_direction,
     if not safe[gy, gx]:
         raise ValueError("Goal cell not clearance-safe")
 
-    initial = (sx, sy, -1)
+    initial = (sx, sy, initial_direction)
 
     best = {initial: 0.0}
     parent = {}
@@ -158,19 +188,16 @@ def constrained_astar(start, goal, safe, terminal_direction,
                 continue
 
             turn_penalty = (
-                0.2
+                corner_penalty
                 if incoming != -1 and incoming != nd
                 else 0.0
             )
 
             clearance_penalty = 0.0
-            if clearance_map is not None and clearance_weight > 0.0:
-                # Prefer the medial part of a free corridor while retaining
-                # the hard footprint-safe boundary in ``safe``.  The inverse
-                # distance cost is zero-disabled for backwards compatibility
-                # and remains finite at the map boundary.
-                clearance = max(float(clearance_map[yy, xx]), 1e-6)
-                clearance_penalty = clearance_weight / clearance
+            if centre_cost is not None and centre_weight > 0.0:
+                # Prefer the centre line of free space (see centre_cost_map);
+                # the hard footprint-safe boundary stays in ``safe``.
+                clearance_penalty = centre_weight * float(centre_cost[yy, xx])
             new_cost = cost + 1.0 + turn_penalty + clearance_penalty
             nxt = (xx, yy, nd)
 
@@ -211,6 +238,323 @@ def constrained_astar(start, goal, safe, terminal_direction,
         cursor = parent[cursor]
 
     return cells[::-1]
+
+
+def turn_limited_astar(start, goal, safe, terminal_direction, min_run, axis=None,
+                       centre_cost=None, centre_weight=0.0, max_expansions=4000000,
+                       corner_penalty=0.2,
+                       inner_run=None, final_run=None):
+    """Grid A* that only proposes corners the robot can drive.
+
+    Every straight run between corners, the first from the start and the last
+    into the goal, is at least ``min_run`` cells, so corner smoothing always
+    has room for a curve within the turning limit. A plain shortest-cell
+    search can return a one-cell jog or U-turn instead, which smoothing then
+    rejects with no alternative. ``axis`` (a DIRS index) restricts the first
+    move to the staging or body axis, either sign.
+
+    Corner smoothing trims up to a corner length from each side, so a run
+    between two corners needs ``inner_run`` (default twice ``min_run``);
+    the first and last runs need only ``min_run``.
+
+    State: (x, y, direction, straight cells so far (capped), first run?).
+    """
+    inner_run = 2 * min_run if inner_run is None else inner_run
+    # The last run into the goal (a station gate) must let the path follower
+    # settle its heading after the final corner.
+    final_run = min_run if final_run is None else final_run
+    cap = max(inner_run, final_run)
+    sx, sy = start
+    gx, gy = goal
+    h, w = safe.shape
+    if not safe[sy, sx] or not safe[gy, gx]:
+        raise ValueError("Start or goal cell not clearance-safe")
+    initial = (sx, sy, -1, 0, True)
+    best = {initial: 0.0}
+    parent = {}
+    queue = [(abs(gx - sx) + abs(gy - sy), 0.0, initial)]
+    expansions = 0
+    while queue:
+        _, cost, state = heapq.heappop(queue)
+        if cost > best.get(state, float("inf")) + 1e-9:
+            continue
+        x, y, incoming, run, first = state
+        if (x, y) == (gx, gy) and incoming == terminal_direction and run >= final_run:
+            cells = []
+            while True:
+                cells.append((state[0], state[1]))
+                if state == initial:
+                    return cells[::-1]
+                state = parent[state]
+        expansions += 1
+        if expansions > max_expansions:
+            break
+        for nd, (dx, dy) in enumerate(DIRS):
+            if incoming == -1:
+                if axis is not None and nd // 2 != axis // 2:
+                    continue  # leave along the axis
+            elif nd == incoming ^ 1:
+                continue      # no reversal
+            elif nd != incoming and run < (min_run if first else inner_run):
+                continue      # no corner before a full straight run
+            xx, yy = x + dx, y + dy
+            if not (0 <= xx < w and 0 <= yy < h) or not safe[yy, xx]:
+                continue
+            new_run = min(run + 1, cap) if nd == incoming else 1
+            new_first = first and (incoming == -1 or nd == incoming)
+            penalty = corner_penalty if incoming != -1 and nd != incoming else 0.0
+            if centre_cost is not None and centre_weight > 0.0:
+                penalty += centre_weight * float(centre_cost[yy, xx])
+            nxt = (xx, yy, nd, new_run, new_first)
+            new_cost = cost + 1.0 + penalty
+            if new_cost + 1e-9 < best.get(nxt, float("inf")):
+                best[nxt] = new_cost
+                parent[nxt] = state
+                heapq.heappush(queue, (new_cost + abs(gx - xx) + abs(gy - yy), new_cost, nxt))
+    raise ValueError("No turn-limited route reaches the goal")
+
+
+def _coarse(grid, factor, reduce):
+    """Downsample a boolean grid by ``factor`` (padding with False)."""
+    h, w = grid.shape
+    H, W = -(-h // factor), -(-w // factor)
+    padded = np.zeros((H * factor, W * factor), dtype=bool)
+    padded[:h, :w] = grid
+    blocks = padded.reshape(H, factor, W, factor)
+    return blocks.all(axis=(1, 3)) if reduce == "all" else blocks.any(axis=(1, 3))
+
+
+def fast_turn_limited_astar(start, goal, safe, terminal_direction, min_run, axis=None,
+                            centre_cost=None, centre_weight=0.0, factor=4, corner_penalty=0.2,
+                            final_run=None):
+    """Coarse-to-fine turn_limited_astar with the same exact result rules.
+
+    A coarse grid (``factor`` cells per side) finds a corridor quickly; the
+    exact fine-grid search then runs only inside that corridor. The coarse
+    step keeps the centre-line preference (a block costs what its most
+    central cell costs), so the corridor it hands on runs through the middle
+    of free space like every other route. If even an optimistic coarse grid (a block
+    is free if any of its cells is) has no turn-limited route, none exists
+    and the costly full search is skipped.
+    """
+    final_run = min_run if final_run is None else final_run
+    coarse_run = max(2, -(-min_run // factor))
+    coarse_final = max(2, -(-final_run // factor))
+    cs = (start[0] // factor, start[1] // factor)
+    cg = (goal[0] // factor, goal[1] // factor)
+    coarse_cost = None
+    if centre_cost is not None and centre_weight > 0.0:
+        h, w = centre_cost.shape
+        H, W = -(-h // factor), -(-w // factor)
+        padded = np.ones((H * factor, W * factor))
+        padded[:h, :w] = centre_cost
+        coarse_cost = padded.reshape(H, factor, W, factor).min(axis=(1, 3))
+    corridor_path = None
+    for reduce in ("all", "any"):
+        coarse = _coarse(safe, factor, reduce)
+        coarse[cs[1], cs[0]] = coarse[cg[1], cg[0]] = True
+        try:
+            corridor_path = turn_limited_astar(
+                cs, cg, coarse, terminal_direction, coarse_run, axis=axis,
+                centre_cost=coarse_cost,
+                centre_weight=centre_weight * factor, final_run=coarse_final,
+                corner_penalty=corner_penalty / factor)
+            break
+        except ValueError:
+            continue
+    if corridor_path is None:
+        raise ValueError("No turn-limited route reaches the goal")
+    h, w = safe.shape
+    mask = np.zeros((-(-h // factor), -(-w // factor)), dtype=bool)
+    for x, y in corridor_path:
+        mask[max(0, y - 1):y + 2, max(0, x - 1):x + 2] = True
+    fine_mask = np.kron(mask, np.ones((factor, factor), dtype=bool))[:h, :w]
+    for grid in (safe & fine_mask, safe):
+        # The corridor first; everything only if it was too tight.
+        try:
+            return turn_limited_astar(start, goal, grid, terminal_direction, min_run,
+                                      axis=axis, centre_cost=centre_cost,
+                                      centre_weight=centre_weight,
+                                      corner_penalty=corner_penalty,
+                                      final_run=final_run)
+        except ValueError:
+            continue
+    raise ValueError("No turn-limited route reaches the goal")
+
+
+def start_is_sideways(cells, axis):
+    """True if the first grid move is perpendicular to the staging axis."""
+    if len(cells) < 2:
+        return False
+    move = (cells[1][0] - cells[0][0], cells[1][1] - cells[0][1])
+    first = DIRS.index(move) if move in DIRS else axis
+    # DIRS is east, west, north, south: pairs 0-1 and 2-3 share an axis.
+    return first // 2 != axis // 2
+
+
+def _runs(cells):
+    runs = []
+    for a, b in zip(cells, cells[1:]):
+        move = (b[0] - a[0], b[1] - a[1])
+        if runs and runs[-1][0] == move:
+            runs[-1][1] += 1
+        else:
+            runs.append([move, 1])
+    return runs
+
+
+def _cells_from_runs(start, runs):
+    cells = [tuple(start)]
+    for (dx, dy), count in runs:
+        for _ in range(count):
+            cells.append((cells[-1][0] + dx, cells[-1][1] + dy))
+    return cells
+
+
+def _normalise(runs):
+    """Merge equal neighbours and cancel opposite ones."""
+    out = []
+    for move, count in runs:
+        if count <= 0:
+            continue
+        if out and out[-1][0] == move:
+            out[-1][1] += count
+        elif out and out[-1][0] == (-move[0], -move[1]):
+            out[-1][1] -= count
+            if out[-1][1] < 0:
+                out[-1] = [move, -out[-1][1]]
+            elif out[-1][1] == 0:
+                out.pop()
+        else:
+            out.append([move, count])
+    return out
+
+
+def remove_short_jogs(cells, safe, max_jog):
+    """Merge short sideways jogs into the next corner.
+
+    A grid search drawn toward corridor centres can step one or two cells
+    sideways between two runs in the same direction. Two corners that close
+    cannot be smoothed into a drivable curve, so the sideways step is moved
+    to the end of the following run (merging with the next corner) whenever
+    every changed cell stays clearance-safe. Start and goal are unchanged.
+    """
+    runs = _runs(cells)
+    h, w = safe.shape
+    changed = True
+    while changed:
+        changed = False
+        for i in range(1, len(runs) - 1):
+            before, jog, after = runs[i - 1], runs[i], runs[i + 1]
+            if before[0] != after[0] or jog[1] > max_jog:
+                continue
+            trial = _normalise(runs[:i - 1] + [[before[0], before[1] + after[1]], jog]
+                               + runs[i + 2:])
+            path = _cells_from_runs(cells[0], trial)
+            if path[-1] == tuple(cells[-1]) and all(
+                    0 <= x < w and 0 <= y < h and safe[y, x] for x, y in path):
+                runs, changed = trial, True
+                break
+    return _cells_from_runs(cells[0], runs)
+
+
+def lead_out_candidates(start, goal, safe, required, axis, run_cells, **weights):
+    """Cell paths that leave the staging pose straight along its axis.
+
+    Smoothing cannot round a corner at a path's first point, so a turn in
+    the first cell stays a kink that a car-like 4WS robot cannot start from
+    rest. Candidates run straight along the axis (either sign, since the
+    robot may leave forward or in reverse; one and two corner lengths), then
+    search on. Callers smooth each in turn and keep the first that passes.
+    """
+    plain = constrained_astar(start, goal, safe, required, **weights)
+    first = _runs(plain)[:1]
+    if first and DIRS.index(first[0][0]) // 2 == axis // 2 and first[0][1] >= run_cells:
+        yield plain  # already leaves straight along the axis for a corner length
+    options = []
+    h, w = safe.shape
+    # After the lead-out, the corridor-centre preference can pull the path
+    # back across the lead (a one-cell U-turn); an unbiased search gives the
+    # plain corner instead. Both are offered; smoothing decides.
+    searches = [weights]
+    if weights.get("centre_weight", 0.0) > 0.0:
+        searches.append({**weights, "centre_weight": 0.0})
+    for direction in (axis, axis ^ 1):
+        dx, dy = DIRS[direction]
+        for run in (run_cells, 2 * run_cells):
+            lead = [(start[0] + k * dx, start[1] + k * dy) for k in range(run + 1)]
+            if not all(0 <= x < w and 0 <= y < h and safe[y, x] for x, y in lead):
+                continue
+            for search in searches:
+                try:
+                    rest = constrained_astar(lead[-1], goal, safe, required,
+                                             initial_direction=direction, **search)
+                except ValueError:
+                    continue
+                options.append(lead + rest[1:])
+    yield from sorted(options, key=len)
+
+
+def search_with_lead_out(start, goal, safe, required, axis, run_cells, **weights):
+    """The shortest lead-out candidate (see lead_out_candidates)."""
+    for cells in lead_out_candidates(start, goal, safe, required, axis, run_cells, **weights):
+        return cells
+    raise ValueError("No route leaves the staging pose along its axis")
+
+
+# Straight run into a gate after the final corner, so the path follower
+# settles its heading before the docking handoff. Measured: 1.1 m arrived 12
+# degrees off and stalled; about 1.6 m arrived reliably in every validation.
+FINAL_STRAIGHT_M = 1.6
+# A cell at an obstacle costs 1 + CENTRE_WEIGHT cell lengths, one on a centre
+# line costs 1: a route takes a detour to the middle of free space when the
+# detour is shorter than about twice the length it would otherwise run
+# off-centre, so open crossings are crossed in the middle, not along a rack.
+CENTRE_WEIGHT = 2.0
+# Each corner slows the robot and swings its steering: worth about this much
+# straight driving. Without it the search adds a side-step for any small bend
+# of the centre line (measured: 1-2 m still let routes side-step 1 m in open
+# space next to a rack end; 3 m does not, and crossings stay centred).
+CORNER_PENALTY_M = 3.0
+
+
+def smooth_lead_out(start, goal, safe, required, axis, run_cells, smooth, final_run=None,
+                    **weights):
+    """Smooth lead-out candidates in turn; return the first that validates."""
+    last = "No route leaves the staging pose along its axis"
+
+    def ordered():
+        # 1. The plain shortest route, if it already leaves straight along
+        #    the axis for a corner length (keeps existing good routes).
+        try:
+            plain = constrained_astar(start, goal, safe, required, **weights)
+            runs = _runs(plain)
+            if (runs and DIRS.index(runs[0][0]) // 2 == axis // 2 and
+                    runs[0][1] >= run_cells and
+                    (final_run is None or runs[-1][1] >= final_run)):
+                yield plain
+        except ValueError:
+            pass
+        # 2. The turn-limited search: only drivable corners, by construction.
+        try:
+            yield fast_turn_limited_astar(start, goal, safe, required, run_cells, axis=axis,
+                                          final_run=final_run, **weights)
+        except ValueError:
+            pass
+        # 3. Older lead-out candidates, built only if both fail.
+        yield from lead_out_candidates(start, goal, safe, required, axis, run_cells, **weights)
+    for cells in ordered():
+        for attempt in (cells, None):
+            if attempt is None:
+                # Only when smoothing fails: merge short sideways jogs.
+                attempt = remove_short_jogs(cells, safe, run_cells)
+                if attempt == cells:
+                    break
+            try:
+                return smooth(attempt)
+            except ValueError as exc:
+                last = str(exc)
+    raise ValueError(last)
 
 
 def smooth_and_validate(
@@ -364,6 +708,15 @@ def staging_candidates(station, spec, safe, blocked, distance):
     return result
 
 
+def chain_successor(source, target, chains):
+    """Return the stop visited after ``target`` on a ``source -> target`` leg."""
+    for chain in chains:
+        for before, current, after in zip(chain, chain[1:], chain[2:]):
+            if before == source and current == target:
+                return after
+    return None
+
+
 def chain_predecessor(source, target, chains):
     """Return the stop visited before ``source`` on a ``source -> target`` leg."""
     for chain in chains:
@@ -407,18 +760,22 @@ def build_connection(
 
     attempts = []
     winner = None
+    valid = []
 
     for source_dir, source in source_options.items():
         if not source["available"]:
             continue
-        preferred_source = required_departure_entrance(
-            source_name,
-            target_name,
-            getattr(args, "known_routes", {}),
-            getattr(args, "mission_chains", []),
-            getattr(args, "departure_entrances", {}),
-            getattr(args, "pass_through", ()),
-        )
+        # A gate variant leaves by a fixed gate; otherwise the mission
+        # chain decides the gate this station is normally left by.
+        preferred_source = getattr(args, "force_source_gate", None) or (
+            required_departure_entrance(
+                source_name,
+                target_name,
+                getattr(args, "known_routes", {}),
+                getattr(args, "mission_chains", []),
+                getattr(args, "departure_entrances", {}),
+                getattr(args, "pass_through", ()),
+            ))
         if preferred_source is not None and source_dir != preferred_source:
             continue
 
@@ -440,23 +797,20 @@ def build_connection(
                     target["pose"][2]
                 )
 
-                cells = constrained_astar(
+                candidate = smooth_lead_out(
                     start,
                     goal,
                     safe,
                     required,
-                    clearance_map=getattr(args, "clearance_map", None),
-                    clearance_weight=getattr(args, "clearance_bias", 0.0)
-                )
-
-                candidate = smooth_and_validate(
-                    cells,
-                    spec,
-                    safe,
-                    occupancy_spec,
-                    blocked,
-                    args.corner_trim,
-                    args.max_curvature
+                    direction_index(source["pose"][2]),
+                    int(math.ceil(args.corner_trim / float(spec["resolution"]))) + 1,
+                    lambda cells: smooth_and_validate(
+                        cells, spec, safe, occupancy_spec, blocked,
+                        args.corner_trim, args.max_curvature),
+                    final_run=int(math.ceil(FINAL_STRAIGHT_M / float(spec["resolution"]))),
+                    centre_cost=getattr(args, "centre_cost", None),
+                    centre_weight=getattr(args, "centre_weight", 0.0),
+                    corner_penalty=CORNER_PENALTY_M / float(spec["resolution"])
                 )
 
                 if heading_error(
@@ -506,6 +860,7 @@ def build_connection(
                     "terminal_heading_validated": True,
                 })
 
+                valid.append(candidate)
                 if (
                     winner is None
                     or candidate["length_m"] <
@@ -517,14 +872,19 @@ def build_connection(
                 # Clearance bias must not destroy an otherwise valid legacy
                 # corridor. Retry the same entrance pair without the soft
                 # preference; hard clearance and footprint checks remain.
-                if getattr(args, "clearance_bias", 0.0) > 0.0:
+                if getattr(args, "centre_weight", 0.0) > 0.0:
                     try:
-                        cells = constrained_astar(
+                        candidate = smooth_lead_out(
                             start, goal, safe, required,
-                            clearance_map=None, clearance_weight=0.0)
-                        candidate = smooth_and_validate(
-                            cells, spec, safe, occupancy_spec, blocked,
-                            args.corner_trim, args.max_curvature)
+                            direction_index(source["pose"][2]),
+                            int(math.ceil(args.corner_trim /
+                                          float(spec["resolution"]))) + 1,
+                            lambda cells: smooth_and_validate(
+                                cells, spec, safe, occupancy_spec, blocked,
+                                args.corner_trim, args.max_curvature),
+                            final_run=int(math.ceil(FINAL_STRAIGHT_M /
+                                                    float(spec["resolution"]))),
+                            centre_cost=None, centre_weight=0.0)
                         departure_error = min(
                             heading_error(candidate["poses"][0][2], source["pose"][2]),
                             abs(math.pi - heading_error(
@@ -546,6 +906,7 @@ def build_connection(
                             "departure_heading_error_deg": round(
                                 math.degrees(departure_error), 2),
                         })
+                        valid.append(candidate)
                         if winner is None or candidate["length_m"] < winner["length_m"]:
                             winner = candidate
                         attempts.append(attempt)
@@ -555,6 +916,24 @@ def build_connection(
                 attempt["reason"] = str(exc)
 
             attempts.append(attempt)
+
+    # In a mission chain the arrival gate decides how the next leg leaves
+    # (same-gate rule), so choose it for this leg plus the next leg out of
+    # it: a slightly shorter arrival must not force a much longer departure.
+    after = chain_successor(source_name, target_name, getattr(args, "mission_chains", []))
+    if (winner is not None and after is not None and
+            not getattr(args, "_lookahead", False) and
+            getattr(args, "force_source_gate", None) is None and
+            target_name not in getattr(args, "pass_through", ())):
+        onward = {}
+        for gate in {candidate["target_entrance"] for candidate in valid}:
+            look = argparse.Namespace(**vars(args))
+            look._lookahead, look.force_source_gate = True, gate
+            nxt = build_connection(target_name, after, nodes, spec, safe,
+                                   occupancy_spec, blocked, look)
+            onward[gate] = nxt["best"]["length_m"] if nxt.get("best") else float("inf")
+        winner = min(valid, key=lambda c: c["length_m"] + onward[c["target_entrance"]])
+        winner["chain_lookahead_m"] = round(onward[winner["target_entrance"]], 2)
 
     if winner is None:
         return {
@@ -620,10 +999,11 @@ def main():
     )
 
     ap.add_argument(
-        "--clearance-bias",
+        "--centre-weight",
         type=float,
-        default=0.05,
-        help="A* preference for the center of free corridors (0 disables it)"
+        default=CENTRE_WEIGHT,
+        help="A* cost per cell at an obstacle for leaving the centre line of "
+             "free space (0 disables the preference)"
     )
 
     ap.add_argument(
@@ -641,6 +1021,20 @@ def main():
     )
 
     ap.add_argument(
+        "--gate-variants",
+        action="store_true",
+        help="Keep every saved route and add one route per other gate a station "
+             "can be left by (a robot leaves by the gate it entered by)"
+    )
+
+    ap.add_argument(
+        "--approaches",
+        default=str(Path(__file__).resolve().parents[1] /
+                    "mission_approaches/entrance_candidates.json"),
+        help="Station approaches; a gate needs one to be entered and left by"
+    )
+
+    ap.add_argument(
         "--approve-regenerated",
         action="store_true",
         help="Mark routes regenerated by --only as approved for execution"
@@ -655,8 +1049,8 @@ def main():
         args.max_curvature
     ) <= 0:
         ap.error("Planning distances/limits must be positive")
-    if args.clearance_bias < 0:
-        ap.error("Clearance bias must be non-negative")
+    if args.centre_weight < 0:
+        ap.error("Centre weight must be non-negative")
 
     started = time.monotonic()
 
@@ -672,9 +1066,7 @@ def main():
     occupancy_spec, blocked = load_occupancy(
         args.map
     )
-    args.clearance_map = (
-        distance_transform_edt(~blocked) * float(spec["resolution"])
-    )
+    args.centre_cost = centre_cost_map(blocked, float(occupancy_spec["resolution"]))
 
     home_cell = p.cell(
         args.home,
@@ -763,7 +1155,7 @@ def main():
         "stations": names,
         "staging_distance_m": args.staging_distance,
         "clearance_radius_m": args.clearance,
-        "clearance_bias": args.clearance_bias,
+        "centre_weight": args.centre_weight,
         "nodes": nodes,
         # Stops without a stand; the robot may leave them by any gate.
         "pass_through": list(args.pass_through),
@@ -811,6 +1203,33 @@ def main():
 
     print("\nGENERATING ROUTES")
 
+    if args.gate_variants:
+        if previous is None:
+            raise ValueError("--gate-variants needs an existing route_database.json")
+        for name in ("routes", "execution_approved", "summary"):
+            database[name] = previous[name]
+        approaches = json.loads(Path(args.approaches).read_text())["candidates"]
+        gates = {}
+        for key in approaches:
+            station, gate = key.rsplit("__", 1)
+            gates.setdefault(station, []).append(gate)
+        args.variants = []
+        for source in names:
+            if source in args.pass_through:
+                continue  # left by any gate already
+            for gate in sorted(gates.get(source, [])):
+                for target in names:
+                    primary = previous["routes"].get(f"{source}__TO__{target}", {})
+                    if target == source or primary.get("source_entrance") == gate:
+                        continue
+                    args.variants.append(
+                        (source, target, f"{source}__{gate}__TO__{target}", gate))
+        if args.only:
+            # Replan only the named gate variants; every other route is kept.
+            args.variants = [v for v in args.variants if v[2] in args.only]
+            args.only = []
+        total = len(args.variants)
+
     if args.only:
         if previous is None:
             raise ValueError("--only needs an existing route_database.json")
@@ -826,13 +1245,29 @@ def main():
     chained = [pair for chain in args.mission_chains
                for pair in zip(chain, chain[1:])]
     ordered = chained + [(a, b) for a in names for b in names if a != b]
-    planned = list(dict.fromkeys(ordered))
+    planned = [(a, b, f"{a}__TO__{b}", None) for a, b in dict.fromkeys(ordered)]
+    if args.gate_variants:
+        planned = args.variants
 
-    for source, target in planned:
+    # Gate variants do not depend on each other: build them on every core.
+    precomputed = {}
+    if args.gate_variants and len(planned) > 1:
+        import os
+        from concurrent.futures import ProcessPoolExecutor
+        with ProcessPoolExecutor(max_workers=os.cpu_count()) as pool:
+            jobs = {}
+            for source, target, key, forced_gate in planned:
+                job_args = argparse.Namespace(**vars(args))
+                job_args.force_source_gate = forced_gate
+                jobs[key] = pool.submit(build_connection, source, target, nodes, spec,
+                                        safe, occupancy_spec, blocked, job_args)
+            precomputed = {key: job.result() for key, job in jobs.items()}
+
+    for source, target, key, forced_gate in planned:
         if True:
-            key = f"{source}__TO__{target}"
             if args.only and key not in args.only:
                 continue
+            args.force_source_gate = forced_gate
 
             number += 1
 
@@ -842,7 +1277,7 @@ def main():
                 flush=True
             )
 
-            result = build_connection(
+            result = precomputed.get(key) or build_connection(
                 source,
                 target,
                 nodes,
@@ -860,6 +1295,8 @@ def main():
                 "attempts": result["attempts"],
                 "execution_approved": False
             }
+            if forced_gate is not None:
+                entry["gate_variant_of"] = f"{source}__TO__{target}"
             approve_new = bool(args.only and args.approve_regenerated)
 
             if result["status"] == (
@@ -915,7 +1352,7 @@ def main():
             database["routes"][key] = entry
             args.known_routes[key] = entry
 
-    if args.only:
+    if args.only or args.gate_variants:
         accepted = sum(
             route.get("status") == "VALIDATED_STATIC_CANDIDATE"
             for route in database["routes"].values())

@@ -39,6 +39,14 @@ def boxes_overlap(first, second, *, margin=0.0):
         raise ValueError('Margin must be finite and nonnegative')
     if first.z_max + margin < second.z_min or second.z_max + margin < first.z_min:
         return False
+    # Broad phase: each box lies inside a circle of radius hypot(half_x,
+    # half_y); disjoint circles mean disjoint boxes. Exact, and it skips the
+    # trigonometry for the far-away pairs that make up most of a scene.
+    reach = (math.hypot(first.half_x, first.half_y) +
+             math.hypot(second.half_x, second.half_y) + margin)
+    dx, dy = second.x - first.x, second.y - first.y
+    if dx * dx + dy * dy > reach * reach:
+        return False
     first_axes = ((math.cos(first.yaw), math.sin(first.yaw)),
                   (-math.sin(first.yaw), math.cos(first.yaw)))
     second_axes = ((math.cos(second.yaw), math.sin(second.yaw)),

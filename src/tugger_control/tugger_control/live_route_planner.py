@@ -13,14 +13,14 @@ from pathlib import Path
 
 class LiveRoutePlanner:
     def __init__(self, tools_dir, map_yaml, *, world=None, clearance=1.05, corner_trim=1.0,
-                 max_curvature=2.5, clearance_bias=0.05):
+                 max_curvature=2.5, centre_weight=None):
         self.tools_dir = Path(tools_dir)
         self.map_yaml = Path(map_yaml)
         self.world = Path(world) if world is not None else None
         self.clearance = clearance
         self.corner_trim = corner_trim
         self.max_curvature = max_curvature
-        self.clearance_bias = clearance_bias
+        self.centre_weight = centre_weight
         self._lock = threading.Lock()
         self._ready = None
 
@@ -46,9 +46,9 @@ class LiveRoutePlanner:
                     resolution = float(spec['resolution'])
                     safe = safe & (distance_transform_edt(~keep_out) * resolution > self.clearance)
                     blocked = blocked | keep_out[:blocked.shape[0], :blocked.shape[1]]
-                clearance_map = distance_transform_edt(~blocked) * float(spec['resolution'])
+                centre_cost = generator.centre_cost_map(blocked, float(spec['resolution']))
                 self._ready = (grid, generator, spec, safe, occupancy_spec, blocked,
-                               clearance_map, boxes)
+                               centre_cost, boxes)
             return self._ready
 
     @staticmethod
@@ -88,7 +88,7 @@ class LiveRoutePlanner:
 
         Returns ``(poses, entry)``; raises ValueError if no entry is reachable.
         """
-        grid, generator, spec, safe, occupancy_spec, blocked, clearance_map, boxes = self._load()
+        grid, generator, spec, safe, occupancy_spec, blocked, centre_cost, boxes = self._load()
         start = grid.cell([start_pose[0], start_pose[1]], spec, safe.shape)
         if not safe[start[1], start[0]]:
             raise ValueError('robot position is outside the clearance-safe planning map')
@@ -102,12 +102,21 @@ class LiveRoutePlanner:
                 break
             try:
                 goal = grid.cell([entry[0], entry[1]], spec, safe.shape)
-                cells = generator.constrained_astar(
+                # Leave along the robot's body axis (forward or reverse): a
+                # car-like 4WS robot cannot start a sideways first move.
+                weight = (generator.CENTRE_WEIGHT if self.centre_weight is None
+                          else self.centre_weight)
+                candidate = generator.smooth_lead_out(
                     start, goal, safe, generator.direction_index(entry[2]),
-                    clearance_map=clearance_map, clearance_weight=self.clearance_bias)
-                candidate = generator.smooth_and_validate(
-                    cells, spec, safe, occupancy_spec, blocked,
-                    self.corner_trim, self.max_curvature)
+                    generator.direction_index(start_pose[2]),
+                    int(math.ceil(self.corner_trim / float(spec['resolution']))) + 1,
+                    lambda cells: generator.smooth_and_validate(
+                        cells, spec, safe, occupancy_spec, blocked,
+                        self.corner_trim, self.max_curvature),
+                    final_run=int(math.ceil(generator.FINAL_STRAIGHT_M /
+                                            float(spec['resolution']))),
+                    centre_cost=centre_cost, centre_weight=weight,
+                    corner_penalty=generator.CORNER_PENALTY_M / float(spec['resolution']))
                 self._audit(candidate['poses'], boxes)
                 if best is None or candidate['length_m'] < best[0]['length_m']:
                     best = (candidate, entry)

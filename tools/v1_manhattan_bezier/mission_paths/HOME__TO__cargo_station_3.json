@@ -6022,10 +6022,12 @@
   "surrounding_obstacle_clearance": "PASSED (401 sampled poses, unloaded)",
   "audit": {
    "loaded": false,
+   "states": {
+    "unloaded": true
+   },
    "passed": true,
    "samples": 401,
-   "first_collision": null,
-   "sample_index": null
+   "first_collision": null
   }
  }
 }

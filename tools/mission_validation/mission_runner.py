@@ -24,6 +24,7 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, qos_profile_sensor_data
 from std_msgs.msg import Float64MultiArray, String
 
 from tugger_control.operator_panel import OperatorBridge, OperatorPanel
+from tugger_control.cargo_policy import DROPOFF_CARGO, PICKUP_CARGO
 
 STATION_CENTERS = {
     'cargo_station_0': (-17.5, -7.0), 'cargo_dropoff_northwest': (-17.5, 7.0),
@@ -154,6 +155,7 @@ class Runner:
         self.disturb_owner = 'CAMERA'
         self.disturb_delay = 0.0     # seconds after that owner takes over
         self.current_destination = None
+        self.confirm_warnings = False
         self._owner_since = (None, 0.0)
         self._disturbed = False
         self.reports = []
@@ -177,6 +179,9 @@ class Runner:
                                      approach_provider=approach,
                                      station_layout=panel._routes.database,
                                      live_planner=live_planner)
+        self.bridge._candidate_provider = lambda destination: (
+            self._with_trials(self.mission_paths.paths_to(destination)),
+            self.entries.get(destination, []))
         self.recorder = Recorder()
         self.recorder.pose_lookup = self.bridge._robot_pose
         self.executor = SingleThreadedExecutor()
@@ -280,6 +285,7 @@ class Runner:
         With moved, cancel once the robot is that far from where RUN was
         pressed (seconds is then only a time limit).
         """
+        destination = destination.partition(':')[0]
         self.finished, self.planned = None, False
         self.bridge.execute_destination(
             destination, self.mission_paths.paths_to(destination),
@@ -318,7 +324,41 @@ class Runner:
         self.spin_until(lambda: False, 20.0)
         self.bridge.docked_station = None
 
+    def _with_trials(self, candidates):
+        """Approve --trial-route paths in memory only, wherever paths are read."""
+        for key, route, _poses in candidates:
+            if key in self.trial_routes or key.replace(' (reversed)', '') in self.trial_routes:
+                route['execution_approved'] = True
+                route['_database_execution_approved'] = True
+        return candidates
+
+    def in_place(self, destination, action):
+        """ATTACH/DETACH at the station the robot is docked at, as an operator would."""
+        self.current_destination = destination
+        self.finished = None
+        self.recorder.reset()
+        wall = time.monotonic()
+        self.bridge._motion_armed = True
+        self.bridge.select_cargo_action(action)
+        self.spin_until(lambda: self.finished is not None, 300)
+        outcome = ('SUCCESS' if self.finished and self.finished[0] else
+                   'NOT_STARTED' if self.finished is None else 'FAILED')
+        print(f'{destination}:{action}-in-place {outcome}', flush=True)
+        return {'destination': f'{destination}:{action} (in place)', 'outcome': outcome,
+                'wall_s': time.monotonic() - wall, 'phases': {}, 'reports': [],
+                'guard_events': [], 'cargo': None, 'final_pose': self.recorder.pose,
+                'center_error_m': 0.0}
+
     def mission(self, destination):
+        # "station:attach", "station:detach" or "station:none"; without a
+        # suffix the standard choice is used (attach at a pickup station,
+        # detach at a drop-off, nothing at HOME), as an operator would pick.
+        destination, _, action = destination.partition(':')
+        if action in ('attach', 'detach') and self.bridge.docked_station == destination:
+            return self.in_place(destination, action)
+        if not action:
+            action = ('attach' if destination in PICKUP_CARGO else
+                      'detach' if destination in DROPOFF_CARGO else 'none')
         self.current_destination = destination
         self.finished, self.planned = None, False
         self.recorder.reset()
@@ -326,18 +366,16 @@ class Runner:
         wall = time.monotonic()
         result = {'destination': destination, 'outcome': 'NOT_RUN'}
         # Test only: hide preplanned paths so the live planner must run.
-        candidates = [] if self.force_live else self.mission_paths.paths_to(destination)
-        for key, route, _poses in candidates:
-            if key in self.trial_routes:
-                # In memory only, for this validation run. Files stay unapproved.
-                route['execution_approved'] = True
-                route['_database_execution_approved'] = True
+        candidates = [] if self.force_live else self._with_trials(
+            self.mission_paths.paths_to(destination))
         self.bridge.start_mission(
             destination, candidates, self.entries.get(destination, []))
         if not self.spin_until(lambda: self.planned, 180):
             result['outcome'] = 'NO_PLAN'
         else:
             self.bridge._motion_armed = True
+            if action != 'none':
+                self.bridge.select_cargo_action(action)
             deadline = time.monotonic() + self.timeout
             # A loaded departure asks for a new RUN at staging, as for an operator.
             # Press RUN once, like an operator; the panel continues by itself
@@ -346,7 +384,16 @@ class Runner:
             while self.finished is None and time.monotonic() < deadline:
                 self.planned = False
                 if first or not self._busy():
+                    confirm = getattr(self.bridge, '_mission_confirm', None)
+                    was_confirmed = confirm is not None and confirm['confirmed']
                     self.bridge.run_selected_mission_with_retry(True)
+                    confirm = getattr(self.bridge, '_mission_confirm', None)
+                    if (self.confirm_warnings and confirm is not None and
+                            confirm['confirmed'] and not was_confirmed):
+                        # The first RUN showed a warning; confirm it as an
+                        # operator would, with a second RUN.
+                        print('confirming the warning with a second RUN', flush=True)
+                        self.bridge.run_selected_mission_with_retry(True)
                 first = False
                 idle_limit = time.monotonic() + 120.0
                 while (self.finished is None and not self.planned and
@@ -464,7 +511,8 @@ def sweep(runner, args):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('destinations', nargs='*', choices=[*sorted(STATION_CENTERS), []])
+    parser.add_argument('destinations', nargs='*',
+                        help='stations in order, each optionally :attach, :detach or :none')
     parser.add_argument('--sweep', choices=sorted(STATION_CENTERS),
                         help='segment-2 handover sweep at this station')
     parser.add_argument('--offsets', nargs='*', default=['0:0'],
@@ -483,6 +531,8 @@ def main():
                         help='test only: cancel the mission with this index (0-based)')
     parser.add_argument('--cancel-when-moved', type=float, default=0.4,
                         help='with --cancel-index: cancel once the robot moved this far (m)')
+    parser.add_argument('--confirm-warnings', action='store_true',
+                        help='test only: press RUN a second time when a warning is shown')
     parser.add_argument('--teleport', nargs=3, type=float, metavar=('X', 'Y', 'YAW'),
                         help='move the robot here (isolated world only) before missions')
     parser.add_argument('--disturb-camera', nargs=3, type=float, metavar=('DX', 'DY', 'DYAW'),
@@ -516,6 +566,7 @@ def main():
     destinations = list(args.destinations)
     runner.force_live = args.force_live
     runner.disturb = tuple(args.disturb_camera) if args.disturb_camera else None
+    runner.confirm_warnings = args.confirm_warnings
     runner.disturb_at = args.disturb_at
     runner.disturb_owner = args.disturb_owner
     runner.disturb_delay = args.disturb_delay

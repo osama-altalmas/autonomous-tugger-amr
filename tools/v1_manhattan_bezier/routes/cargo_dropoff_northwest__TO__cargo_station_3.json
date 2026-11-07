@@ -1,6 +1,6 @@
 {
   "version": "AMR_V1_SAVED_ROUTE",
-  "map_sha256": "7455e51ecdfb1f4c853776f69cabaf7981283228b0ee0fdb09fe1a0b435d2d29",
+  "map_sha256": "59caec8bc4b5189fe73f5129ccaf590b47daee35e67ddc0aa676841dd131d9a3",
   "source": "cargo_dropoff_northwest",
   "target": "cargo_station_3",
   "poses": [
@@ -6240,8 +6240,8 @@
     7.025000000000002,
     0.0
   ],
-  "departure_heading_error_deg": 180.0,
-  "departure_transition_validated": false,
+  "departure_heading_error_deg": 0.0,
+  "departure_transition_validated": true,
   "terminal_heading_validated": true,
   "execution_approved": true
 }
