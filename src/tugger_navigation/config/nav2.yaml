@@ -79,7 +79,10 @@ controller_server:
     goal_checker:
       plugin: "nav2_controller::SimpleGoalChecker"
       stateful: true
-      xy_goal_tolerance: 0.10
+      # 15 cm: arriving later let the follower over-correct a few centimetres
+      # of offset at crawling speed, swinging the heading past 20 degrees in
+      # the last 15 cm. The next stage accepts a start up to 25 cm away.
+      xy_goal_tolerance: 0.15
       # 15 degrees. A car-like robot cannot correct heading standing still:
       # with 5 degrees it arrived within 1 cm but 5.4 degrees off, shuffled
       # at 5 cm/s until the progress checker aborted the leg. The next stage
