@@ -2,12 +2,15 @@
 
 Run one terminal per component. Do not start duplicates.
 
+On another computer, replace `~/Autonomous_Tugger_Project_V2/autonomous_tugger_ws`
+with the folder you cloned into. For install and build steps, see `README.md`.
+
 Every terminal uses Cyclone DDS (`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`), as
 Nav2 recommends. All terminals must use the same setting, including the `ros2`
 checks in T8; a terminal without it may not see the others.
 
 Start order: **Step 0 → T1 → T2 → T3 → T4 → T8 map activation → T4b → T5 → T8 checks → T6**.
-T6b, T7 and T9 are optional.
+T6b, T7, T9 and T10 are optional.
 
 ## Step 0 — Start clean (every session)
 
@@ -42,7 +45,7 @@ Wait until all four controllers report `activate successful`. The lift's hard
 stops sit outside its working range, so it cannot latch on a limit in Gazebo
 (DART bug gazebosim/gz-sim#2785); no lift command is needed at startup.
 
-## T2 — 4WS, odometry, EKF, QR vision, docking controller, motion guard
+## T2 — Robot software (4WS, odometry, EKF, scan merger, safety, obstacles, QR vision, docking, motion gate)
 
 ```bash
 cd ~/Autonomous_Tugger_Project_V2/autonomous_tugger_ws
@@ -116,6 +119,10 @@ source install/setup.bash
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 ros2 run rqt_gui rqt_gui -s tugger_control
 ```
+
+In the panel: tick **Arm**, press **Check / plan Station N** (or HOME), optionally
+**ATTACH** or **DETACH**, then **RUN selected mission**. After a safety stop, clear
+the cause and press **Reset safety**.
 
 ## T6b — Camera windows and spectator (optional, for watching or recording)
 
@@ -206,6 +213,22 @@ ros2 run rqt_image_view rqt_image_view
 
 Select `/downward_camera/image_raw`, then `/qr_docking/debug_image`.
 
+## T10 — Test obstacles (optional)
+
+Run these while a simulation is up. Positions suit the mission HOME to Station 3.
+
+```bash
+cd ~/Autonomous_Tugger_Project_V2/autonomous_tugger_ws
+source /opt/ros/lyrical/setup.bash
+source install/setup.bash
+export GZ_IP=127.0.0.1
+python3 tools/mission_view/scene_objects.py block   # box in the side lane: robot takes another aisle
+python3 tools/mission_view/scene_objects.py box     # box in the middle aisle at x = 12: robot goes around
+python3 tools/mission_view/scene_objects.py cross   # a person crosses at x = 7 and leaves
+python3 tools/mission_view/scene_objects.py pace    # a person keeps crossing; Ctrl+C to stop
+python3 tools/mission_view/scene_objects.py clear   # remove them all
+```
+
 ## Required Nav2 controller check
 
 T5 must provide exactly these two FollowPath action servers:
@@ -221,14 +244,13 @@ the 4WS controller.
 
 Speed profile:
 
-- Normal straight route: Nav2 requests up to **1.2 m/s**.
-- Normal curves: the motion gate caps genuine curves at **0.6 m/s** while
-  preserving the requested curvature.
-- Docking approach: Nav2 requests up to **0.35 m/s**; the motion gate limit is **0.4 m/s**.
-  The gate slows the robot near stand legs using its stopping-distance check.
-- Final camera correction: capped at **0.05 m/s** for 10 mm settling, loaded or not.
-- Loaded departure: `DepartureFollowPath` requests up to **0.45 m/s**, under the
-  **0.5 m/s** gate limit, and remains subject to the loaded stopping-distance guard.
+- Straight route: up to **1.0 m/s** (0.95 m/s loaded).
+- Curves: the motion gate caps genuine curves at **0.6 m/s** while preserving
+  the requested curvature.
+- Station approach and departure: **0.3 m/s**. The gate slows the robot further
+  near stand legs using its stopping-distance check.
+- Final camera correction: capped at **0.05 m/s**, loaded or not.
+- Warning field occupied: **0.3 m/s**. Protective field occupied: stop.
 
 ## Paths
 
@@ -252,9 +274,10 @@ source /opt/ros/lyrical/setup.bash
 colcon build --packages-select tugger_control tugger_navigation --symlink-install
 ```
 
-T2 starts `qr_docking_vision`, `docking_precision_controller`, and
-`tugger_sim_motion_gate`. The docking controller accepts only
-`/tugger/docking/cmd_vel`, verifies fresh docking ownership, and forwards to
-`/tugger/precision_cmd_vel`. Do not start these nodes separately.
-new angular velocity = old angular velocity × reduced speed / requested speed
+T2 starts every robot node, including `qr_docking_vision`,
+`docking_precision_controller`, `safety_monitor`, `obstacle_monitor` and
+`tugger_sim_motion_gate`. Do not start these separately. The docking controller
+accepts only `/tugger/docking/cmd_vel`, verifies fresh docking ownership, and
+forwards to `/tugger/precision_cmd_vel`.
+
 Do not start a second ground-truth bridge, map server, Nav2 launch, or operator panel.
