@@ -19,7 +19,9 @@ alignment, departures, turning in place), AMCL's update thresholds are raised,
 so it carries the pose forward on odometry from the exact landmark fix taken
 at the stop before, instead of pulling it back toward its centimetre-level
 laser estimate under the stand. It keeps publishing its transform; the
-normal thresholds return when the stage ends.
+normal thresholds return when the stage ends. A plain route that only passes
+through a zone keeps the normal thresholds: suspending them there made AMCL
+absorb metres of travel in one update and jump along the aisle when it left.
 """
 import json
 import math
@@ -30,7 +32,7 @@ import rclpy
 from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
 from nav_msgs.msg import Odometry
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rcl_interfaces.msg import Parameter as ParameterMsg, ParameterType, ParameterValue
@@ -54,6 +56,11 @@ MIN_INTERVAL_S = 0.5
 # enough to keep particle diversity for the drive that follows.
 POSITION_STD_M = 0.02
 YAW_STD_RAD = 0.035
+
+
+def suspend_laser_updates(near_station, route_transit):
+    """Suspend only at a station the robot is working at, not one it passes."""
+    return near_station and not route_transit
 
 
 def _yaw(q):
@@ -167,6 +174,9 @@ class MarkerLocalization(Node):
         # like an inconsistent measurement, so fixes pause while it runs.
         self._owner = 'STOP'
         self.create_subscription(String, '/tugger/motion_owner', self._on_owner, 10)
+        self._route_transit = False
+        self.create_subscription(Bool, '/tugger/localization/route_transit',
+                                 self._on_route_transit, 10)
         self._amcl_params = self.create_client(SetParameters, '/amcl/set_parameters')
         self._station_mode = None
         self._centres = [(sum(p[0] for p in legs) / len(legs), sum(p[1] for p in legs) / len(legs))
@@ -239,6 +249,9 @@ class MarkerLocalization(Node):
     def _on_owner(self, msg):
         self._owner = msg.data
 
+    def _on_route_transit(self, msg):
+        self._route_transit = bool(msg.data)
+
     def _zone_tick(self):
         """Station zone by position: AMCL rides on odometry near stands."""
         try:
@@ -246,10 +259,12 @@ class MarkerLocalization(Node):
         except Exception:
             return
         x, y = t.transform.translation.x, t.transform.translation.y
-        station = any(math.hypot(x - cx, y - cy) <= STATION_ZONE_M
-                      for cx, cy in self._centres)
+        near = any(math.hypot(x - cx, y - cy) <= STATION_ZONE_M for cx, cy in self._centres)
+        station = suspend_laser_updates(near, self._route_transit)
         if station != self._station_mode and self._amcl_params.service_is_ready():
             self._station_mode = station
+            self.get_logger().info(f'laser updates {"suspended" if station else "active"} '
+                                   f'at ({x:.2f}, {y:.2f})')
             # Normal thresholds as in amcl.yaml; huge ones in the station zone.
             distance, angle = (100.0, 100.0) if station else (0.10, 0.08)
             request = SetParameters.Request()

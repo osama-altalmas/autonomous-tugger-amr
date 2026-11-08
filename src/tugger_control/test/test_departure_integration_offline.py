@@ -172,7 +172,7 @@ def panel_test_class():
         'math': math, 'json': json,
         'NavPath': NavPath,
         'entrance_gate': entrance_gate, 'routes_from_gate': routes_from_gate,
-        'String': Message,
+        'String': Message, 'Bool': Message,
         'plan_station_departure': plan_station_departure,
         'plan_is_current': plan_is_current,
         'GoalStatus': SimpleNamespace(STATUS_ABORTED=6),
@@ -347,6 +347,7 @@ def test_departure_handshake_timeout_is_fail_closed():
 def test_owner_arbitration_favors_loaded_departure_and_stops_when_disarmed():
     gui = panel_fixture()
     gui._motion_owner_pub = Mock()
+    gui._route_transit_pub = Mock()
     gui._departure_pending = {'started': time_value(10)}
     gui._qr_alignment_active = False
     gui._follow_goal_pending = False

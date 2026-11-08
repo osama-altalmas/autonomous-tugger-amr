@@ -112,3 +112,10 @@ def test_too_few_legs_give_no_fix():
     from tugger_control.marker_localization import leg_fix
     legs = [(-18.06, -7.56, 0.04), (-16.94, -7.56, 0.04)]
     assert leg_fix((-15.5, -7.0, math.pi), _leg_scan((-15.5, -7.0, math.pi), legs), legs) is None
+
+
+def test_laser_updates_stay_on_when_a_route_only_passes_a_station():
+    from tugger_control.marker_localization import suspend_laser_updates
+    assert suspend_laser_updates(True, False)        # working at the station
+    assert not suspend_laser_updates(True, True)     # a route passing through
+    assert not suspend_laser_updates(False, False)   # open floor
