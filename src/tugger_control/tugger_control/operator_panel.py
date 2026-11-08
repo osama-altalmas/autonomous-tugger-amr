@@ -219,6 +219,10 @@ class OperatorBridge(Node):
         self._precision_cmd_pub = self.create_publisher(
             TwistStamped, '/tugger/docking/cmd_vel', 10)
         self._motion_owner_pub = self.create_publisher(String, '/tugger/motion_owner', 10)
+        # True while driving a plain route: localization keeps its laser updates
+        # even when the route passes close to a station or HOME.
+        self._route_transit_pub = self.create_publisher(
+            Bool, '/tugger/localization/route_transit', 10)
         self._rotate_pub = self.create_publisher(TwistStamped, '/tugger/rotate_cmd_vel', 10)
         self._initial_pose_pub = self.create_publisher(
             PoseWithCovarianceStamped, '/initialpose', 10)
@@ -1436,6 +1440,9 @@ class OperatorBridge(Node):
         message = String()
         message.data = owner
         self._motion_owner_pub.publish(message)
+        transit = Bool()
+        transit.data = owner == 'NAV' and getattr(self, '_mission_phase', None) == 'route'
+        self._route_transit_pub.publish(transit)
 
     def _qr_id(self, message):
         if (self._qr_alignment_active and

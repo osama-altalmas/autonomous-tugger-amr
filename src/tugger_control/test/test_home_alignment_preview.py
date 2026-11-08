@@ -234,6 +234,7 @@ def test_run_cannot_start_another_mission_during_active_navigation():
 def test_motion_owner_follows_armed_active_stage_and_stops_on_cancel():
     bridge = _bridge()
     bridge._motion_owner_pub = Mock()
+    bridge._route_transit_pub = Mock()
     bridge._motion_armed = True
     bridge._follow_goal_pending = True
     OperatorBridge._publish_motion_owner(bridge)
@@ -779,6 +780,7 @@ def test_missing_docking_guard_times_out_without_following():
 def test_precision_owner_uses_separate_guarded_channels():
     bridge = _bridge()
     bridge._motion_owner_pub = Mock()
+    bridge._route_transit_pub = Mock()
     bridge._motion_armed = True
     bridge._dock_precision_mode = True
     bridge._stage_validation_pending = True
