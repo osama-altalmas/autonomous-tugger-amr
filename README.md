@@ -9,7 +9,7 @@ delivers the cargo, and reacts to unexpected obstacles. No physical robot exists
 > run and explain the project without reading the source. Use
 > [Where to change things](#where-to-change-things) to go straight to the right
 > file. [TERMINAL_COMMANDS.md](TERMINAL_COMMANDS.md) has the full per-terminal
-> startup with checks. Work on the `nav2-development` branch; `main` is older.
+> startup with checks.
 
 ## Status
 
@@ -54,7 +54,7 @@ vendor packages and are importable only after sourcing ROS.
 ## Build
 
 ```bash
-git clone -b nav2-development https://github.com/osama-altalmas/autonomous-tugger-amr.git autonomous_tugger_ws
+git clone https://github.com/osama-altalmas/autonomous-tugger-amr.git autonomous_tugger_ws
 cd autonomous_tugger_ws
 source /opt/ros/lyrical/setup.bash
 colcon build --symlink-install
