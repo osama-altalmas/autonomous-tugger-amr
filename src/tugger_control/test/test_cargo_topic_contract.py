@@ -18,7 +18,7 @@ from tugger_control.sim_motion_gate import SimMotionGate
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_ground_truth_publisher_and_both_consumers_share_valid_ros_topics():
+def test_cargo_estimator_and_both_consumers_share_valid_ros_topics():
     """Exercise actual subscription constructors with native ROS validation."""
     captured = []
 
@@ -45,8 +45,11 @@ def test_ground_truth_publisher_and_both_consumers_share_valid_ros_topics():
         OperatorBridge(Mock(), Mock(), Mock())
         SimMotionGate()
 
-    source = (ROOT / 'tugger_ground_truth/src/ground_truth_bridge.cpp').read_text()
-    published = re.findall(r'"(/tugger/cargo/[^\"]+/ground_truth_pose)"', source)
+    # Phase B4: cargo poses are the robot's own estimate, not simulator truth.
+    source = (ROOT / 'tugger_control/tugger_control/cargo_estimator.py').read_text()
+    pattern = re.findall(r"f'(/tugger/cargo/station_\{cargo_id\}/estimated_pose)'", source)
+    assert pattern
+    published = [pattern[0].replace('{cargo_id}', str(cargo)) for cargo in (0, 3)]
     assert len(published) == 2
     for topic in published:
         validate_topic_name(topic)

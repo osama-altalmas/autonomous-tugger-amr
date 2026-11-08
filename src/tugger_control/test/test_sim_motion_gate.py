@@ -14,7 +14,7 @@ from rclpy.time import Time
 
 from tugger_control.clearance_2_5d import Box
 from tugger_control.sim_motion_gate import (
-    SimMotionGate, payload_at_time, payload_for_robot_pose, scene_time)
+    SimMotionGate, payload_at_time, scene_time)
 
 
 def gate(obstacles=()):
@@ -37,6 +37,11 @@ def gate(obstacles=()):
     )
     item._stopping_curvature = lambda v, omega, now: SimMotionGate._stopping_curvature(
         item, v, omega, now)
+    # The safety monitor reports a clear field unless a test says otherwise.
+    item._safety = {'state': 'CLEAR', 'limit': 1.0, 'reason': ''}
+    item._safety_at = 9.95
+    item._apply_safety = lambda output, now: SimMotionGate._apply_safety(item, output, now)
+    item._loaded_arcs = lambda v, omega, now: SimMotionGate._loaded_arcs(item, v, omega, now)
     return item
 
 
@@ -65,8 +70,8 @@ def test_loaded_route_uses_unloaded_straight_and_curve_speed_profile():
     item._requests['NAV'].twist.angular.z = 0.0
     SimMotionGate._tick(item)
     result = item._output.publish.call_args.args[0]
-    # Requests stay under the 1.2 m/s guard limit so overshoot cannot fail it.
-    assert result.twist.linear.x == pytest.approx(1.15)
+    # Requests stay under the 1.0 m/s guard limit so overshoot cannot fail it.
+    assert result.twist.linear.x == pytest.approx(0.95)
     item._requests['NAV'].twist.angular.z = 0.6
     SimMotionGate._tick(item)
     result = item._output.publish.call_args.args[0]
@@ -215,7 +220,6 @@ def test_snapshot_rejects_disagreement_between_cargo_pose_and_collision_scene():
     item._wheel_speed_at = 9.9
     item._payloads_at = {0: 9.9, 3: 9.9}
     item._payload_history = {0: [], 3: []}
-    item._robot_truth = None
     item._tf = Mock()
     item._tf.lookup_transform.return_value = SimpleNamespace(
         header=SimpleNamespace(stamp=SimpleNamespace(sec=10, nanosec=0)),
@@ -279,19 +283,6 @@ def test_real_cargo_shift_still_stops_motion_with_aligned_payload():
     SimMotionGate._tick(item)
     result = item._output.publish.call_args.args[0]
     assert result.twist.linear.x == 0.0
-
-
-def test_estimate_lag_is_not_cargo_shift_but_real_shift_is():
-    cargo = (10.0, 0.0, 0.065, 0.0)
-    history = [(5.0, cargo)]
-    # Estimate lags 6 cm behind the truth; cargo sits exactly on the robot.
-    aligned = payload_for_robot_pose((9.94, 0.0, 0.0), (5.0, 10.0, 0.0), history, cargo)
-    assert aligned[0] == pytest.approx(9.94)
-    # Cargo really is 5 cm off the robot: that offset survives the conversion.
-    aligned = payload_for_robot_pose((9.94, 0.0, 0.0), (5.0, 9.95, 0.0), history, cargo)
-    assert aligned[0] - 9.94 == pytest.approx(0.05)
-    # No truth available: fall back to the stricter direct comparison.
-    assert payload_for_robot_pose((9.94, 0.0, 0.0), None, history, cargo) == cargo
 
 
 def test_scene_time_is_read_from_the_scene_and_absent_values_fall_back():

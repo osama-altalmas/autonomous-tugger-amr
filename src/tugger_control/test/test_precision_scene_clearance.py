@@ -116,9 +116,10 @@ def test_straight_driving_allows_more_speed_but_never_through_an_obstacle():
     from tugger_control.precision_scene_clearance import (
         FULL_LOCK_CURVATURE, precision_stopping_envelope)
     leg = [Box('leg', 0.0, 0.53, 0.0, 0.04, 0.04, 0.0, 0.28)]
-    straight = precision_stopping_envelope((0.0, 0.0, 0.0), 0.002, leg, 0.25, 0.25,
+    # 0.2 m/s: braking at 1.5 m/s^2 (Phase B) needs more room than at 2.5.
+    straight = precision_stopping_envelope((0.0, 0.0, 0.0), 0.002, leg, 0.2, 0.2,
                                            curvature_bound=0.4)
-    full = precision_stopping_envelope((0.0, 0.0, 0.0), 0.002, leg, 0.25, 0.25,
+    full = precision_stopping_envelope((0.0, 0.0, 0.0), 0.002, leg, 0.2, 0.2,
                                        curvature_bound=FULL_LOCK_CURVATURE)
     assert straight[0] and not full[0]
     touching = [Box('leg', 0.0, 0.30, 0.0, 0.04, 0.04, 0.0, 0.28)]

@@ -24,12 +24,10 @@ def test_cargo_bridge_has_ros_to_gazebo_command_topics():
         f'/cargo/station_{station}/{action}@std_msgs/msg/Empty]gz.msgs.Empty'
         for station in (0, 3) for action in ('attach', 'detach')
     }
-    states = {
-        f'/cargo/station_{station}/state@std_msgs/msg/String[gz.msgs.StringMsg'
-        for station in (0, 3)
-    }
-    assert topics == commands | states | {
-        '/tugger/collision_scene@std_msgs/msg/String[gz.msgs.StringMsg'}
+    # Phase B4: only the lift actuator commands are bridged; the cargo state
+    # and the collision scene come from the robot's own estimate, never from
+    # the simulator.
+    assert topics == commands
 
 
 def test_cargo_plugins_reference_actual_movable_payload_models():

@@ -9,7 +9,8 @@ import pytest
 from tugger_control.clearance_2_5d import Box, collision_pairs
 from tugger_control.visual_heading_gate import (angle_delta,
                                                 relative_qr_heading_consistent)
-from tugger_control.visual_maneuver_planner import (plan_visual_maneuver,
+from tugger_control.crab_motion import CRAB_MAX_ANGLE_RAD
+from tugger_control.visual_maneuver_planner import (advance, plan_visual_maneuver,
                                                    propagate)
 from tugger_control.visual_scene_clearance import PreparedVisualClearance
 from tugger_control.warehouse_clearance import robot_boxes, static_world_boxes
@@ -33,13 +34,20 @@ def test_expanded_capture_has_exact_swept_clearance_and_10mm_1deg_goal(forward, 
     # Generous bound avoids noisy CI but detects the minutes-long old search.
     assert time.monotonic() - start < 5.0
     assert plan is not None
-    assert all(0.005 <= abs(d) <= 0.05 and abs(k) <= 2/.58 for d, k in plan)
+    for primitive in plan:
+        if len(primitive) > 2 and primitive[2] != 0.0:
+            # Crab: all wheels at one angle within the wheel limit, no arc.
+            assert (0.005 <= abs(primitive[0]) <= 0.10 and primitive[1] == 0.0 and
+                    abs(primitive[2]) <= CRAB_MAX_ANGLE_RAD)
+        else:
+            assert 0.005 <= abs(primitive[0]) <= 0.05 and abs(primitive[1]) <= 2/.58
     pose = (0.0, 0.0, 0.0)
-    for distance, curvature in plan:
+    for primitive in plan:
+        distance = primitive[0]
         count = math.ceil(abs(distance)/.005)
         for index in range(1, count + 1):
-            assert checker(propagate(pose, distance*index/count, curvature))
-        pose = propagate(pose, distance, curvature)
+            assert checker(advance(pose, primitive, distance*index/count))
+        pose = advance(pose, primitive)
     assert math.hypot(pose[0] - forward, pose[1] - lateral) <= .010
     assert abs(angle_delta(pose[2], 0.0)) <= math.radians(1)
 
@@ -111,6 +119,17 @@ def test_stopped_replans_reduce_steering_slew_residual_in_ideal_4ws_model(target
         assert command['state'] != 'STOP', command.get('reason')
         if command['state'] == 'DONE':
             executor = None
+        if command.get('frame') == 'crab':
+            # Crab: the controller stops and re-steers first (modelled as
+            # instantaneous once stopped), then rolls along the wheel angle.
+            desired = math.copysign(math.hypot(command['linear_x'], command['linear_y']),
+                                    command['linear_x'])
+            beta = math.atan2(math.copysign(1, desired) * command['linear_y'],
+                              math.copysign(1, desired) * command['linear_x'])
+            speed = approach(speed, desired, .25 if speed*desired >= 0 else .35, dt)
+            pose = (pose[0] + speed*dt*math.cos(pose[2] + beta),
+                    pose[1] + speed*dt*math.sin(pose[2] + beta), pose[2])
+            continue
         desired = command['linear_x']
         # The 4WS controller holds the wheel angle when commanded to stop.
         desired_steering = (steering if abs(desired) < 1e-4 else

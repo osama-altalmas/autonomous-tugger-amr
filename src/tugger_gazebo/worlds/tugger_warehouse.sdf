@@ -12,6 +12,8 @@
       <render_engine>ogre2</render_engine>
     </plugin>
     <plugin filename="gz-sim-imu-system" name="gz::sim::systems::Imu" />
+    <!-- Contact sensors (the robot's bumper / safety strip). -->
+    <plugin filename="gz-sim-contact-system" name="gz::sim::systems::Contact" />
     <plugin filename="gz-sim-pose-publisher-system" name="gz::sim::systems::PosePublisher">
       <publish_model_pose>true</publish_model_pose>
       <publish_nested_model_pose>true</publish_nested_model_pose>
@@ -584,6 +586,16 @@
             </box>
           </geometry>
         </collision>
+        <!-- Cargo identity tag on the underside, read by the robot's top QR
+             reader from below before lifting (Phase B4). -->
+        <visual name="top_qr_tag">
+          <pose>0 0 0.2795 3.14159265 0 0</pose>
+          <cast_shadows>false</cast_shadows>
+          <geometry><plane><normal>0 0 1</normal><size>0.06 0.06</size></plane></geometry>
+          <material><ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse><emissive>0.6 0.6 0.6 1</emissive>
+            <pbr><metal><albedo_map>model://tugger_gazebo/media/cargo_tags/cargo_0.png</albedo_map><roughness>0.8</roughness><metalness>0.0</metalness></metal></pbr>
+          </material>
+        </visual>
         <gravity>true</gravity>
       </link>
     </model>
@@ -1657,6 +1669,16 @@
             </box>
           </geometry>
         </collision>
+        <!-- Cargo identity tag on the underside, read by the robot's top QR
+             reader from below before lifting (Phase B4). -->
+        <visual name="top_qr_tag">
+          <pose>0 0 0.2795 3.14159265 0 0</pose>
+          <cast_shadows>false</cast_shadows>
+          <geometry><plane><normal>0 0 1</normal><size>0.06 0.06</size></plane></geometry>
+          <material><ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse><emissive>0.6 0.6 0.6 1</emissive>
+            <pbr><metal><albedo_map>model://tugger_gazebo/media/cargo_tags/cargo_3.png</albedo_map><roughness>0.8</roughness><metalness>0.0</metalness></metal></pbr>
+          </material>
+        </visual>
         <gravity>true</gravity>
       </link>
     </model>

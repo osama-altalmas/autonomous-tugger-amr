@@ -122,3 +122,29 @@ def test_scene_age_errors_say_which_way_the_clock_is_off():
         decode_scene(payload, 9.9)
     with pytest.raises(ValueError, match=r'stale \(0\.500 s old\)'):
         decode_scene(payload, 10.5)
+
+
+def test_loaded_arc_sweep_lets_the_robot_creep_past_a_close_rack_corner():
+    """The loaded near-rack stall: 6 cm beside a rack corner, driving straight
+    along it, the all-directions envelope refuses even creeping; the sweep
+    along the commanded arc (plus steering uncertainty) allows it."""
+    from tugger_control.clearance_2_5d import Box
+    from tugger_control.lift_geometry import LIFT_UP_M
+    cargo = (0.0, 0.0, 0.065, 0.0)
+    # Rack 6 cm beside the cargo's side edge (cargo half 0.68 incl. allowance).
+    rack = [('rack', Box('rack', 0.0, 0.68 + 0.06 + 0.5, 0.0, 2.0, 0.5, 0.0, 2.0))]
+    old = choose_guarded_speed((0, 0, 0), cargo, LIFT_UP_M, 0, rack, 0.0, 0.3)
+    new = choose_guarded_speed((0, 0, 0), cargo, LIFT_UP_M, 0, rack, 0.0, 0.3,
+                               curvature=0.0, steering_curvature=0.0)
+    assert old[0] == 0.0
+    assert new[0] > 0.0 and new[1] is None
+
+
+def test_loaded_arc_sweep_still_stops_before_a_rack_on_the_path():
+    from tugger_control.clearance_2_5d import Box
+    from tugger_control.lift_geometry import LIFT_UP_M
+    cargo = (0.0, 0.0, 0.065, 0.0)
+    rack = [('rack', Box('rack', 0.68 + 0.15 + 0.5, 0.0, 0.0, 0.5, 2.0, 0.0, 2.0))]
+    speed, hit = choose_guarded_speed((0, 0, 0), cargo, LIFT_UP_M, 0, rack, 0.0, 1.0,
+                                      curvature=0.0, steering_curvature=0.0)
+    assert speed < 0.5

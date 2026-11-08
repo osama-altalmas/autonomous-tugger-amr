@@ -21,7 +21,8 @@ def validate_modeled_geometry(world_path, robot_path):
     for name, expected in expected_properties.items():
         if not math.isclose(float(properties.get(name, 'nan')), expected, abs_tol=1e-9):
             raise ValueError(f'Robot geometry changed: {name}')
-    if len(robot.findall('.//collision')) != 3:
+    # Link collision geometry only: a contact sensor names a collision too.
+    if len([c for c in robot.findall('.//collision') if c.find('geometry') is not None]) != 3:
         raise ValueError('Robot collision inventory changed')
     wheel_macro = next((item for item in robot.findall('./{*}macro')
                         if item.get('name') == 'steered_wheel'), None)
@@ -29,13 +30,13 @@ def validate_modeled_geometry(world_path, robot_path):
         raise ValueError('Missing wheel geometry macro')
     wheel_origin = wheel_macro.find("./joint[@name='${prefix}_steering_joint']/origin")
     wheel_collision = wheel_macro.find("./link[@name='${prefix}_wheel_link']/collision")
-    wheel_shape = wheel_collision.find('geometry/cylinder') if wheel_collision is not None else None
+    # Sphere contact shape of the wheel radius (tyre patch under the axis).
+    wheel_shape = wheel_collision.find('geometry/sphere') if wheel_collision is not None else None
     wheel_offset = wheel_collision.find('origin') if wheel_collision is not None else None
     if (wheel_origin is None or wheel_origin.get('xyz') != '${x} ${y} -0.045' or
             wheel_origin.get('rpy') != '0 0 0' or wheel_shape is None or
-            wheel_shape.get('radius') != '${wheel_radius}' or
-            wheel_shape.get('length') != '${wheel_width}' or wheel_offset is None or
-            wheel_offset.get('xyz') != '0 0 0' or wheel_offset.get('rpy') != '1.5708 0 0'):
+            wheel_shape.get('radius') != '${wheel_radius}' or wheel_offset is None or
+            wheel_offset.get('xyz') != '0 0 0' or wheel_offset.get('rpy') != '0 0 0'):
         raise ValueError('Wheel collision geometry changed')
     wheel_calls = {item.get('prefix'): (item.get('x'), item.get('y'))
                    for item in robot.findall('./{*}steered_wheel')}

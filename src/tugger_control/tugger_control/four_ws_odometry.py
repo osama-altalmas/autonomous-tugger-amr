@@ -131,14 +131,25 @@ class FourWSOdometry(Node):
         # wz / v = 2*tan(delta_front)/L
         #        = -2*tan(delta_rear)/L
         lateral_velocity = 0.0
-        if abs(delta_rl - delta_rr) > 0.05:
-            # Rear wheels not linked (turning in place, or changing between
-            # car-like and pivot steering): fit the rigid-body motion to both
-            # rear wheels instead of the linked-axle model.
+        front = self._front_wheels(msg, joint_index)
+        # Car-like counter-phase steering has front = -rear. Anything else
+        # (crab: all four at one angle) is not the linked-axle model.
+        crab_like = (front is not None and
+                     abs(0.5 * (front[0] + front[1]) + rear_angle) > 0.05)
+        if abs(delta_rl - delta_rr) > 0.05 or crab_like:
+            # Rear wheels not linked (turning in place, crab, or changing
+            # between patterns): fit the rigid-body motion to every measured
+            # wheel instead of the linked-axle model.
             half_l, half_w = 0.5 * self.wheelbase, 0.5 * self.track_width
+            steering = [delta_rl, delta_rr]
+            speeds = [omega_rl_wheel, omega_rr_wheel]
+            positions = [(-half_l, half_w), (-half_l, -half_w)]
+            if front is not None:
+                steering += [front[0], front[1]]
+                speeds += [front[2], front[3]]
+                positions += [(half_l, half_w), (half_l, -half_w)]
             linear_velocity, lateral_velocity, angular_velocity = pivot_odometry(
-                (delta_rl, delta_rr), (omega_rl_wheel, omega_rr_wheel),
-                wheel_positions=((-half_l, half_w), (-half_l, -half_w)),
+                steering, speeds, wheel_positions=positions,
                 wheel_radius=self.wheel_radius)
         elif abs(self.wheelbase) > 1e-9:
             angular_velocity = (
@@ -196,6 +207,21 @@ class FourWSOdometry(Node):
             angular_velocity,
             lateral_velocity
         )
+
+    @staticmethod
+    def _front_wheels(msg, joint_index):
+        """(fl angle, fr angle, fl speed, fr speed) or None if not measured."""
+        names = ('front_left_steering_joint', 'front_right_steering_joint',
+                 'front_left_wheel_joint', 'front_right_wheel_joint')
+        if not all(name in joint_index for name in names):
+            return None
+        fl_s, fr_s, fl_w, fr_w = (joint_index[name] for name in names)
+        if (len(msg.position) <= max(fl_s, fr_s) or
+                len(msg.velocity) <= max(fl_w, fr_w)):
+            return None
+        values = (msg.position[fl_s], msg.position[fr_s],
+                  msg.velocity[fl_w], msg.velocity[fr_w])
+        return values if all(math.isfinite(v) for v in values) else None
 
     def publish_odometry(
         self,

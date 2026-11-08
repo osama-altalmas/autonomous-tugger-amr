@@ -19,9 +19,11 @@ from std_msgs.msg import Bool, Float64MultiArray, String
 from tf2_ros import Buffer, TransformListener
 
 from tugger_control.cargo_policy import confirmed_cargo
+from tugger_control.crab_motion import CRAB_FRAME, crab_command
 from tugger_control.cargo_policy import CARGO_IDS
 from tugger_control.lift_geometry import lift_is_down, lift_is_raised
-from tugger_control.loaded_motion_guard import choose_guarded_speed, decode_scene, scene_expected_counts
+from tugger_control.loaded_motion_guard import (
+    MEASURED_SPEED_LIMIT, choose_guarded_speed, decode_scene, scene_expected_counts)
 from tugger_control.motion_math import speed_profile
 from tugger_control.precision_scene_clearance import (
     FULL_LOCK_CURVATURE, choose_precision_speed)
@@ -31,12 +33,13 @@ from tugger_control.turn_in_place import (MAX_YAW_RATE_LOADED, MAX_YAW_RATE_UNLO
 from tugger_control.warehouse_clearance import validate_modeled_geometry
 
 
-# Stay under the 1.2 m/s loaded guard limit. Requesting exactly the limit lets
+# Stay under the 1.0 m/s loaded guard limit. Requesting exactly the limit lets
 # normal speed overshoot fail the guard and stop the robot repeatedly.
-LOADED_ROUTE_REQUEST_LIMIT = 1.15
+LOADED_ROUTE_REQUEST_LIMIT = 0.95
 # Final camera corrections, loaded or not, never exceed this speed.
 CAMERA_SPEED_LIMIT = 0.05
-PRECISION_APPROACH_LIMIT = 0.4
+# Transfer stations: 0.3 m/s (ISO 3691-4 practice).
+PRECISION_APPROACH_LIMIT = 0.3
 # Added to the measured steering curvature for the stopping envelope (1/m).
 STOPPING_CURVATURE_MARGIN = 0.3
 
@@ -74,22 +77,6 @@ def payload_at_time(history, stamp, latest, maximum_gap=0.25):
     return pose if abs(near_stamp - stamp) <= maximum_gap else latest
 
 
-def payload_for_robot_pose(robot_pose, robot_truth, history, latest):
-    """Express cargo beside the estimated robot pose, keeping its true offset.
-
-    The estimated robot pose can lag the simulator at route speed, which looks
-    like cargo shift. The robot and cargo truth poses come from one simulator
-    source, so their difference is the real attachment offset; the 4 cm limit
-    then judges that offset. Without robot truth, the direct comparison applies.
-    """
-    if robot_truth is None or latest is None:
-        return latest
-    stamp, truth_x, truth_y = robot_truth
-    cargo = payload_at_time(history, stamp, latest)
-    return (robot_pose[0] + cargo[0] - truth_x, robot_pose[1] + cargo[1] - truth_y,
-            cargo[2], cargo[3])
-
-
 class SimMotionGate(Node):
     def __init__(self):
         super().__init__('tugger_sim_motion_gate')
@@ -109,7 +96,6 @@ class SimMotionGate(Node):
         self._payloads_at = {key: None for key in CARGO_IDS}
         self._payload_history = {key: deque(maxlen=400) for key in CARGO_IDS}
         self._aligned_payloads = {}
-        self._robot_truth = None
         self._lift, self._lift_at = None, None
         self._speed, self._speed_at = None, None
         self._steer, self._steer_at = None, None
@@ -129,6 +115,10 @@ class SimMotionGate(Node):
             self.get_logger().error(f'Modeled robot geometry invalid: {exc}')
         self.create_subscription(String, '/tugger/motion_owner', self._on_owner, 10)
         self.create_subscription(String, '/tugger/collision_scene', self._on_scene, 10)
+        # Safety monitor (scanners, depth cameras, bumper, e-stops): obeyed
+        # fail-closed; see safety_monitor.py.
+        self._safety, self._safety_at = None, None
+        self.create_subscription(String, '/tugger/safety/state', self._on_safety, 10)
         for name, topic in (('NAV', '/tugger/nav_cmd_vel'),
                             ('DOCK_NAV', '/tugger/dock_nav_cmd_vel'),
                             ('PRECISION', '/tugger/precision_cmd_vel'),
@@ -138,10 +128,10 @@ class SimMotionGate(Node):
         for station in CARGO_IDS:
             self.create_subscription(String, f'/cargo/station_{station}/state',
                                      lambda msg, key=station: self._on_state(key, msg), 10)
-            self.create_subscription(PoseStamped, f'/tugger/cargo/station_{station}/ground_truth_pose',
+            # Phase B4: the robot's own cargo estimate (cargo_estimator), not
+            # simulator truth; the robot pose is the localized one (TF).
+            self.create_subscription(PoseStamped, f'/tugger/cargo/station_{station}/estimated_pose',
                                      lambda msg, key=station: self._on_payload(key, msg), 10)
-        self.create_subscription(PoseStamped, '/tugger/ground_truth_pose',
-                                 self._on_robot_truth, 10)
         self.create_subscription(JointState, '/joint_states', self._on_joint, 10)
         self.create_subscription(Float64MultiArray, '/four_ws/motion_state', self._on_motion, 10)
         self.create_subscription(Odometry, '/wheel/odom', self._on_wheel_odom, 10)
@@ -162,6 +152,43 @@ class SimMotionGate(Node):
             self._request_at[source] = None
         self._owner = owner
         self._owner_at = self._now()
+
+    def _on_safety(self, msg):
+        try:
+            state = json.loads(msg.data)
+            if state.get('state') in ('CLEAR', 'WARNING', 'PROTECTIVE_STOP', 'EMERGENCY_STOP'):
+                self._safety, self._safety_at = state, self._now()
+        except (TypeError, ValueError, AttributeError):
+            pass
+
+    def _apply_safety(self, output, now):
+        """Cap or stop the output by the safety state; return a reason or None."""
+        v, omega = output.twist.linear.x, output.twist.angular.z
+        vy = getattr(output.twist.linear, 'y', 0.0)
+        if abs(v) < 1e-9 and abs(omega) < 1e-9 and abs(vy) < 1e-9:
+            return None
+        safety = getattr(self, '_safety', None)
+        if safety is None or not self._fresh(getattr(self, '_safety_at', None), now, 0.2):
+            output.twist.linear.x = output.twist.linear.y = output.twist.angular.z = 0.0
+            return 'safety monitor state missing or stale'
+        if safety['state'] in ('PROTECTIVE_STOP', 'EMERGENCY_STOP'):
+            output.twist.linear.x = output.twist.linear.y = output.twist.angular.z = 0.0
+            return f'safety {safety["state"].lower().replace("_", " ")}: {safety.get("reason", "")}'
+        limit = float(safety.get('limit', 0.0))
+        if output.header.frame_id == 'pivot':
+            if safety['state'] == 'WARNING' and abs(omega) > 0.15:
+                output.twist.angular.z = math.copysign(0.15, omega)
+                return 'safety warning: turning slowly'
+            return None
+        speed = math.hypot(v, vy)
+        if speed > limit:
+            scale = limit / speed if speed > 1e-9 else 0.0
+            output.twist.linear.x = v * scale
+            output.twist.linear.y = vy * scale
+            output.twist.angular.z = omega * scale
+            if safety['state'] == 'WARNING':
+                return f'safety warning: slowing to {limit:.1f} m/s ({safety.get("reason", "")})'
+        return None
 
     def _on_request(self, source, msg):
         self._requests[source] = msg
@@ -189,12 +216,6 @@ class SimMotionGate(Node):
         except ValueError:
             return
 
-    def _on_robot_truth(self, msg):
-        if msg.header.frame_id != 'map':
-            return
-        stamp = msg.header.stamp.sec + msg.header.stamp.nanosec / 1e9
-        self._robot_truth = (stamp, msg.pose.position.x, msg.pose.position.y)
-
     def _on_joint(self, msg):
         try:
             value = float(msg.position[msg.name.index('lift_joint')])
@@ -216,7 +237,10 @@ class SimMotionGate(Node):
     def _on_wheel_odom(self, msg):
         if msg.header.frame_id != 'odom' or msg.child_frame_id != 'base_footprint':
             return
-        speed = float(msg.twist.twist.linear.x)
+        # Speed over ground (a crab move has a lateral component), signed
+        # by the forward direction.
+        vx, vy = float(msg.twist.twist.linear.x), float(msg.twist.twist.linear.y)
+        speed = math.copysign(math.hypot(vx, vy), vx)
         stamp = msg.header.stamp.sec + msg.header.stamp.nanosec / 1e9
         if math.isfinite(speed) and self._fresh(stamp, self._now(), 0.3):
             self._wheel_speed, self._wheel_speed_at = speed, stamp
@@ -235,6 +259,16 @@ class SimMotionGate(Node):
         current = abs(2.0 * math.tan(steer) / 0.58)
         commanded = abs(omega / v) if abs(v) > 1e-6 else 0.0
         return min(FULL_LOCK_CURVATURE, max(current, commanded) + STOPPING_CURVATURE_MARGIN)
+
+    def _loaded_arcs(self, v, omega, now):
+        """Commanded and current steering curvature for the loaded arc sweep.
+
+        Only when both are known; otherwise the all-directions envelope.
+        """
+        steer, steer_at = getattr(self, '_steer', None), getattr(self, '_steer_at', None)
+        if abs(v) < 1e-6 or steer is None or not self._fresh(steer_at, now, 0.3):
+            return {}
+        return {'curvature': omega / v, 'steering_curvature': 2.0 * math.tan(steer) / 0.58}
 
     def _snapshot(self, now):
         if not self._model_valid:
@@ -276,10 +310,17 @@ class SimMotionGate(Node):
         if not all(math.isfinite(v) for v in (t.x, t.y, t.z)) or abs(t.z) > 0.03:
             raise ValueError('robot height outside modeled ground plane')
         pose = (t.x, t.y, planar_quaternion(transform.transform.rotation))
-        self._aligned_payloads = {
-            key: payload_for_robot_pose(
-                pose, self._robot_truth, self._payload_history[key], self._payloads[key])
-            for key in CARGO_IDS}
+        # Cargo poses are the robot's own estimate (cargo_estimator). A carried
+        # cargo sits on the lift, so it is placed from this same robot pose at
+        # its estimated height and heading: two separately timed absolute
+        # estimates would disagree by the centimetre steps of laser
+        # localization, which is not a shift of the load.
+        self._aligned_payloads = {}
+        for key in CARGO_IDS:
+            payload = self._payloads[key]
+            if self._states.get(key) == 'attached' and payload is not None:
+                payload = (pose[0], pose[1], payload[2], payload[3])
+            self._aligned_payloads[key] = payload
         return pose, obstacles
 
     def _tick(self):
@@ -326,6 +367,17 @@ class SimMotionGate(Node):
                 if not math.isfinite(v) or not math.isfinite(omega):
                     raise ValueError('nonfinite command')
                 camera = owner in ('DOCK_CAMERA', 'PRECISION')
+                crab = getattr(getattr(request, 'header', None), 'frame_id', '') == CRAB_FRAME
+                if crab:
+                    # Crab (all wheels at one angle): camera positioning only.
+                    # Guarded as a straight move of the same speed; the
+                    # direction is restored on the output below.
+                    if not camera:
+                        raise ValueError('crab motion is only for camera alignment')
+                    vy = float(request.twist.linear.y)
+                    _, beta = crab_command(v, vy)   # raises beyond the wheel limit
+                    v = math.copysign(math.hypot(v, vy), v if abs(v) > 1e-9 else 1.0)
+                    omega = 0.0
                 if owner == 'DOCK_NAV' and cargo is not None:
                     raise ValueError('unloaded precision guard cannot move attached cargo')
                 # Camera alignment at a drop-off carries cargo: it is checked by
@@ -345,6 +397,7 @@ class SimMotionGate(Node):
                         snapshot[0], self._lift, [box for _, box in snapshot[1]],
                         max(abs(self._speed), abs(self._wheel_speed)), v,
                         max_speed=approach_limit,
+                        max_current_speed=MEASURED_SPEED_LIMIT,
                         minimum_speed=0.10 if owner == 'DOCK_NAV' else 0.0,
                         curvature_bound=self._stopping_curvature(v, omega, now))
                     if hit is not None:
@@ -369,7 +422,7 @@ class SimMotionGate(Node):
                     # Departure shares the independent docking controller but
                     # has its own ownership mode and a stricter speed ceiling.
                     loaded_limit = (CAMERA_SPEED_LIMIT if camera else
-                                    0.5 if owner == 'DOCK_DEPART' else 1.2)
+                                    0.3 if owner == 'DOCK_DEPART' else 1.0)
                     requested = max(-loaded_limit, min(loaded_limit, v))
                     limited, hit = choose_guarded_speed(
                         snapshot[0],
@@ -377,7 +430,9 @@ class SimMotionGate(Node):
                         self._lift, cargo,
                         snapshot[1], max(abs(self._speed), abs(self._wheel_speed)), requested,
                         max_speed=loaded_limit,
-                        curvature_bound=self._stopping_curvature(v, omega, now))
+                        curvature_bound=self._stopping_curvature(v, omega, now),
+                        # Crab: the all-directions envelope, not forward arcs.
+                        **({} if crab else self._loaded_arcs(v, omega, now)))
                     if hit is not None:
                         raise ValueError(f'loaded stopping envelope intersects {hit}')
                     if abs(limited) + 1e-6 < min(abs(v), 0.1):
@@ -392,15 +447,25 @@ class SimMotionGate(Node):
                         omega = max(-omega_limit, min(omega_limit, omega))
                 if cargo is None and owner == 'NAV':
                     v, omega = speed_profile(v, omega)
-                output.twist.linear.x = v
+                if crab:
+                    output.header.frame_id = CRAB_FRAME
+                    sign = 1.0 if v >= 0 else -1.0
+                    output.twist.linear.x = v * math.cos(beta)
+                    output.twist.linear.y = sign * abs(v) * math.sin(beta)
+                    omega = 0.0
+                else:
+                    output.twist.linear.x = v
                 output.twist.angular.z = omega
                 if cargo is None and owner not in ('DOCK_NAV', 'DOCK_CAMERA', 'PRECISION'):
                     reason = 'unloaded motion'
         except Exception as exc:
             dock_ready = False
             reason = str(exc)
+        safety_reason = self._apply_safety(output, now)
+        if safety_reason is not None:
+            reason = safety_reason
         if time.monotonic() - started_wall > 0.15:
-            output.twist.linear.x = output.twist.angular.z = 0.0
+            output.twist.linear.x = output.twist.linear.y = output.twist.angular.z = 0.0
             ready, dock_ready, reason = False, False, 'guard computation exceeded 150 ms'
         self._output.publish(output)
         state = Bool()

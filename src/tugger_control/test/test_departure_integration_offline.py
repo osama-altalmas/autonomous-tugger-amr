@@ -7,6 +7,9 @@ classes. It executes the project's actual method bodies, not rewritten logic.
 import ast
 import json
 import math
+
+from tugger_control.crab_motion import CRAB_FRAME, crab_command
+from tugger_control.loaded_motion_guard import MEASURED_SPEED_LIMIT
 from tugger_control.mission_planning import entrance_gate, routes_from_gate
 from pathlib import Path
 from types import SimpleNamespace
@@ -70,7 +73,8 @@ def time_value(seconds):
 
 def gate_test_class():
     return methods_in_source('sim_motion_gate.py', 'SimMotionGate',
-                             ('_tick', '_on_owner', '_fresh', '_stopping_curvature'), {
+                             ('_tick', '_on_owner', '_fresh', '_stopping_curvature',
+                              '_apply_safety', '_loaded_arcs', '_rotate_command'), {
         'math': math, 'time': __import__('time'),
         'TwistStamped': Message, 'Bool': Message, 'String': Message,
         'confirmed_cargo': confirmed_cargo, 'CARGO_IDS': CARGO_IDS,
@@ -79,6 +83,8 @@ def gate_test_class():
         'CAMERA_SPEED_LIMIT': 0.05, 'PRECISION_APPROACH_LIMIT': 0.4,
         'choose_guarded_speed': choose_guarded_speed,
         'precision_stopping_envelope': Mock(return_value=(True, None)),
+        'CRAB_FRAME': CRAB_FRAME, 'crab_command': crab_command,
+        'MEASURED_SPEED_LIMIT': MEASURED_SPEED_LIMIT,
     })
 
 
@@ -100,6 +106,8 @@ def gate_fixture():
     gate._states_at = {0: 9.9, 3: 9.9}
     gate._owner = 'DOCK_DEPART'
     gate._owner_at = 9.9
+    gate._safety = {'state': 'CLEAR', 'limit': 1.0, 'reason': ''}
+    gate._safety_at = 9.95
     request = Message()
     request.twist.linear.x = 0.6
     request.twist.angular.z = 0.3
@@ -117,8 +125,8 @@ def test_new_loaded_departure_owner_reports_ready_and_limits_speed():
     gate = gate_fixture()
     gate._tick()
     outgoing = gate._output.publish.call_args.args[0]
-    assert outgoing.twist.linear.x == pytest.approx(0.5)
-    assert outgoing.twist.angular.z == pytest.approx(0.25)
+    assert outgoing.twist.linear.x == pytest.approx(0.3)  # transfer-station limit
+    assert outgoing.twist.angular.z == pytest.approx(0.15)  # same curvature at 0.3 m/s
     assert gate._dock_ready.publish.call_args.args[0].data == 'DOCK_DEPART'
 
 
@@ -388,7 +396,7 @@ def test_loaded_departure_yaw_rate_respects_4ws_steering_limit():
     gate._requests['DOCK_NAV'].twist.angular.z = 1.0
     gate._tick()
     output = gate._output.publish.call_args.args[0].twist
-    assert output.linear.x == pytest.approx(0.5)
+    assert output.linear.x == pytest.approx(0.3)  # transfer-station limit
     assert abs(output.angular.z) <= 2 * abs(output.linear.x) / 0.58 + 1e-9
 
 

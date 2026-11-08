@@ -197,15 +197,20 @@
       </visual>
 
 
+      <!-- Contact shape: a sphere of the wheel radius, so the simulated
+           contact point is the centre of the tyre patch, directly under the
+           steering axis, as on the real wheel. A cylinder touches the
+           floor at one rim edge in Gazebo (DART): steering at standstill
+           then rolled the robot about that edge point, about 15 mm per
+           50 degrees of steering, unseen by odometry. The visual stays a
+           cylinder; the clearance model bounds the wheel by a 75 mm box. -->
       <collision>
 
         <origin xyz="0 0 0"
-                rpy="1.5708 0 0"/>
+                rpy="0 0 0"/>
 
         <geometry>
-          <cylinder
-            radius="${wheel_radius}"
-            length="${wheel_width}"/>
+          <sphere radius="${wheel_radius}"/>
         </geometry>
 
       </collision>
@@ -255,10 +260,15 @@
 
     <gazebo reference="${prefix}_wheel_link">
 
-      <mu1>1.0</mu1>
-      <mu2>0.20</mu2>
+      <!-- fdir1 is expressed in the wheel link frame, which spins with
+           the wheel; only the axle (y) keeps its direction while rolling.
+           mu1 acts along the axle (sideways), mu2 along the rolling
+           direction. With fdir1 = x the grip direction turned with the
+           wheel's spin angle, so the friction was effectively random. -->
+      <mu1>0.20</mu1>
+      <mu2>1.0</mu2>
 
-      <fdir1>1 0 0</fdir1>
+      <fdir1>0 1 0</fdir1>
 
 
     </gazebo>
@@ -334,8 +344,12 @@
     <parent link="base_link"/>
     <child link="front_left_lidar_link"/>
 
+    <!-- Safety laser scanner (SICK nanoScan3 class) on the front-left corner
+         of the middle core, between the decks and flush with their edge. It
+         faces diagonally out, so the 90 degrees the core blocks fall in its
+         dead zone; its field covers the whole front and left side. -->
     <origin xyz="0.410 0.260 0.0275"
-            rpy="0 0 0"/>
+            rpy="0 0 0.7854"/>
 
   </joint>
 
@@ -378,10 +392,27 @@
     <parent link="base_link"/>
     <child link="rear_right_lidar_link"/>
 
+    <!-- Second safety scanner at the rear-right corner: rear and right. -->
     <origin xyz="-0.410 -0.260 0.0275"
-            rpy="0 0 0"/>
+            rpy="0 0 -2.3562"/>
 
   </joint>
+
+
+  <!-- BUMPER / SAFETY STRIP: any contact of the chassis with the world is an
+       emergency stop (latched until reset), like the KMP 600P safety strip.
+       It senses on the chassis collision itself, so the robot's size and
+       every clearance check are unchanged. -->
+  <gazebo reference="base_link">
+    <sensor name="bumper" type="contact">
+      <always_on>true</always_on>
+      <update_rate>50</update_rate>
+      <topic>/tugger/bumper/contacts</topic>
+      <contact>
+        <collision>base_footprint_fixed_joint_lump__base_link_collision</collision>
+      </contact>
+    </sensor>
+  </gazebo>
 
 
   <!-- GAZEBO LIDAR SENSORS -->
@@ -389,25 +420,31 @@
   <gazebo reference="front_left_lidar_link">
     <sensor name="front_left_lidar_sensor" type="gpu_lidar">
       <always_on>true</always_on>
-      <update_rate>15</update_rate>
+      <!-- nanoScan3 class: 275 degrees, 25 Hz (40 ms scan); 0.5 degree
+           steps here (the device has 0.17) to keep the simulation fast;
+           1 cm range noise (ASSUMED, within the device's tolerance). -->
+      <update_rate>25</update_rate>
       <topic>front_left/scan</topic>
       <gz_frame_id>front_left_lidar_link</gz_frame_id>
-
       <lidar>
         <scan>
           <horizontal>
-            <samples>720</samples>
+            <samples>551</samples>
             <resolution>1</resolution>
-            <min_angle>-3.14159265</min_angle>
-            <max_angle>3.14159265</max_angle>
+            <min_angle>-2.39983</min_angle>
+            <max_angle>2.39983</max_angle>
           </horizontal>
         </scan>
-
         <range>
           <min>0.08</min>
-          <max>20.0</max>
-          <resolution>0.01</resolution>
+          <max>40.0</max>
+          <resolution>0.005</resolution>
         </range>
+        <noise>
+          <type>gaussian</type>
+          <mean>0.0</mean>
+          <stddev>0.01</stddev>
+        </noise>
       </lidar>
     </sensor>
   </gazebo>
@@ -415,25 +452,31 @@
   <gazebo reference="rear_right_lidar_link">
     <sensor name="rear_right_lidar_sensor" type="gpu_lidar">
       <always_on>true</always_on>
-      <update_rate>15</update_rate>
+      <!-- nanoScan3 class: 275 degrees, 25 Hz (40 ms scan); 0.5 degree
+           steps here (the device has 0.17) to keep the simulation fast;
+           1 cm range noise (ASSUMED, within the device's tolerance). -->
+      <update_rate>25</update_rate>
       <topic>rear_right/scan</topic>
       <gz_frame_id>rear_right_lidar_link</gz_frame_id>
-
       <lidar>
         <scan>
           <horizontal>
-            <samples>720</samples>
+            <samples>551</samples>
             <resolution>1</resolution>
-            <min_angle>-3.14159265</min_angle>
-            <max_angle>3.14159265</max_angle>
+            <min_angle>-2.39983</min_angle>
+            <max_angle>2.39983</max_angle>
           </horizontal>
         </scan>
-
         <range>
           <min>0.08</min>
-          <max>20.0</max>
-          <resolution>0.01</resolution>
+          <max>40.0</max>
+          <resolution>0.005</resolution>
         </range>
+        <noise>
+          <type>gaussian</type>
+          <mean>0.0</mean>
+          <stddev>0.01</stddev>
+        </noise>
       </lidar>
     </sensor>
   </gazebo>
@@ -550,53 +593,81 @@
 
 
 
-  <!-- GAZEBO FRONT CAMERA SENSOR -->
+  <!-- GAZEBO FRONT 3D (DEPTH) CAMERA: Intel RealSense D435 class,
+       87 x 58 degrees, used 0.3-4 m; about 1 cm depth noise (ASSUMED,
+       RealSense quotes under 2 % at 2 m). Feeds the safety monitor with
+       obstacles above and beside the scanner plane, as on the KMP 600P. -->
 
   <gazebo reference="front_camera_link">
-    <sensor name="front_camera" type="camera">
+    <sensor name="front_depth" type="rgbd_camera">
       <always_on>true</always_on>
-      <update_rate>5</update_rate>
-      <topic>/front_camera/image_raw</topic>
-
+      <update_rate>10</update_rate>
+      <topic>front_depth</topic>
+      <gz_frame_id>front_camera_link</gz_frame_id>
       <camera>
-        <horizontal_fov>1.5708</horizontal_fov>
-
+        <horizontal_fov>1.5184</horizontal_fov>
+        <!-- 160 x 120 at 10 Hz in simulation (rendering cost); a 5 cm object
+             at 3 m still spans over 2 pixels. The device runs 424 x 240 up. -->
         <image>
-          <width>320</width>
-          <height>240</height>
+          <width>160</width>
+          <height>120</height>
           <format>R8G8B8</format>
         </image>
-
         <clip>
-          <near>0.05</near>
-          <far>50.0</far>
+          <near>0.3</near>
+          <far>4.0</far>
         </clip>
+        <depth_camera>
+          <clip>
+            <near>0.3</near>
+            <far>4.0</far>
+          </clip>
+        </depth_camera>
+        <noise>
+          <type>gaussian</type>
+          <mean>0.0</mean>
+          <stddev>0.01</stddev>
+        </noise>
       </camera>
     </sensor>
   </gazebo>
 
 
-  <!-- GAZEBO REAR CAMERA SENSOR -->
+  <!-- GAZEBO REAR 3D (DEPTH) CAMERA: Intel RealSense D435 class,
+       87 x 58 degrees, used 0.3-4 m; about 1 cm depth noise (ASSUMED,
+       RealSense quotes under 2 % at 2 m). Feeds the safety monitor with
+       obstacles above and beside the scanner plane, as on the KMP 600P. -->
 
   <gazebo reference="rear_camera_link">
-    <sensor name="rear_camera" type="camera">
+    <sensor name="rear_depth" type="rgbd_camera">
       <always_on>true</always_on>
-      <update_rate>5</update_rate>
-      <topic>/rear_camera/image_raw</topic>
-
+      <update_rate>10</update_rate>
+      <topic>rear_depth</topic>
+      <gz_frame_id>rear_camera_link</gz_frame_id>
       <camera>
-        <horizontal_fov>1.5708</horizontal_fov>
-
+        <horizontal_fov>1.5184</horizontal_fov>
+        <!-- 160 x 120 at 10 Hz in simulation (rendering cost); a 5 cm object
+             at 3 m still spans over 2 pixels. The device runs 424 x 240 up. -->
         <image>
-          <width>320</width>
-          <height>240</height>
+          <width>160</width>
+          <height>120</height>
           <format>R8G8B8</format>
         </image>
-
         <clip>
-          <near>0.05</near>
-          <far>50.0</far>
+          <near>0.3</near>
+          <far>4.0</far>
         </clip>
+        <depth_camera>
+          <clip>
+            <near>0.3</near>
+            <far>4.0</far>
+          </clip>
+        </depth_camera>
+        <noise>
+          <type>gaussian</type>
+          <mean>0.0</mean>
+          <stddev>0.01</stddev>
+        </noise>
       </camera>
     </sensor>
   </gazebo>
@@ -610,6 +681,8 @@
         <horizontal_fov>2.44346</horizontal_fov>
         <image><width>640</width><height>480</height><format>R8G8B8</format></image>
         <clip><near>0.01</near><far>0.50</far></clip>
+        <!-- Typical machine-vision sensor noise. -->
+        <noise><type>gaussian</type><mean>0.0</mean><stddev>0.007</stddev></noise>
       </camera>
     </sensor>
   </gazebo>
@@ -635,6 +708,8 @@
 
   <gazebo reference="imu_link">
     <sensor name="imu_sensor" type="imu">
+      <!-- Industrial MEMS IMU (Bosch BMI088 class): gyro 0.014 deg/s/sqrt(Hz),
+           accel 175 ug/sqrt(Hz) at 100 Hz. -->
       <always_on>true</always_on>
       <update_rate>100</update_rate>
       <topic>imu</topic>
@@ -644,19 +719,19 @@
           <x>
             <noise type="gaussian">
               <mean>0.0</mean>
-              <stddev>0.0002</stddev>
+              <stddev>0.0024</stddev>
             </noise>
           </x>
           <y>
             <noise type="gaussian">
               <mean>0.0</mean>
-              <stddev>0.0002</stddev>
+              <stddev>0.0024</stddev>
             </noise>
           </y>
           <z>
             <noise type="gaussian">
               <mean>0.0</mean>
-              <stddev>0.0002</stddev>
+              <stddev>0.0024</stddev>
             </noise>
           </z>
         </angular_velocity>
@@ -665,19 +740,19 @@
           <x>
             <noise type="gaussian">
               <mean>0.0</mean>
-              <stddev>0.01</stddev>
+              <stddev>0.017</stddev>
             </noise>
           </x>
           <y>
             <noise type="gaussian">
               <mean>0.0</mean>
-              <stddev>0.01</stddev>
+              <stddev>0.017</stddev>
             </noise>
           </y>
           <z>
             <noise type="gaussian">
               <mean>0.0</mean>
-              <stddev>0.01</stddev>
+              <stddev>0.017</stddev>
             </noise>
           </z>
         </linear_acceleration>
@@ -736,6 +811,29 @@
     </inertial>
 
   </link>
+
+
+  <!-- TOP QR READER: upward camera in the lift platform; reads the cargo's
+       identity tag from below before lifting (KMP 600P style). -->
+  <link name="top_qr_camera_link"/>
+  <joint name="top_qr_camera_joint" type="fixed">
+    <parent link="lift_platform_link"/>
+    <child link="top_qr_camera_link"/>
+    <origin xyz="0 0 0.0085" rpy="0 -1.57079632679 0"/>
+  </joint>
+  <gazebo reference="top_qr_camera_link">
+    <sensor name="top_qr_camera" type="camera">
+      <always_on>true</always_on>
+      <update_rate>5</update_rate>
+      <topic>/top_qr_camera/image_raw</topic>
+      <camera>
+        <horizontal_fov>1.5708</horizontal_fov>
+        <image><width>320</width><height>240</height><format>R8G8B8</format></image>
+        <clip><near>0.005</near><far>0.30</far></clip>
+        <noise><type>gaussian</type><mean>0.0</mean><stddev>0.007</stddev></noise>
+      </camera>
+    </sensor>
+  </gazebo>
 
 
   <joint name="lift_joint"

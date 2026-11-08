@@ -13,6 +13,8 @@ from geometry_msgs.msg import TwistStamped
 from rclpy.node import Node
 from std_msgs.msg import String
 
+from tugger_control.crab_motion import CRAB_FRAME
+
 
 class DockingPrecisionController(Node):
     """Own the isolated camera-docking command boundary."""
@@ -36,7 +38,7 @@ class DockingPrecisionController(Node):
         return self.get_clock().now()
 
     def _on_command(self, message):
-        values = (message.twist.linear.x, message.twist.angular.z)
+        values = (message.twist.linear.x, message.twist.linear.y, message.twist.angular.z)
         if not all(math.isfinite(value) for value in values):
             self._latest = None
             self._latest_at = None
@@ -63,6 +65,11 @@ class DockingPrecisionController(Node):
         if owner_fresh and self._owner in ('PRECISION', 'DOCK_CAMERA') and command_fresh:
             output.twist.linear.x = self._latest.twist.linear.x
             output.twist.angular.z = self._latest.twist.angular.z
+            if self._latest.header.frame_id == CRAB_FRAME:
+                # Crab move: keep its frame and sideways component. Dropping
+                # them turned a diagonal move into a straight one.
+                output.header.frame_id = CRAB_FRAME
+                output.twist.linear.y = self._latest.twist.linear.y
         self._output.publish(output)
 
 

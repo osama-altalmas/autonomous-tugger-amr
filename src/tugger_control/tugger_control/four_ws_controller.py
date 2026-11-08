@@ -7,13 +7,22 @@ circle, the rear wheels drive in opposite directions, and on the next normal
 command the yaw rate stops and the wheels return to the car-like pattern
 before any travel. While the wheels are in the car-like pattern the
 controller behaves exactly as without the pivot mode.
+
+A command whose header frame is ``crab`` (crab_motion.py) translates the
+robot along linear.x/linear.y without turning: it stops, steers all four
+wheels to one angle, settles, then rolls them together. A zero car-like
+command while crabbing holds the crab wheels (as a stop holds steering);
+the next moving car-like command stops and steers back first.
 """
 import math
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import TwistStamped
 from std_msgs.msg import Float64MultiArray
-from .motion_math import approach, steering_for_twist, speed_limit_for_steering, wheel_speeds
+from .motion_math import (approach, front_wheel_speed, speed_limit_for_steering,
+                          steering_for_twist, wheel_speeds)
+from .crab_motion import (CRAB_FRAME, CRAB_MAX_SPEED, crab_command, crab_steering,
+                          crab_wheel_speeds)
 from .turn_in_place import (MAX_YAW_RATE_UNLOADED, PIVOT_SETTLE_S, PIVOT_STEERING,
                             YAW_ACCELERATION, drive_steering, pivot_wheel_speeds,
                             steering_reached)
@@ -53,6 +62,12 @@ class FourWSController(Node):
         self.yaw_rate = 0.
         self.wheel_angles = list(drive_steering(0.))
         self.pivot_settled_s = 0.
+        # Crab: requested, wheel angle and speed along it, current speed.
+        self.want_crab = False
+        self.target_crab_angle = 0.
+        self.target_crab_v = 0.
+        self.crab_v = 0.
+        self.crab_settled_s = 0.
         self.timer = self.create_timer(1 / self.control_rate_hz, self.tick)
         self.get_logger().info('4WS smooth controller: accel/decel, steering slew, lateral acceleration limits enabled')
 
@@ -64,6 +79,29 @@ class FourWSController(Node):
             return
         self.last_cmd = self.get_clock().now()
         self.timed_out = False
+        if msg.header.frame_id == CRAB_FRAME:
+            vy = float(msg.twist.linear.y)
+            try:
+                speed, beta = crab_command(v, vy)
+            except ValueError as exc:
+                self.emergency_stop(str(exc))
+                return
+            self.want_pivot = False
+            self.want_crab = True
+            self.target_v = 0.
+            self.target_yaw_rate = 0.
+            limit = min(self.max_linear_speed, CRAB_MAX_SPEED)
+            self.target_crab_v = max(-limit, min(limit, speed))
+            if abs(speed) >= 1e-4:
+                self.target_crab_angle = beta
+            return
+        if (self.want_crab and abs(v) < 1e-4 and abs(omega) < 1e-4 and
+                msg.header.frame_id != 'pivot'):
+            # A stop while crabbing holds the crab wheels.
+            self.target_crab_v = 0.
+            return
+        self.want_crab = False
+        self.target_crab_v = 0.
         if msg.header.frame_id == 'pivot':
             # Turn in place: no travel; the yaw rate is limited here too.
             self.want_pivot = True
@@ -86,11 +124,23 @@ class FourWSController(Node):
         return steering_reached(self.wheel_angles, drive_steering(self.delta), 1e-6)
 
     def publish(self):
-        if self._in_drive_pattern():
-            rl, rr, omega = wheel_speeds(self.v, self.delta, self.wheelbase,
-                                         self.track_width, self.wheel_radius)
-            # Counter-phase symmetry: each front wheel matches its side's rear.
-            fl, fr = rl, rr
+        if abs(self.crab_v) > 0.:
+            # Rolls only once the wheels hold the crab pattern (see tick).
+            fl, fr, rl, rr = crab_wheel_speeds(self.crab_v, self.wheel_radius)
+            omega = 0.
+        elif self._in_drive_pattern():
+            _, _, omega = wheel_speeds(self.v, self.delta, self.wheelbase,
+                                       self.track_width, self.wheel_radius)
+            # Every driven wheel rolls at the body's velocity at that wheel
+            # projected on its own heading, so no axle pushes against the
+            # other in a curve (the steering is not exact Ackermann; with all
+            # four wheels driven, other speeds made them scrub and slip). By
+            # counter-phase symmetry front and rear on one side are equal, and
+            # the odometry's v = mean(rear) * cos(delta) stays exact.
+            fl, fr = (front_wheel_speed(self.v, omega, self.delta, self.wheelbase, side,
+                                        self.track_width, self.wheel_radius)
+                      for side in (1.0, -1.0))
+            rl, rr = fl, fr
         else:
             # Pivot pattern or changing between patterns: all four wheels turn
             # the robot in place (zero while the wheels are still steering).
@@ -102,9 +152,13 @@ class FourWSController(Node):
         # Order as in controllers.yaml: rear left, rear right, front left, front right.
         traction.data = [rl, rr, fl, fr]
         state = Float64MultiArray()
+        # [1]: body speed (car-like or along the crab direction).
         # [5]: 1 while the wheels are not in the car-like pattern.
-        state.data = [self.target_v, self.v, self.target_delta, self.delta, omega,
-                      0. if self._in_drive_pattern() else 1., self.yaw_rate]
+        # [7], [8]: crab speed and wheel angle (0 when not crabbing).
+        state.data = [self.target_v, self.v + self.crab_v, self.target_delta, self.delta, omega,
+                      0. if self._in_drive_pattern() and self.crab_v == 0. else 1.,
+                      self.yaw_rate, self.crab_v,
+                      self.target_crab_angle if self.want_crab else 0.]
         self.steering_pub.publish(steer)
         self.traction_pub.publish(traction)
         self.state_pub.publish(state)
@@ -112,6 +166,7 @@ class FourWSController(Node):
     def emergency_stop(self, reason):
         self.v = self.target_v = 0.
         self.yaw_rate = self.target_yaw_rate = 0.
+        self.crab_v = self.target_crab_v = 0.
         self.target_delta = self.delta
         self.timed_out = True
         self.last_cmd = None
@@ -139,6 +194,16 @@ class FourWSController(Node):
             self.publish()
             return
         dt = min(dt, .15)
+        if self.want_crab:
+            self._crab_tick(dt)
+            self.publish()
+            return
+        if abs(self.crab_v) > 1e-6:
+            # Leaving crab: stop along the crab direction first.
+            self.crab_v = approach(self.crab_v, 0., self.max_deceleration, dt)
+            self.publish()
+            return
+        self.crab_v = 0.
         if self.want_pivot or not self._in_drive_pattern():
             self._pivot_tick(dt)
             self.publish()
@@ -156,6 +221,34 @@ class FourWSController(Node):
     def _slew_wheels(self, target, dt):
         self.wheel_angles = [approach(angle, goal, self.max_steering_rate, dt)
                              for angle, goal in zip(self.wheel_angles, target)]
+
+    def _crab_tick(self, dt):
+        """Stop, steer all wheels to the crab angle, settle, then roll."""
+        if abs(self.v) > 1e-3:
+            self.v = approach(self.v, 0., self.max_deceleration, dt)
+            return
+        self.v = 0.
+        if abs(self.yaw_rate) > 1e-6:
+            self.yaw_rate = approach(self.yaw_rate, 0., YAW_ACCELERATION, dt)
+            return
+        self.yaw_rate = 0.
+        target = crab_steering(self.target_crab_angle)
+        if not steering_reached(self.wheel_angles, target):
+            # Wheels never change angle while rolling.
+            self.crab_settled_s = 0.
+            if abs(self.crab_v) > 1e-6:
+                self.crab_v = approach(self.crab_v, 0., self.max_deceleration, dt)
+                return
+            self.crab_v = 0.
+            self._slew_wheels(target, dt)
+            return
+        self.wheel_angles = list(target)
+        if self.crab_settled_s < PIVOT_SETTLE_S:
+            self.crab_settled_s += dt
+            return
+        rate = (self.max_acceleration if abs(self.target_crab_v) > abs(self.crab_v) and
+                self.target_crab_v * self.crab_v >= 0 else self.max_deceleration)
+        self.crab_v = approach(self.crab_v, self.target_crab_v, rate, dt)
 
     def _pivot_tick(self, dt):
         """Stop, steer to the pivot pattern, turn; or turn back to driving."""
@@ -201,7 +294,7 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        node.v = node.delta = node.yaw_rate = 0.
+        node.v = node.delta = node.yaw_rate = node.crab_v = 0.
         node.publish()
         node.destroy_node()
         rclpy.shutdown()

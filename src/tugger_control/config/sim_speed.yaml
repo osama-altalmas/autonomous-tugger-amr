@@ -4,15 +4,17 @@
 #
 # Change these values whenever you want.
 #
-# ROUTE_PROFILE:
-#   straight sections: 1.2 m/s
+# ROUTE_PROFILE (Phase B: realistic limits for mixed traffic, ISO 3691-4):
+#   straight sections: 1.0 m/s
 #   curves:             0.6 m/s (the motion gate preserves curvature)
-#   docking approach:   0.35 m/s (motion gate limit 0.4 m/s)
-#   loaded departure:   0.5 m/s
-#   loaded route:       1.15 / 0.6 m/s (motion gate limit 1.2 m/s)
+#   docking approach:   0.3 m/s (transfer station limit)
+#   loaded departure:   0.3 m/s
+#   loaded route:       0.95 / 0.6 m/s (motion gate limit 1.0 m/s)
+#   acceleration 1.0 m/s^2, braking 1.5 m/s^2 (the gate's stopping
+#   envelopes use the same braking)
 #
 # FINAL_PROFILE:
-#   straight sections: 1.2 m/s
+#   straight sections: 1.0 m/s
 #
 # IMPORTANT:
 #   Speeds are meters/second in SIMULATED time.
@@ -24,19 +26,19 @@
 
 four_ws_controller:
   ros__parameters:
-    max_linear_speed: 1.2
-    max_acceleration: 1.6
-    max_deceleration: 2.5
+    max_linear_speed: 1.0
+    max_acceleration: 1.0
+    max_deceleration: 1.5
     max_steering_rate: 2.2
-    max_lateral_acceleration: 1.2
+    max_lateral_acceleration: 1.0
 
 # Follower-specific settings.
 # This section is read by our route launcher, not
 # passed directly to the ROS controller.
 
 follower:
-  cruising_speed: 1.2
+  cruising_speed: 1.0
   lookahead: 0.65
-  max_lateral_acceleration: 1.2
+  max_lateral_acceleration: 1.0
   max_tracking_error: 0.35
   max_seconds: 900

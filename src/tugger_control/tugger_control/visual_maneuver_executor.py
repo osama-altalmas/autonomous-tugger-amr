@@ -7,7 +7,12 @@ are published here.
 
 import math
 
+from tugger_control.crab_motion import CRAB_FRAME, CRAB_MAX_ANGLE_RAD, crab_propagate
 from tugger_control.visual_maneuver_planner import propagate
+
+# Crab primitives (distance, 0, wheel angle) may be longer than arcs: one
+# diagonal move replaces a parallel-parking sequence.
+CRAB_MAX_DISTANCE = 0.10
 
 
 def _local_pose(origin, pose):
@@ -23,22 +28,36 @@ STILL_TIME = 0.3
 
 
 class VisualManeuverExecutor:
-    """Track bounded signed arcs from measured odometry with stop interlocks."""
+    """Track bounded signed arcs and crab moves from measured odometry.
 
-    def __init__(self, primitives, *, speed=0.01, observation_age=0.5,
+    A primitive is (distance, curvature) for a car-like arc or
+    (distance, 0, wheel angle) for a crab move.
+    """
+
+    def __init__(self, primitives, *, speed=0.01, crab_speed=None, observation_age=0.5,
                  segment_timeout=12.0, position_error=0.012, heading_error=0.10,
                  steering_rate=0.8, wheelbase=0.58):
-        self.primitives = tuple((float(d), float(k)) for d, k in primitives)
+        self.primitives = tuple(
+            (float(p[0]), float(p[1]), float(p[2]) if len(p) > 2 else 0.0)
+            for p in primitives)
+        crab_speed = speed if crab_speed is None else crab_speed
         if (not self.primitives or not 0 < speed <= 0.02 or
+                not 0 < crab_speed <= 0.02 or
                 not 0 < observation_age <= 0.5 or segment_timeout <= 0 or
                 position_error <= 0 or heading_error <= 0 or
                 steering_rate <= 0 or wheelbase <= 0):
             raise ValueError('invalid visual maneuver limits')
-        if any(not math.isfinite(d) or not math.isfinite(k) or
-               not 0.005 <= abs(d) <= 0.05 or abs(k) > 2.0 / 0.58
-               for d, k in self.primitives):
-            raise ValueError('primitive outside 4WS limits')
+        for d, k, beta in self.primitives:
+            if not all(math.isfinite(v) for v in (d, k, beta)):
+                raise ValueError('primitive outside 4WS limits')
+            if beta != 0.0:
+                if (k != 0.0 or abs(beta) > CRAB_MAX_ANGLE_RAD or
+                        not 0.005 <= abs(d) <= CRAB_MAX_DISTANCE):
+                    raise ValueError('crab primitive outside 4WS limits')
+            elif not 0.005 <= abs(d) <= 0.05 or abs(k) > 2.0 / 0.58:
+                raise ValueError('primitive outside 4WS limits')
         self.speed = speed
+        self.crab_speed = crab_speed
         self.observation_age = observation_age
         self.segment_timeout = segment_timeout
         self.position_error = position_error
@@ -52,7 +71,7 @@ class VisualManeuverExecutor:
             return abs(k) * speed * 2.0 * abs(math.atan(wheelbase * k / 2.0)) / steering_rate
         self.slew_lag = [
             max(lag(k), lag(self.primitives[i - 1][1]) if i else 0.0)
-            for i, (_, k) in enumerate(self.primitives)]
+            for i, (_, k, _) in enumerate(self.primitives)]
         self.index = 0
         self.origin = None
         self.started = None
@@ -63,7 +82,8 @@ class VisualManeuverExecutor:
     def update(self, pose, speed, now, odom_stamp, camera_stamp, *, identity_ok,
                clearance_ok, visible, cancelled=False):
         """Return a request dictionary; fail closed on unavailable feedback."""
-        stop = {'state': 'STOP', 'linear_x': 0.0, 'angular_z': 0.0}
+        stop = {'state': 'STOP', 'linear_x': 0.0, 'linear_y': 0.0, 'angular_z': 0.0,
+                'frame': 'base_footprint'}
         if self.stopped:
             return {**stop, 'reason': 'executor stopped'}
         try:
@@ -102,14 +122,19 @@ class VisualManeuverExecutor:
                 return {**stop, 'state': 'WAIT_STOP', 'reason': 'waiting before maneuver'}
             self.origin = tuple(pose)
             self.started = now
-        distance, curvature = self.primitives[self.index]
+        distance, curvature, beta = self.primitives[self.index]
         local = _local_pose(self.origin, pose)
-        # Short primitives have less than pi/2 rotation, so the longitudinal
-        # arc coordinate remains monotonic. Yaw itself lags while steering
-        # slews and therefore must not be used as the distance travelled.
-        progress = (math.asin(max(-1.0, min(1.0, curvature * local[0]))) / curvature
-                    if abs(curvature) > 1e-8 else local[0])
-        expected = propagate((0., 0., 0.), progress, curvature)
+        if beta != 0.0:
+            # Crab: distance along the wheel direction; no turning expected.
+            progress = local[0] * math.cos(beta) + local[1] * math.sin(beta)
+            expected = crab_propagate((0., 0., 0.), progress, beta)
+        else:
+            # Short primitives have less than pi/2 rotation, so the
+            # longitudinal arc coordinate remains monotonic. Yaw itself lags
+            # while steering slews and must not be used as distance travelled.
+            progress = (math.asin(max(-1.0, min(1.0, curvature * local[0]))) / curvature
+                        if abs(curvature) > 1e-8 else local[0])
+            expected = propagate((0., 0., 0.), progress, curvature)
         yaw_error = abs(math.atan2(math.sin(local[2] - expected[2]),
                                    math.cos(local[2] - expected[2])))
         # The yaw tolerance follows the physics of the arc: the steering-slew
@@ -129,6 +154,12 @@ class VisualManeuverExecutor:
         if abs(progress) >= abs(distance) - 0.002:
             self.stopping = True
             return {**stop, 'state': 'WAIT_STOP', 'reason': 'primitive complete'}
+        if beta != 0.0:
+            velocity = math.copysign(self.crab_speed, distance)
+            return {'state': 'MOVING', 'linear_x': velocity * math.cos(beta),
+                    'linear_y': velocity * math.sin(beta), 'angular_z': 0.0,
+                    'frame': CRAB_FRAME, 'reason': 'guarded crab request'}
         velocity = math.copysign(self.speed, distance)
-        return {'state': 'MOVING', 'linear_x': velocity,
-                'angular_z': velocity * curvature, 'reason': 'guarded primitive request'}
+        return {'state': 'MOVING', 'linear_x': velocity, 'linear_y': 0.0,
+                'angular_z': velocity * curvature, 'frame': 'base_footprint',
+                'reason': 'guarded primitive request'}

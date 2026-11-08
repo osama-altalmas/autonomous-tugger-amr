@@ -2,7 +2,7 @@
 import math
 
 
-def speed_profile(v, omega, *, straight_limit=1.2, curve_limit=0.6,
+def speed_profile(v, omega, *, straight_limit=1.0, curve_limit=0.6,
                   curve_threshold=0.25):
     """Limit route speed while preserving the requested path curvature.
 
@@ -46,3 +46,14 @@ def wheel_speeds(v, delta, wheelbase, track_width, wheel_radius):
     c = math.cos(delta)
     return ((v - omega * track_width / 2) / (c * wheel_radius),
             (v + omega * track_width / 2) / (c * wheel_radius), omega)
+
+
+def front_wheel_speed(v, omega, delta, wheelbase, side, track_width, wheel_radius):
+    """Wheel speed (rad/s) of a front wheel rolling with the rigid-body motion.
+
+    The body velocity at the wheel (x = L/2, y = side * W/2) projected on the
+    wheel's heading ``delta``: what the wheel rolls without slipping along it.
+    """
+    vx = v - omega * side * track_width / 2.0
+    vy = omega * wheelbase / 2.0
+    return (vx * math.cos(delta) + vy * math.sin(delta)) / wheel_radius

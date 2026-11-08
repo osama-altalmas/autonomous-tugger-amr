@@ -1,0 +1,65 @@
+# AMCL: real localization from the merged safety-scanner scan (/scan) on the
+# static map. Replaces the simulator truth correction (Phase B3).
+amcl:
+  ros__parameters:
+    use_sim_time: true
+    base_frame_id: "base_footprint"
+    global_frame_id: "map"
+    odom_frame_id: "odom"
+    scan_topic: scan
+    # Accurate localization map (see localization.launch.py), not the
+    # conservative navigation map.
+    map_topic: /localization_map
+    # 4WS: turning in place and pivot transitions move the robot sideways a
+    # little, so the omnidirectional motion model fits better.
+    robot_model_type: "nav2_amcl::OmniMotionModel"
+    # Motion noise must cover real odometry error: wheels + IMU drift a few
+    # percent in curves (measured up to ~10 cm over a 90-degree curve). Too
+    # small a value makes the filter overconfident and it loses the robot.
+    alpha1: 0.15
+    alpha2: 0.15
+    alpha3: 0.15
+    alpha4: 0.15
+    alpha5: 0.15
+    laser_model_type: "likelihood_field"
+    laser_likelihood_max_dist: 2.0
+    laser_max_range: 30.0
+    laser_min_range: 0.1
+    max_beams: 360
+    # Scanner noise 1 cm on a 2 cm localization map; a moderate spread keeps
+    # the filter steady (0.05 made it jumpy in Gazebo runs).
+    sigma_hit: 0.08
+    z_hit: 0.9
+    z_rand: 0.1
+    z_max: 0.05
+    z_short: 0.05
+    lambda_short: 0.1
+    do_beamskip: false
+    beam_skip_distance: 0.5
+    beam_skip_error_threshold: 0.9
+    beam_skip_threshold: 0.3
+    min_particles: 500
+    max_particles: 3000
+    pf_err: 0.05
+    pf_z: 0.99
+    # Mild random-particle recovery if the scan stops matching.
+    recovery_alpha_fast: 0.1
+    recovery_alpha_slow: 0.001
+    resample_interval: 2
+    # Odometry (wheels + IMU) is accurate over short distances; correct it
+    # every 10 cm or 4.5 degrees. The floor markers give the final mm at
+    # stations (marker_localization).
+    update_min_d: 0.10
+    update_min_a: 0.08
+    save_pose_rate: 0.5
+    tf_broadcast: true
+    transform_tolerance: 0.3
+    # The robot starts on HOME.
+    set_initial_pose: true
+    initial_pose:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      yaw: 0.0
+    random_seed: -1
+    introspection_mode: "disabled"

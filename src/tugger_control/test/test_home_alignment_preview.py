@@ -54,6 +54,8 @@ def _bridge():
         _infer_pass_through_dock=Mock(),
         _start_route_chain=Mock(return_value=False),
         _maybe_turn_at_dock=Mock(return_value=False),
+        _release_camera_frame=Mock(),
+        _freeze_camera_frame=Mock(),
     )
     bridge._report_run_block = lambda message: OperatorBridge._report_run_block(
         bridge, message)
@@ -404,7 +406,7 @@ def test_cargo_attachment_report_requires_simulator_state_and_is_not_repeated():
     bridge._cargo_states = {0: None, 3: None}
     OperatorBridge._cargo_state(bridge, 0, SimpleNamespace(data='attached'))
     bridge._report.assert_called_once_with(
-        'CARGO JOINT ATTACHED: Station 1 cargo (simulator joint state).')
+        'CARGO JOINT ATTACHED: Station 1 cargo (cargo estimator).')
     OperatorBridge._cargo_state(bridge, 0, SimpleNamespace(data='attached'))
     OperatorBridge._cargo_state(bridge, 3, SimpleNamespace(data='unexpected'))
     assert bridge._report.call_count == 1
@@ -415,7 +417,7 @@ def test_cargo_detachment_is_reported_separately():
     bridge._cargo_states = {0: 'attached', 3: None}
     OperatorBridge._cargo_state(bridge, 0, SimpleNamespace(data='detached'))
     bridge._report.assert_called_once_with(
-        'CARGO JOINT DETACHED: Station 1 cargo (simulator joint state).')
+        'CARGO JOINT DETACHED: Station 1 cargo (cargo estimator).')
 
 
 def test_pickup_is_blocked_if_height_aware_clearance_is_unavailable():
@@ -638,17 +640,36 @@ def test_station_mission_rejects_approach_from_a_different_entrance():
                for call in bridge._report.call_args_list)
 
 
-def test_segment_one_success_starts_queued_precision_segment():
+def test_segment_one_success_settles_for_a_landmark_fix_before_segment_two():
     bridge = _bridge()
     bridge._queued_precision_poses = [[2, 0, 0], [3, 0, 0]]
-    bridge._start_precision_segment = Mock()
+    bridge._settle_then_precision = Mock()
     bridge._execution_done = Mock()
     future = Mock()
     from action_msgs.msg import GoalStatus
     future.result.return_value = SimpleNamespace(status=GoalStatus.STATUS_SUCCEEDED)
     OperatorBridge._on_follow_result(bridge, future)
-    bridge._start_precision_segment.assert_called_once()
+    bridge._settle_then_precision.assert_called_once()
     bridge._execution_done.assert_not_called()
+
+
+def test_settle_starts_segment_two_after_a_fresh_landmark_fix():
+    from rclpy.time import Time
+    bridge = _bridge()
+    bridge._start_precision_segment = Mock()
+    bridge._motion_armed = True
+    times = iter([10.0, 10.1, 10.5])
+    bridge.get_clock = Mock(return_value=SimpleNamespace(
+        now=lambda: Time(seconds=next(times))))
+    timers = []
+    bridge.create_timer = lambda period, callback: timers.append(callback) or Mock()
+    OperatorBridge._settle_then_precision(bridge)
+    bridge._landmark_fix_at = None
+    timers[0]()                                  # no fix yet: keep waiting
+    bridge._start_precision_segment.assert_not_called()
+    bridge._landmark_fix_at = 10.4               # a fix after the stop
+    timers[0]()
+    bridge._start_precision_segment.assert_called_once()
 
 
 def test_segment_two_not_dispatched_after_disarm():

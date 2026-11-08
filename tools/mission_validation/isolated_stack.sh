@@ -67,6 +67,8 @@ setsid bash -c '
     ros2 lifecycle get /map_server 2>/dev/null | grep -q "^active" && break
     sleep 2
   done
+  # Real localization (Phase B3): AMCL on the merged safety-scanner scan.
+  ros2 launch tugger_navigation localization.launch.py > "$1/amcl.log" 2>&1 &
   # Nav2 bring-up can stall on a lost lifecycle response. Retry only Nav2.
   # These three are the only Nav2 servers launched; missions call them directly.
   for attempt in 1 2 3 4; do

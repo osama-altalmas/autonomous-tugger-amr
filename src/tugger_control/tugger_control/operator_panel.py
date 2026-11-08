@@ -11,7 +11,7 @@ from pathlib import Path
 import rclpy
 from action_msgs.msg import GoalStatus
 from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
-from geometry_msgs.msg import PoseStamped, TwistStamped
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, TwistStamped
 from nav_msgs.msg import Path as NavPath
 from nav_msgs.msg import Odometry
 from nav2_msgs.action import ComputePathToPose, FollowPath
@@ -35,7 +35,7 @@ from tugger_control.cargo_policy import (
     CARGO_IDS, CARGO_STATIONS, DROPOFF_CARGO, PICKUP_CARGO, cargo_stand_model, other_cargo)
 from tugger_control.cargo_operation import CargoOperation
 from tugger_control.lift_geometry import (
-    LIFT_CONTACT_M, LIFT_DOWN_M, LIFT_UP_M, lift_is_down, lift_is_raised)
+    LIFT_CONTACT_M, LIFT_DOWN_M, LIFT_UP_M, cargo_lift_offset, lift_is_down, lift_is_raised)
 from tugger_control.loaded_motion_guard import decode_scene, scene_expected_counts
 from tugger_control.mission_planning import (
     entrance_gate, home_alignment_yaw, mission_approach_rejoin, plan_is_current,
@@ -76,6 +76,11 @@ QR_ALIGNMENT_TIMEOUT_S = 3.0
 # Four-wheel lateral parking uses multiple slow arcs and stationary checkpoints.
 QR_ALIGNMENT_MAX_DURATION_S = 200.0
 QR_ALIGNMENT_POSITION_TOLERANCE_M = 0.010
+# Guard band: the camera stage accepts and plans to 7 mm so the true centre
+# error stays inside the 10 mm requirement with the camera's measurement
+# uncertainty (about 1-2 mm). Accepting at the limit itself let a 9.9 mm
+# camera reading end 10.1 mm off.
+QR_ALIGNMENT_ACCEPT_M = 0.007
 QR_ALIGNMENT_HEADING_TOLERANCE_RAD = math.radians(1.0)
 QR_VISUAL_MAX_PLAN_FAILURES = 3
 QR_ALIGNMENT_STABLE_FRAMES = 3
@@ -88,6 +93,13 @@ RECOVERY_DELAY_S = 1.0
 RETRYABLE_CARGO_FAILURES = ('attach_rejected', 'timeout', 'cargo_moved_before_attach')
 # Docked means at the station centre; farther away the robot is between stages.
 DOCKED_TOLERANCE_M = 0.10
+# Robot heading = floor-QR angle in the downward camera + this constant, for
+# a QR placed at map yaw 0 (all station markers are). Measured in Gazebo at
+# four headings (spread 0.3-0.6 degrees per frame); a mounting calibration.
+QR_TO_ROBOT_YAW = math.pi / 2
+QR_YAW_SAMPLES = 5
+# Longest wait at a staging point for a landmark fix before entering anyway.
+LANDMARK_WAIT_S = 3.0
 # Heading error the car-like station exit accepts without turning in place.
 ENTRY_HEADING_TOLERANCE_DEG = 15.0
 GUARD_NOTE_INTERVAL_S = 15.0
@@ -115,6 +127,30 @@ QR_ALIGNMENT_MAX_OBSERVATION_AGE_S = 0.5
 QR_VISUAL_REPLAN_MARKER_DELTA_M = 0.006
 QR_STATIONARY_MAX_SPEED_M_S = 0.005
 QR_STATIONARY_MAX_YAW_RATE_RAD_S = 0.02
+
+
+# A running camera correction is stopped early only once the robot is well
+# inside the target (and aligned): there it can settle and be accepted.
+QR_EARLY_STOP_M = 0.006
+
+
+def early_stop_inside_target(radial_error, anchor_error, heading_error):
+    """True when a running correction may stop early and settle.
+
+    Only well inside the 10 mm acceptance limit. Stopping anywhere within 12 mm
+    trapped a robot at 10-12 mm: each new correction was cancelled on the
+    next camera frame, moved 1-4 mm, and "no progress" ended the stage.
+    """
+    return (radial_error <= QR_EARLY_STOP_M and anchor_error <= QR_EARLY_STOP_M and
+            abs(heading_error) <= QR_ALIGNMENT_HEADING_TOLERANCE_RAD)
+
+
+def _compose_pose(base, local):
+    """Pose ``local`` (x, y, yaw) expressed in frame ``base`` -> outer frame."""
+    c, s = math.cos(base[2]), math.sin(base[2])
+    yaw = base[2] + local[2]
+    return (base[0] + c * local[0] - s * local[1], base[1] + s * local[0] + c * local[1],
+            math.atan2(math.sin(yaw), math.cos(yaw)))
 
 
 def _yaw(quaternion):
@@ -184,6 +220,16 @@ class OperatorBridge(Node):
             TwistStamped, '/tugger/docking/cmd_vel', 10)
         self._motion_owner_pub = self.create_publisher(String, '/tugger/motion_owner', 10)
         self._rotate_pub = self.create_publisher(TwistStamped, '/tugger/rotate_cmd_vel', 10)
+        self._initial_pose_pub = self.create_publisher(
+            PoseWithCovarianceStamped, '/initialpose', 10)
+        # Safety (safety_monitor.py): panel emergency stop, reset, status.
+        self._estop_pub = self.create_publisher(Bool, '/tugger/estop/panel', 10)
+        self._safety_reset_pub = self.create_publisher(Empty, '/tugger/safety/reset', 10)
+        self._safety_state = None
+        self.create_subscription(String, '/tugger/safety/state', self._on_safety_state, 10)
+        self._landmark_fix_at = None
+        self.create_subscription(String, '/tugger/localization/landmark_fix',
+                                 self._on_landmark_fix, 10)
         # Turn in place: an optional capability (operator panel switch).
         self.turn_in_place_enabled = False
         self._pending_rotation = None
@@ -207,7 +253,7 @@ class OperatorBridge(Node):
         self._cargo_pose_seen_at = {0: None, 3: None}
         self._cargo_pose_subscriptions = [
             self.create_subscription(
-                PoseStamped, f'/tugger/cargo/station_{station}/ground_truth_pose',
+                PoseStamped, f'/tugger/cargo/station_{station}/estimated_pose',
                 lambda message, station=station: self._cargo_pose(station, message), 10)
             for station in CARGO_IDS
         ]
@@ -407,7 +453,7 @@ class OperatorBridge(Node):
         self._continue_attempt(1)
 
     def _station_occupancy(self):
-        """Live station cargo state from simulator cargo poses; file as backup."""
+        """Live station cargo state from estimated cargo poses; file as backup."""
         now = self.get_clock().now()
         fresh = all(
             self._cargo_pose_seen_at.get(key) is not None and
@@ -663,7 +709,7 @@ class OperatorBridge(Node):
             if cargo is not None:
                 seen = self._cargo_pose_seen_at[cargo]
                 if seen is None or not 0 <= (now - seen).nanoseconds / 1e9 <= 1.0:
-                    raise ValueError('simulator payload pose is stale or missing')
+                    raise ValueError('estimated cargo pose is stale or missing')
                 cargo_pose = self._cargo_poses[cargo]
             world = Path(get_package_share_directory('tugger_gazebo')) / 'worlds/tugger_warehouse.sdf'
             scene = decode_scene(self._collision_scene, now.nanoseconds / 1e9,
@@ -1345,6 +1391,33 @@ class OperatorBridge(Node):
         notes[text] = now
         self._report(text)
 
+    def _on_safety_state(self, message):
+        try:
+            state = json.loads(message.data)
+        except ValueError:
+            return
+        previous = getattr(self, '_safety_state', None)
+        self._safety_state = state
+        if previous is None or previous.get('state') != state.get('state'):
+            if state.get('state') in ('PROTECTIVE_STOP', 'EMERGENCY_STOP') or (
+                    previous is not None and previous.get('state') in (
+                        'PROTECTIVE_STOP', 'EMERGENCY_STOP')):
+                self._report(f'SAFETY {state.get("state")}: {state.get("reason") or "clear"}.')
+
+    def emergency_stop(self, pressed):
+        """Panel emergency stop: latched in the safety monitor until reset."""
+        message = Bool()
+        message.data = bool(pressed)
+        self._estop_pub.publish(message)
+        if pressed:
+            self._report('EMERGENCY STOP pressed on the panel.')
+
+    def reset_safety(self):
+        """Release the panel e-stop and reset; refused while a cause is active."""
+        self.emergency_stop(False)
+        self._safety_reset_pub.publish(Empty())
+        self._report('Safety reset requested (refused while an e-stop or the bumper is active).')
+
     def _publish_motion_owner(self):
         owner = 'STOP'
         if self._motion_armed and not self._cancel_requested:
@@ -1418,7 +1491,7 @@ class OperatorBridge(Node):
             return
         self._cargo_states[station] = state
         label = '1' if station == 0 else '3'
-        self._report(f'CARGO JOINT {state.upper()}: Station {label} cargo (simulator joint state).')
+        self._report(f'CARGO JOINT {state.upper()}: Station {label} cargo (cargo estimator).')
         self._advance_cargo_operation()
 
     def _joint_state(self, message):
@@ -1440,7 +1513,7 @@ class OperatorBridge(Node):
         self._advance_cargo_operation()
 
     def _cargo_pose(self, station, message):
-        """Record simulator-only payload pose observations for clearance."""
+        """Record the estimated cargo pose for clearance."""
         if station not in self._cargo_poses or message.header.frame_id != 'map':
             return
         pose = message.pose
@@ -1456,7 +1529,7 @@ class OperatorBridge(Node):
         for key in CARGO_IDS:
             seen = self._cargo_pose_seen_at[key]
             if seen is None or not 0 <= (now - seen).nanoseconds / 1e9 <= 1.0:
-                raise ClearanceUnavailable('simulator payload pose is stale or missing')
+                raise ClearanceUnavailable('estimated cargo pose is stale or missing')
         try:
             world = Path(get_package_share_directory('tugger_gazebo')) / 'worlds/tugger_warehouse.sdf'
             robot = Path(get_package_share_directory('tugger_description')) / 'urdf/tugger.urdf.xacro'
@@ -1469,8 +1542,19 @@ class OperatorBridge(Node):
                          tuple(cargo_stand_model(key) for key in CARGO_IDS)]
             other = other_cargo(cargo_id)
             target = LIFT_UP_M if operation == 'pickup' else LIFT_DOWN_M
+            cargo_pose = self._cargo_poses[cargo_id]
+            task = getattr(self, '_cargo_task', None)
+            rest = getattr(task, 'rest_z', None) if task is not None else None
+            if rest is not None and task.cargo_id == cargo_id:
+                # The cargo's height above its resting height follows the lift.
+                # The estimate and the lift reading arrive at slightly
+                # different instants; while the lift moves, combining them
+                # made a few millimetres of false "penetration" into a leg.
+                # The resting height, latched with the lift still, is exact.
+                cargo_pose = (cargo_pose[0], cargo_pose[1],
+                              rest + cargo_lift_offset(self._lift_position), cargo_pose[3])
             clear, hit = lift_sweep_clear(
-                self._robot_pose(), self._cargo_poses[cargo_id], self._cargo_poses[other],
+                self._robot_pose(), cargo_pose, self._cargo_poses[other],
                 obstacles, self._lift_position, target)
             if not clear:
                 self._report(f'Modeled cargo lift clearance failed: {hit}.')
@@ -1484,7 +1568,7 @@ class OperatorBridge(Node):
         for key in CARGO_IDS:
             seen = self._cargo_pose_seen_at[key]
             if seen is None or not 0 <= (now - seen).nanoseconds / 1e9 <= 1.0:
-                raise ValueError('simulator payload pose is stale or missing')
+                raise ValueError('estimated cargo pose is stale or missing')
         if (self._lift_seen_at is None or
                 not 0 <= (now - self._lift_seen_at).nanoseconds / 1e9 <= 1.0 or
                 not lift_is_raised(self._lift_position)):
@@ -1608,6 +1692,12 @@ class OperatorBridge(Node):
 
     def _robot_pose_at(self, stamp):
         """Robot pose at a message stamp; fails rather than mixing instants."""
+        frozen = getattr(self, '_camera_map_odom', None)
+        if frozen is not None:
+            transform = self._tf.lookup_transform(
+                'odom', 'base_footprint', rclpy.time.Time.from_msg(stamp))
+            t = transform.transform.translation
+            return _compose_pose(frozen, (t.x, t.y, _yaw(transform.transform.rotation)))
         transform = self._tf.lookup_transform(
             'map', 'base_footprint', rclpy.time.Time.from_msg(stamp))
         translation = transform.transform.translation
@@ -1646,6 +1736,11 @@ class OperatorBridge(Node):
         except Exception as exc:
             self._hold_visual_alignment(f'no TF at the camera frame time: {exc}')
             return
+        if not getattr(self, '_camera_anchored', True):
+            map_pose = self._anchor_camera_frame(station, map_pose, (marker_x, marker_y))
+        samples = getattr(self, '_camera_yaw_samples', None)
+        if samples is not None and getattr(self, '_qr_heading_angle', None) is not None:
+            map_pose = self._anchor_camera_heading(station, map_pose, message.header.stamp)
         try:
             heading_error = self._alignment_heading_error(map_pose)
         except Exception as exc:
@@ -1696,16 +1791,15 @@ class OperatorBridge(Node):
         # only once the heading is aligned too. A heading correction passes
         # through the target position; cancelling it there on position alone
         # restarted it every frame, so the robot never turned.
-        if (radial_error <= 0.012 and anchor_error <= 0.015 and
-                abs(heading_error) <= QR_ALIGNMENT_HEADING_TOLERANCE_RAD and
-                self._visual_executor is not None):
+        if (self._visual_executor is not None and
+                early_stop_inside_target(radial_error, anchor_error, heading_error)):
             self._visual_executor = None
             self._visual_replan_requested = True
             self._publish_precision_stop()
             self._qr_aligned_frames = 0
             return
-        if (radial_error <= QR_ALIGNMENT_POSITION_TOLERANCE_M and
-                anchor_error <= QR_ALIGNMENT_POSITION_TOLERANCE_M and
+        if (radial_error <= QR_ALIGNMENT_ACCEPT_M and
+                anchor_error <= QR_ALIGNMENT_ACCEPT_M and
                 abs(heading_error) <= QR_ALIGNMENT_HEADING_TOLERANCE_RAD):
             self._publish_precision_stop()
             if not self._alignment_is_stationary(now):
@@ -1748,7 +1842,9 @@ class OperatorBridge(Node):
             # Primitives are tracked in odom, which is continuous (REP 105);
             # the map pose can jump when localization corrects itself.
             odom_pose = self._robot_odom_pose()
-            speed = self._alignment_odom[0] if self._alignment_odom is not None else float('nan')
+            # Speed over ground: a crab move is mostly sideways.
+            speed = (math.hypot(self._alignment_odom[0], self._alignment_odom[1])
+                     if self._alignment_odom is not None else float('nan'))
             stamp = self._alignment_odom_stamp
             if not self._visual_clearance_current(pose):
                 self._stop_qr_alignment('live footprint clearance failed')
@@ -1784,8 +1880,10 @@ class OperatorBridge(Node):
         elif result['state'] == 'MOVING':
             command = TwistStamped()
             command.header.stamp = self.get_clock().now().to_msg()
-            command.header.frame_id = 'base_footprint'
+            # 'crab' for a crab move (all wheels at one angle).
+            command.header.frame_id = result.get('frame', 'base_footprint')
             command.twist.linear.x = result['linear_x']
+            command.twist.linear.y = result.get('linear_y', 0.0)
             command.twist.angular.z = result['angular_z']
             self._precision_cmd_pub.publish(command)
 
@@ -1795,6 +1893,14 @@ class OperatorBridge(Node):
         self._publish_precision_stop()
         if marker is None:
             return
+        # Plan only once the heading is anchored on the floor QR (or that has
+        # timed out): a heading anchor after planning would move the marker in
+        # the frame and invalidate the plan.
+        if getattr(self, '_camera_yaw_samples', None) is not None:
+            started = getattr(self, '_qr_alignment_started_at', None)
+            if started is not None and (self.get_clock().now() - started).nanoseconds / 1e9 < 2.0:
+                return
+            self._camera_yaw_samples = None   # no QR heading in time: keep localization
         try:
             now = self.get_clock().now().nanoseconds / 1e9
             pose = self._robot_pose()
@@ -1820,11 +1926,7 @@ class OperatorBridge(Node):
             excluded = ()
             if cargo is not None:
                 # Plan with the carried cargo; its own stand moves with the robot.
-                cx, cy, cz, cyaw = self._cargo_poses[cargo]
-                dx, dy = cx - pose[0], cy - pose[1]
-                cos_h, sin_h = math.cos(pose[2]), math.sin(pose[2])
-                carried = (cos_h * dx + sin_h * dy, -sin_h * dx + cos_h * dy, cz,
-                           cyaw - pose[2])
+                carried = self._carried_offset(cargo)
                 excluded = (cargo_stand_model(cargo),)
             obstacle_snapshot = tuple(box for model, box in scene if model not in excluded)
             # Indexed collision broad-phase retains EXACT oriented-box SAT
@@ -1844,7 +1946,7 @@ class OperatorBridge(Node):
                 replan_visual_maneuver, (0.0, 0.0, 0.0),
                 (marker_x, marker_y, heading_error), clearance,
                 max_depth=8, beam_width=400, time_budget=3.0,
-                position_tolerance=QR_ALIGNMENT_POSITION_TOLERANCE_M,
+                position_tolerance=QR_ALIGNMENT_ACCEPT_M,
                 heading_tolerance=QR_ALIGNMENT_HEADING_TOLERANCE_RAD,
                 require_full_visibility=False)
             with self._visual_plan_lock:
@@ -1913,15 +2015,33 @@ class OperatorBridge(Node):
             return
         self._visual_plan_failures = 0
         self._visual_executor = VisualManeuverExecutor(
-            plan, speed=0.005, segment_timeout=20.0)
+            plan, speed=0.005, crab_speed=0.01, segment_timeout=20.0)
         if self._visual_progress_stalled(current):
             self._stop_qr_alignment(
                 f'no progress after {QR_VISUAL_MAX_NO_PROGRESS} camera corrections; '
                 'the heading or position is outside what camera corrections can fix')
             return
 
+    def _carried_offset(self, cargo):
+        """Attached cargo in the robot frame (forward, left, height, yaw).
+
+        Cargo and robot are both taken from localization, so the offset is
+        right even while the camera stage runs on its own anchored frame.
+        """
+        cx, cy, cz, cyaw = self._cargo_poses[cargo]
+        transform = self._tf.lookup_transform('map', 'base_footprint', rclpy.time.Time())
+        rx, ry = transform.transform.translation.x, transform.transform.translation.y
+        ryaw = _yaw(transform.transform.rotation)
+        dx, dy = cx - rx, cy - ry
+        c, s = math.cos(ryaw), math.sin(ryaw)
+        return (c * dx + s * dy, -s * dx + c * dy, cz, cyaw - ryaw)
+
     def _visual_clearance_current(self, pose):
-        """Recheck exact current pose against a *fresh* live scene."""
+        """Recheck exact current pose against a *fresh* live scene.
+
+        Loaded (camera alignment at a drop-off), the carried cargo moves with
+        the robot and its own stand is not an obstacle, as in planning.
+        """
         try:
             now = self.get_clock().now().nanoseconds / 1e9
             if not self._loaded_guard_is_ready():
@@ -1930,8 +2050,19 @@ class OperatorBridge(Node):
             scene = decode_scene(self._collision_scene, now,
                                  expected_counts=scene_expected_counts(world))
             lift = self._lift_position
-            return (lift is not None and -0.005 <= lift <= 0.005 and
-                    PreparedVisualClearance((box for _, box in scene), lift)(pose))
+            if lift is None:
+                return False
+            cargo = self._confirmed_cargo()
+            if cargo is None:
+                if not -0.005 <= lift <= 0.005:
+                    return False
+                return PreparedVisualClearance((box for _, box in scene), lift)(pose)
+            if not lift_is_raised(lift):
+                return False
+            excluded = cargo_stand_model(cargo)
+            return PreparedVisualClearance(
+                (box for model, box in scene if model != excluded), lift,
+                carried=self._carried_offset(cargo))(pose)
         except Exception:
             return False
 
@@ -1990,7 +2121,8 @@ class OperatorBridge(Node):
             f'RED FRAME {status}: forward error={forward_m:.3f} m, '
             f'lateral error={lateral_m:.3f} m; '
             f'distance={math.hypot(forward_m, lateral_m):.3f} m; '
-            f'position tolerance={QR_ALIGNMENT_POSITION_TOLERANCE_M:.3f} m.')
+            f'accepting within {QR_ALIGNMENT_ACCEPT_M:.3f} m '
+            f'(requirement {QR_ALIGNMENT_POSITION_TOLERANCE_M:.3f} m).')
 
     def _complete_red_frame_alignment(self):
         """Report final success after the red-frame positional gate passes."""
@@ -1999,6 +2131,7 @@ class OperatorBridge(Node):
         station = self._qr_alignment_station
         marker_x, marker_y = self._red_frame_error
         self._qr_alignment_active = False
+        self._release_camera_frame()
         self._dock_precision_mode = False
         self.docked_station = station
         self._publish_precision_stop()
@@ -2059,7 +2192,7 @@ class OperatorBridge(Node):
             pose_seen = self._cargo_pose_seen_at[cargo_id]
             if (pose_seen is None or self._cargo_poses[cargo_id] is None or
                     not 0 <= (now - pose_seen).nanoseconds / 1e9 <= 1.0):
-                raise ValueError('simulator cargo pose is missing or stale')
+                raise ValueError('estimated cargo pose is missing or stale')
             if is_pickup and not lift_is_down(self._lift_position):
                 raise ValueError('pickup requires the lift to be down')
             if not is_pickup and not lift_is_raised(self._lift_position):
@@ -2071,6 +2204,10 @@ class OperatorBridge(Node):
             self._cargo_task = CargoOperation(
                 'pickup' if is_pickup else 'dropoff', cargo_id,
                 now.nanoseconds / 1e9, self._cargo_poses[cargo_id][2])
+            # Lift is still here (down for pickup, raised for drop-off): the
+            # cargo's resting height is its estimate minus the lift offset.
+            self._cargo_task.rest_z = (self._cargo_poses[cargo_id][2] -
+                                       cargo_lift_offset(self._lift_position))
             self._report(f'{station}: starting confirmed cargo operation.')
             if is_pickup:
                 self._report('Allowing the vehicle to settle before requesting attachment.')
@@ -2169,7 +2306,7 @@ class OperatorBridge(Node):
         elif command == 'SUCCEEDED':
             self._cargo_task = None
             label = 'ATTACHED AND LIFTED' if task.operation == 'pickup' else 'LOWERED AND DETACHED'
-            self._report(f'CARGO {label}: simulator cargo pose and joint feedback confirmed.')
+            self._report(f'CARGO {label}: estimated cargo pose and lift feedback confirmed.')
             self._execution_done(True, GoalStatus.STATUS_SUCCEEDED)
         elif command == 'FAILED':
             self._cargo_task = None
@@ -2188,6 +2325,7 @@ class OperatorBridge(Node):
         if not self._qr_alignment_active:
             return
         self._qr_alignment_active = False
+        self._release_camera_frame()
         self._dock_precision_mode = False
         self._visual_plan_generation += 1
         with self._visual_plan_lock:
@@ -2224,6 +2362,12 @@ class OperatorBridge(Node):
             self._execution_done(False, GoalStatus.STATUS_ABORTED)
             return
         self._alignment_target_yaw = target_yaw
+        try:
+            self._freeze_camera_frame()
+        except Exception as exc:
+            self._report(f'PRECISION ALIGNMENT BLOCKED for {station}: no map -> odom: {exc}.')
+            self._execution_done(False, GoalStatus.STATUS_ABORTED)
+            return
         self._qr_heading_angle = None
         self._qr_heading_stamp = None
         self._qr_heading_reference = None
@@ -2297,15 +2441,109 @@ class OperatorBridge(Node):
         return pose
 
     def _robot_yaw(self):
-        transform = self._tf.lookup_transform(
-            'map', 'base_footprint', rclpy.time.Time())
-        return _yaw(transform.transform.rotation)
+        return self._robot_pose()[2]
 
     def _robot_pose(self):
+        frozen = getattr(self, '_camera_map_odom', None)
+        if frozen is not None:
+            return _compose_pose(frozen, self._robot_odom_pose())
         transform = self._tf.lookup_transform(
             'map', 'base_footprint', rclpy.time.Time())
         translation = transform.transform.translation
         return translation.x, translation.y, _yaw(transform.transform.rotation)
+
+    def _freeze_camera_frame(self):
+        """Hold map -> odom fixed for the camera stage (visual servoing frame).
+
+        The camera stage checks millimetre consistency over a few seconds.
+        Laser localization corrects itself in centimetre steps; odometry is
+        smooth over that time. So during the stage every pose is the odometry
+        pose placed with the map -> odom transform taken at its start.
+        """
+        transform = self._tf.lookup_transform('map', 'odom', rclpy.time.Time())
+        t = transform.transform.translation
+        self._camera_map_odom = (t.x, t.y, _yaw(transform.transform.rotation))
+        self._camera_anchored = False
+        self._camera_yaw_samples = []
+
+    def _anchor_camera_heading(self, station, pose, stamp):
+        """Set the frozen frame's heading from the floor QR (median of samples).
+
+        The QR's orientation is unique, so its angle in the downward camera
+        gives the absolute robot heading (QR_TO_ROBOT_YAW). The frame turns
+        about the robot's current position, which stays where the marker put it.
+        """
+        qr_stamp = getattr(self, '_qr_heading_stamp', None)
+        frame_time = stamp.sec + stamp.nanosec / 1e9
+        if qr_stamp is None or abs(frame_time - qr_stamp) > 0.2:
+            return pose
+        self._camera_yaw_samples.append(wrap(self._qr_heading_angle + QR_TO_ROBOT_YAW))
+        if len(self._camera_yaw_samples) < QR_YAW_SAMPLES:
+            return pose
+        samples = sorted(self._camera_yaw_samples, key=lambda a: wrap(a - pose[2]))
+        heading = samples[len(samples) // 2]
+        self._camera_yaw_samples = None
+        # Restart the marker-consistency guard and planning in the anchored frame.
+        self._visual_marker_guard = None
+        self._visual_replan_requested = True
+        turn = wrap(heading - pose[2])
+        if abs(turn) > math.radians(5.0):
+            return pose  # implausible: keep the localization heading
+        frozen = self._camera_map_odom
+        odom = self._robot_odom_pose()
+        yaw = frozen[2] + turn
+        c, s = math.cos(yaw), math.sin(yaw)
+        current = self._robot_pose()
+        self._camera_map_odom = (current[0] - (c * odom[0] - s * odom[1]),
+                                 current[1] - (s * odom[0] + c * odom[1]), yaw)
+        if abs(turn) > math.radians(0.3):
+            self._report(f'{station}: camera stage heading set from the floor QR '
+                         f'(localization was {math.degrees(turn):+.1f} deg off).')
+        return (pose[0], pose[1], wrap(pose[2] + turn))
+
+    def _anchor_camera_frame(self, station, pose, marker):
+        """Place the frozen frame so the seen red frame sits on its station.
+
+        ``pose`` is the robot pose in the frozen frame at the image time and
+        ``marker`` the frame centre in the robot frame. The station's centre
+        is known from the site layout, so the robot's map position follows
+        from the camera to the millimetre (floor-marker localization); the
+        heading stays the localization's.
+        """
+        center = getattr(self, '_station_centers', {}).get(station)
+        frozen = getattr(self, '_camera_map_odom', None)
+        if center is None or frozen is None:
+            return pose
+        c, s = math.cos(pose[2]), math.sin(pose[2])
+        seen = (pose[0] + c * marker[0] - s * marker[1], pose[1] + s * marker[0] + c * marker[1])
+        shift = (center[0] - seen[0], center[1] - seen[1])
+        if math.hypot(*shift) > 0.30:
+            return pose  # not this station's marker: never anchor on it
+        self._camera_map_odom = (frozen[0] + shift[0], frozen[1] + shift[1], frozen[2])
+        self._camera_anchored = True
+        # Hand the exact pose to localization too, so everything placed from
+        # it (the carried cargo in the scene, the motion gate) agrees with the
+        # camera stage. The stage itself runs on its frozen frame and is not
+        # disturbed by the resulting jump.
+        fix = PoseWithCovarianceStamped()
+        fix.header.stamp = self.get_clock().now().to_msg()
+        fix.header.frame_id = 'map'
+        current = self._robot_pose()
+        fix.pose.pose.position.x, fix.pose.pose.position.y = current[0], current[1]
+        fix.pose.pose.orientation.z = math.sin(current[2] / 2)
+        fix.pose.pose.orientation.w = math.cos(current[2] / 2)
+        covariance = [0.0] * 36
+        covariance[0] = covariance[7] = 0.01 ** 2
+        covariance[35] = math.radians(1.0) ** 2
+        fix.pose.covariance = covariance
+        self._initial_pose_pub.publish(fix)
+        if math.hypot(*shift) > 0.01:
+            self._report(f'{station}: camera stage anchored on the floor marker '
+                         f'(localization was {math.hypot(*shift) * 100:.1f} cm off).')
+        return (pose[0] + shift[0], pose[1] + shift[1], pose[2])
+
+    def _release_camera_frame(self):
+        self._camera_map_odom = None
 
     @staticmethod
     def _path_length(poses):
@@ -3068,7 +3306,7 @@ class OperatorBridge(Node):
                 return
             if succeeded and self._queued_precision_poses is not None:
                 self._active_follow = None
-                self._start_precision_segment()
+                self._settle_then_precision()
                 return
             if succeeded and self._camera_handoff_station:
                 self._active_follow = None
@@ -3090,13 +3328,57 @@ class OperatorBridge(Node):
             self._report(f'FollowPath result failed: {exc}')
         self._active_follow = None
 
+    def _on_landmark_fix(self, message):
+        try:
+            self._landmark_fix_at = float(json.loads(message.data)['stamp'])
+        except (ValueError, KeyError, TypeError):
+            pass
+
+    def _settle_then_precision(self):
+        """Stop at the staging point until a landmark confirms the pose.
+
+        Before driving under a stand the robot stands still for the station
+        legs (or floor marker) to fix its pose exactly (marker_localization);
+        it then enters on odometry from that fix. If no landmark answers
+        within LANDMARK_WAIT_S it continues on laser localization alone.
+        """
+        start = self.get_clock().now().nanoseconds / 1e9
+        timer = None
+
+        def check():
+            now = self.get_clock().now().nanoseconds / 1e9
+            fixed = getattr(self, '_landmark_fix_at', None)
+            if self._cancel_requested or not self._motion_armed:
+                timer.cancel()
+                return
+            if fixed is not None and fixed >= start + 0.3:
+                timer.cancel()
+                self._start_precision_segment()
+            elif now - start > LANDMARK_WAIT_S:
+                timer.cancel()
+                self._report('No landmark fix at the staging point; entering on laser '
+                             'localization.')
+                self._start_precision_segment()
+        timer = self.create_timer(0.1, check)
+
     def _start_precision_segment(self):
         """Validate and dispatch segment 2 after segment 1 has stopped."""
         self._mission_phase = 'approach'
         station = self._queued_precision_station
         poses = self._queued_precision_poses
-        # An empty robot leaves a station the way it came in.
-        self._arrival_approach = (station, [list(pose) for pose in poses])
+        # An empty robot leaves a station the way it came in. A re-approach
+        # after a recovery follows only the remaining part of the same gate's
+        # approach; keep the full one, so the exit returns to the staging point.
+        previous = getattr(self, '_arrival_approach', None)
+        keep = False
+        try:
+            keep = (previous is not None and previous[0] == station and
+                    entrance_gate(previous[1]) == entrance_gate(poses) and
+                    self._path_length(previous[1]) > self._path_length(poses) + 0.05)
+        except (ValueError, TypeError, IndexError):
+            keep = False
+        if not keep:
+            self._arrival_approach = (station, [list(pose) for pose in poses])
         try:
             current = self._robot_pose()
             gap = math.hypot(current[0] - poses[0][0], current[1] - poses[0][1])
@@ -3340,6 +3622,15 @@ class OperatorPanel(Plugin):
         run.clicked.connect(
             lambda: self._bridge.run_selected_mission_with_retry(self._armed.isChecked()))
         mission_layout.addWidget(run, len(buttons) + 2, 0)
+        estop = QPushButton('EMERGENCY STOP')
+        estop.setStyleSheet('background-color: #c62828; color: white; font-weight: bold;')
+        estop.clicked.connect(lambda: self._bridge.emergency_stop(True))
+        reset = QPushButton('Reset safety (after the cause is cleared)')
+        reset.clicked.connect(lambda: self._bridge.reset_safety())
+        safety_row = QHBoxLayout()
+        safety_row.addWidget(estop)
+        safety_row.addWidget(reset)
+        layout.addLayout(safety_row)
         cancel = QPushButton('Cancel active navigation')
         cancel.clicked.connect(lambda: self._bridge.cancel_navigation())
         mission_layout.addWidget(cancel, len(buttons) + 3, 0)

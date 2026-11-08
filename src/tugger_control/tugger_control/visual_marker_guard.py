@@ -41,6 +41,9 @@ class FixedMarkerGuard:
             ),
         )
 
+        # The capture boundary stays fixed where the marker was first seen;
+        # ``marker`` itself tracks the latest accepted camera fix (see check).
+        self.origin = self.marker
         self.agreement = agreement
         self.max_yaw = max_yaw
 
@@ -61,8 +64,8 @@ class FixedMarkerGuard:
             return "ABORT", "missing map/vision pose"
 
         distance = math.hypot(
-            x - self.marker[0],
-            y - self.marker[1],
+            x - self.origin[0],
+            y - self.origin[1],
         )
 
         if distance > self.radius:
@@ -103,4 +106,11 @@ class FixedMarkerGuard:
                 f"by {discrepancy:.3f} m",
             )
 
+        # Accepted: carry the marker estimate forward. Wheel odometry drifts
+        # by millimetres over each small correction; anchoring on the first
+        # sighting let that drift add up until camera and odometry "disagreed"
+        # although nothing was wrong. Comparing each frame with the previous
+        # accepted one still catches a jump (misdetection, wrong marker,
+        # wheel slip) but no longer fails on slow, normal drift.
+        self.marker = seen
         return "OK", ""

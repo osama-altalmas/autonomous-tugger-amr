@@ -3,8 +3,9 @@ import pytest
 from tugger_control.motion_math import speed_profile
 
 
-def test_straight_route_uses_1_2_mps_cap():
-    assert speed_profile(2.0, 0.1) == pytest.approx((1.2, 0.06))
+def test_straight_route_uses_1_0_mps_cap():
+    # Mixed traffic: 1.0 m/s maximum (Phase B).
+    assert speed_profile(2.0, 0.1) == pytest.approx((1.0, 0.05))
 
 
 def test_curve_route_uses_0_6_mps_cap_without_changing_curvature():

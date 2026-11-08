@@ -90,7 +90,7 @@ def stopping_curvature(curvature_bound):
 
 
 def precision_stopping_envelope(pose, lift, obstacles, current_speed, requested_speed,
-                                *, reaction_s=0.5, deceleration=2.5,
+                                *, reaction_s=0.5, deceleration=1.5,
                                 max_speed=0.4, max_current_speed=None,
                                 curvature_bound=FULL_LOCK_CURVATURE):
     """Conservative simulator-only unloaded stopping envelope, not safety-rated.
@@ -132,7 +132,8 @@ def precision_stopping_envelope(pose, lift, obstacles, current_speed, requested_
 
 def choose_precision_speed(pose, lift, obstacles, current_speed, requested_speed,
                            *, max_speed=0.4, minimum_speed=0.0,
-                           curvature_bound=FULL_LOCK_CURVATURE):
+                           curvature_bound=FULL_LOCK_CURVATURE,
+                           max_current_speed=0.4):
     """Select the fastest precision speed whose stopping envelope is clear.
 
     The approach controller is allowed to request 0.4 m/s away from the
@@ -156,7 +157,7 @@ def choose_precision_speed(pose, lift, obstacles, current_speed, requested_speed
         value = math.copysign(candidate, limited) if candidate else 0.0
         clear, last_hit = precision_stopping_envelope(
             pose, lift, obstacles, current_speed, value,
-            max_speed=max_speed, max_current_speed=0.4,
+            max_speed=max_speed, max_current_speed=max_current_speed,
             curvature_bound=curvature_bound)
         if clear:
             return value, None
