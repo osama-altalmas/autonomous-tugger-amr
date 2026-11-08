@@ -7,7 +7,7 @@ Nav2 recommends. All terminals must use the same setting, including the `ros2`
 checks in T8; a terminal without it may not see the others.
 
 Start order: **Step 0 → T1 → T2 → T3 → T4 → T8 map activation → T4b → T5 → T8 checks → T6**.
-T7 and T9 are optional.
+T6b, T7 and T9 are optional.
 
 ## Step 0 — Start clean (every session)
 
@@ -116,6 +116,28 @@ source install/setup.bash
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 ros2 run rqt_gui rqt_gui -s tugger_control
 ```
+
+## T6b — Camera windows and spectator (optional, for watching or recording)
+
+Start it after T6. It opens three small camera windows (QR detector, front,
+rear) and locks Gazebo's view to the robot, 2 m behind its direction of travel
+and 1 m up. Closing all three windows, or Ctrl+C, ends it.
+
+```bash
+cd ~/Autonomous_Tugger_Project_V2/autonomous_tugger_ws
+unset AMENT_PREFIX_PATH COLCON_PREFIX_PATH CMAKE_PREFIX_PATH PYTHONPATH
+source /opt/ros/lyrical/setup.bash
+source install/setup.bash
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export GZ_IP=127.0.0.1
+export QT_QPA_PLATFORM=xcb
+export CYCLONEDDS_URI='<CycloneDDS><Domain><Discovery><ParticipantIndex>auto</ParticipantIndex><MaxAutoParticipantIndex>200</MaxAutoParticipantIndex></Discovery></Domain></CycloneDDS>'
+python3 tools/mission_view/mission_view.py
+```
+
+Add `--no-spectator` to the last line for the camera windows only. The QR
+window needs T2 running. Keep the panel (T6) minimised, not closed, during a
+mission: it runs the mission.
 
 ## T7 — RViz (optional)
 
