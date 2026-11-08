@@ -77,6 +77,36 @@ def generate_launch_description():
         parameters=[{'use_sim_time': True}],
     )
 
+    cargo_estimator = Node(
+        package='tugger_control', executable='cargo_estimator',
+        name='tugger_cargo_estimator', output='screen',
+        parameters=[{'use_sim_time': True}],
+    )
+
+    cargo_id_reader = Node(
+        package='tugger_control', executable='cargo_id_reader',
+        name='tugger_cargo_id_reader', output='screen',
+        parameters=[{'use_sim_time': True}],
+    )
+
+    marker_localization = Node(
+        package='tugger_control', executable='marker_localization',
+        name='tugger_marker_localization', output='screen',
+        parameters=[{'use_sim_time': True}],
+    )
+
+    scan_merger = Node(
+        package='tugger_control', executable='scan_merger',
+        name='tugger_scan_merger', output='screen',
+        parameters=[{'use_sim_time': True}],
+    )
+
+    safety_monitor = Node(
+        package='tugger_control', executable='safety_monitor',
+        name='tugger_safety_monitor', output='screen',
+        parameters=[{'use_sim_time': True}],
+    )
+
     docking_precision_controller = Node(
         package='tugger_control',
         executable='docking_precision_controller',
@@ -92,4 +122,9 @@ def generate_launch_description():
         qr_docking_vision,
         docking_precision_controller,
         sim_motion_gate,
+        safety_monitor,
+        scan_merger,
+        cargo_estimator,
+        cargo_id_reader,
+        marker_localization,
     ])

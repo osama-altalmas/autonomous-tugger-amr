@@ -6,7 +6,7 @@ Every terminal uses Cyclone DDS (`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`), as
 Nav2 recommends. All terminals must use the same setting, including the `ros2`
 checks in T8; a terminal without it may not see the others.
 
-Start order: **Step 0 → T1 → T2 → T3 → T4 → T8 map activation → T5 → T8 checks → T6**.
+Start order: **Step 0 → T1 → T2 → T3 → T4 → T8 map activation → T4b → T5 → T8 checks → T6**.
 T7 and T9 are optional.
 
 ## Step 0 — Start clean (every session)
@@ -53,7 +53,10 @@ export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 ros2 launch tugger_control control.launch.py
 ```
 
-## T3 — Ground-truth localization
+## T3 — Ground-truth pose (evaluation only)
+
+The robot does not use this pose. It only feeds the true position to the test
+tools; the robot localizes itself in T4b.
 
 ```bash
 cd ~/Autonomous_Tugger_Project_V2/autonomous_tugger_ws
@@ -76,6 +79,20 @@ ros2 run nav2_map_server map_server --ros-args \
   -r __node:=map_server \
   -p "yaml_filename:=$PWD/src/tugger_navigation/maps/warehouse_map.yaml" \
   -p use_sim_time:=true
+```
+
+## T4b — Localization (AMCL)
+
+Start after the map is activated (T8) and before T5. Without it the robot has
+no `map` position and Nav2 cannot start its work.
+
+```bash
+cd ~/Autonomous_Tugger_Project_V2/autonomous_tugger_ws
+unset AMENT_PREFIX_PATH COLCON_PREFIX_PATH CMAKE_PREFIX_PATH PYTHONPATH
+source /opt/ros/lyrical/setup.bash
+source install/setup.bash
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+ros2 launch tugger_navigation localization.launch.py
 ```
 
 ## T5 — Nav2

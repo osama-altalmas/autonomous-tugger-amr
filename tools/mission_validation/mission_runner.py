@@ -61,6 +61,10 @@ class Recorder(Node):
         self.phases = {}
         self.guard = {}
         self.guard_events = []
+        # Diagnostic trace at 2 Hz: sim time, owner, true pose, estimated
+        # pose, wheel speed. Used to explain stalls and alignment failures.
+        self.trace = []
+        self._trace_t = None
         self._dock_sign = 0
         self._speed = 0.0
 
@@ -112,6 +116,7 @@ class Recorder(Node):
         if phase['_slow_t'] is not None and abs(self._speed) < 0.3:
             phase['slow_s'] += max(0.0, now - phase['_slow_t'])
         phase['_slow_t'] = now
+        estimate = None
         if self.pose_lookup is not None:
             try:
                 estimate = self.pose_lookup()
@@ -119,7 +124,14 @@ class Recorder(Node):
                     phase['max_estimate_error_m'],
                     math.hypot(estimate[0] - self.pose[0], estimate[1] - self.pose[1]))
             except Exception:
-                pass
+                estimate = None
+        if self._trace_t is None or now - self._trace_t >= 0.5:
+            self._trace_t = now
+            self.trace.append([round(now, 2), self.owner,
+                               *(round(v, 4) for v in self.pose),
+                               *((round(v, 4) for v in estimate[:3]) if estimate else
+                                 (None, None, None)),
+                               round(self._speed, 3)])
 
     def _guard(self, msg):
         self.guard[msg.data] = self.guard.get(msg.data, 0) + 1
@@ -422,6 +434,7 @@ class Runner:
             'phases': self.recorder.summary(),
             'guard_reasons': dict(self.recorder.guard),
             'guard_events': list(self.recorder.guard_events),
+            'trace': list(self.recorder.trace),
             'reports': self.reports[first_report:],
         })
         return result
@@ -586,6 +599,11 @@ def main():
         result = runner.mission(destination)
         results.append(result)
         Path(args.output).write_text(json.dumps(results, indent=1))
+        # The requirement is judged on the true pose: 10 mm from the centre.
+        if result['outcome'] == 'SUCCESS' and result['center_error_m'] > 0.010:
+            result['outcome'] = 'FAILED'
+            result['failure'] = 'centre error above the 10 mm requirement'
+            Path(args.output).write_text(json.dumps(results, indent=1))
         print(destination, result['outcome'], f"{result['center_error_m']:.4f} m", flush=True)
         if result['outcome'] != 'SUCCESS':
             break

@@ -10,6 +10,9 @@ import heapq
 import itertools
 import time
 
+# Fraction of the position tolerance that a preferred plan must end within.
+TIGHT_FRACTION = 0.5
+
 
 def propagate(pose, distance, curvature):
     """Exact counter-phase 4WS arc: yaw rate = velocity * curvature."""
@@ -20,6 +23,46 @@ def propagate(pose, distance, curvature):
     return (x + (math.sin(yaw + change) - math.sin(yaw)) / curvature,
             y - (math.cos(yaw + change) - math.cos(yaw)) / curvature,
             math.atan2(math.sin(yaw + change), math.cos(yaw + change)))
+
+
+def advance(pose, primitive, distance=None):
+    """Pose after ``distance`` (default: all) of an arc or crab primitive."""
+    length = primitive[0] if distance is None else distance
+    if len(primitive) > 2 and primitive[2] != 0.0:
+        from tugger_control.crab_motion import crab_propagate
+        return crab_propagate(pose, length, primitive[2])
+    return propagate(pose, length, primitive[1])
+
+
+def crab_macros(target):
+    """Crab moves (distance, 0, wheel angle) that remove the lateral error.
+
+    One diagonal move straight at the target when its direction is within
+    the wheel limit; otherwise the steepest diagonal forward or backward,
+    whose leftover forward error the caller's straight correction removes,
+    or a forward-and-back pair that ends with no forward change.
+    """
+    from tugger_control.crab_motion import CRAB_MAX_ANGLE_RAD
+    tx, ty = target[0], target[1]
+    if abs(ty) < 0.003:
+        return []
+    macros = []
+    distance = math.hypot(tx, ty)
+    for sign in (1.0, -1.0):
+        beta = math.atan2(sign * ty, sign * tx)
+        if abs(beta) <= CRAB_MAX_ANGLE_RAD and distance >= 0.005:
+            macros.append(((sign * distance, 0.0, beta),))
+    steep = CRAB_MAX_ANGLE_RAD
+    side = math.copysign(1.0, ty)
+    reach = abs(ty) / math.sin(steep)
+    for sign in (1.0, -1.0):
+        # Forward-diagonal (sign +1) or backward-diagonal (sign -1).
+        macros.append(((sign * reach, 0.0, sign * side * steep),))
+        half = reach / 2.0
+        if half >= 0.005:
+            macros.append(((sign * half, 0.0, sign * side * steep),
+                           (-sign * half, 0.0, -sign * side * steep)))
+    return [m for m in macros if all(0.005 <= abs(p[0]) <= 0.10 for p in m)]
 
 
 def replan_visual_maneuver(pose, target, clearance, **options):
@@ -162,14 +205,15 @@ def plan_visual_maneuver(target, clearance, *, max_depth=6, beam_width=220,
     # temporary detour. Each macro finishes with its starting yaw.
     def swept(origin, actions):
         pose = origin
-        for distance, curvature in actions:
+        for primitive in actions:
+            distance = primitive[0]
             count = math.ceil(abs(distance) / .005)
             for index in range(1, count + 1):
-                sample = propagate(pose, distance * index / count, curvature)
+                sample = advance(pose, primitive, distance * index / count)
                 # Require complete red-frame visibility throughout each arc.
                 if not marker_visible(sample, target, height=.056) or not clearance(sample):
                     return None
-            pose = propagate(pose, distance, curvature)
+            pose = advance(pose, primitive)
         return pose
 
     # Explore short 4WS parallel-parking maneuvers plus one measured yaw
@@ -191,6 +235,9 @@ def plan_visual_maneuver(target, clearance, *, max_depth=6, beam_width=220,
             ((-length, -3*sign), (-length, 3*sign),
              (length, -3*sign), (length, 3*sign)),
         ))
+    # Crab first: one diagonal move (all wheels at one angle) per macro.
+    crabs = crab_macros(target)
+    macros = crabs + macros
     candidates = []
     # Correct longitudinal displacement before lateral parking if useful.
     prefixes = [()]
@@ -203,8 +250,9 @@ def plan_visual_maneuver(target, clearance, *, max_depth=6, beam_width=220,
         for macro in ((), *macros):
             origin = first
             steps = prefix
-            for repetitions in range((max_depth - len(prefix)) // 4 + 1
-                                     if macro else 1):
+            for repetitions in range(
+                    1 + 1 if macro in crabs else
+                    (max_depth - len(prefix)) // 4 + 1 if macro else 1):
                 if repetitions:
                     origin = swept(origin, macro)
                     if origin is None:
@@ -253,10 +301,24 @@ def plan_visual_maneuver(target, clearance, *, max_depth=6, beam_width=220,
                     if d <= position_tolerance and h <= heading_tolerance:
                         proposal = steps + trim + corrections
                         if proposal:
-                            candidates.append((sum(abs(t[0]) for t in proposal),
+                            # Each change of wheel pattern costs a stop and
+                            # a re-steer: count it like 2 cm of travel.
+                            switches = sum(
+                                1 for a, b in zip(proposal, proposal[1:])
+                                if (len(a) > 2 and a[2] != 0.0) != (len(b) > 2 and b[2] != 0.0)
+                                or (len(a) > 2 and len(b) > 2 and a[2] != b[2]))
+                            candidates.append((sum(abs(t[0]) for t in proposal) +
+                                               0.02 * switches,
                                                len(proposal), d, proposal))
     if candidates:
-        return min(candidates)[3]
+        # Prefer plans that end well inside the tolerance. Picking the
+        # shortest plan alone chose manoeuvres that end right at the
+        # tolerance edge, so millimetres of tracking and camera error left the
+        # robot just outside it after every correction ("no progress").
+        tight = [c for c in candidates if c[2] <= position_tolerance * TIGHT_FRACTION]
+        if tight:
+            return min(tight)[3]
+        return min(candidates, key=lambda c: (c[2], c[0], c[1]))[3]
     def error(pose):
         d = math.hypot(target[0] - pose[0], target[1] - pose[1])
         a = abs(math.atan2(math.sin(target[2] - pose[2]),
@@ -281,6 +343,7 @@ def plan_visual_maneuver(target, clearance, *, max_depth=6, beam_width=220,
     seen = {key(start): 0.0}
     deadline = time.monotonic() + time_budget
     expansions = 0
+    fallback = None   # best plan inside the tolerance but not the tight band
     while frontier and expansions < max_expansions and time.monotonic() < deadline:
         _, _, pose, path, traveled = heapq.heappop(frontier)
         if len(path) >= max_depth:
@@ -314,7 +377,10 @@ def plan_visual_maneuver(target, clearance, *, max_depth=6, beam_width=220,
                 continue
             candidate = path + ((distance, curvature),)
             if d <= position_tolerance and a <= heading_tolerance:
-                return candidate
+                if d <= position_tolerance * TIGHT_FRACTION:
+                    return candidate
+                if fallback is None or d < fallback[0]:
+                    fallback = (d, candidate)
             seen[cell] = next_traveled
             # Weight distance and heading errors heavily to reach a solution
             # before exhausting the bounded search. Subtle length penalty
@@ -326,4 +392,4 @@ def plan_visual_maneuver(target, clearance, *, max_depth=6, beam_width=220,
         if len(frontier) > beam_width * 3:
             frontier = heapq.nsmallest(beam_width, frontier)
             heapq.heapify(frontier)
-    return None
+    return fallback[1] if fallback is not None else None

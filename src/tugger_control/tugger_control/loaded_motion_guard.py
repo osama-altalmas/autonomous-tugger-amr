@@ -82,15 +82,27 @@ def decode_scene(payload, now, *, max_age=0.4, expected_counts=None):
     return boxes
 
 
+# Highest believable measured speed: 1.0 m/s top speed plus overshoot and
+# odometry noise. Anything above means a runaway or a sensor fault: stop.
+MEASURED_SPEED_LIMIT = 1.2
+
+
 def loaded_envelope_clear(robot_pose, attached_cargo_pose, lift, cargo_id, obstacles,
                           current_speed, requested_speed, *, reaction_s=0.5,
-                          deceleration=2.5, xy_clearance=0.02, z_clearance=0.01,
-                          max_speed=1.2, curvature_bound=FULL_LOCK_CURVATURE):
-    """Check a deliberately conservative all-directions stopping envelope.
+                          deceleration=1.5, xy_clearance=0.02, z_clearance=0.01,
+                          max_speed=1.0, curvature_bound=FULL_LOCK_CURVATURE,
+                          curvature=None, steering_curvature=None,
+                          max_current_speed=MEASURED_SPEED_LIMIT):
+    """Check the robot's and cargo's stopping envelope.
 
-    Circular horizontal inflation covers translation and any rotation during
-    the reaction/braking interval; height inflation is kept separate so cargo
-    can pass above fixed legs. Returns ``(clear, collision_or_none)``.
+    With ``curvature`` (the commanded path curvature, signed, 1/m) the robot
+    and its cargo are swept along the arcs it can follow while stopping: from
+    the commanded and the current steering curvature, each widened by
+    STOPPING_CURVATURE_MARGIN, over the reaction and braking distance. Without
+    it, a deliberately conservative all-directions inflation is used, which
+    near rack corners refuses even creeping speeds (the loaded near-rack
+    stall). Height is kept separate so cargo can pass above fixed legs.
+    Returns ``(clear, collision_or_none)``.
     """
     numbers = (*robot_pose, *attached_cargo_pose, lift, current_speed, requested_speed,
                reaction_s, deceleration, xy_clearance, z_clearance)
@@ -98,7 +110,12 @@ def loaded_envelope_clear(robot_pose, attached_cargo_pose, lift, cargo_id, obsta
         raise ValueError('Non-finite motion guard input')
     if (cargo_id not in (0, 3) or reaction_s <= 0 or deceleration <= 0 or
             xy_clearance < 0 or z_clearance < 0 or max_speed <= 0 or
-            abs(current_speed) > max_speed or abs(requested_speed) > max_speed or
+            # The measured speed is judged against what the robot can
+            # physically do, not against the new ceiling: when the ceiling
+            # drops (route -> station -> camera) or speed overshoots by a few
+            # mm/s, the robot is still above it for a moment. The envelope
+            # below already uses the higher of measured and requested speed.
+            abs(current_speed) > max_current_speed or abs(requested_speed) > max_speed or
             not lift_is_raised(lift)):
         raise ValueError('Loaded motion is outside guarded operating limits')
     if math.hypot(attached_cargo_pose[0] - robot_pose[0],
@@ -106,6 +123,10 @@ def loaded_envelope_clear(robot_pose, attached_cargo_pose, lift, cargo_id, obsta
         raise ValueError('Cargo has shifted outside the attachment envelope')
     speed = max(abs(current_speed), abs(requested_speed))
     travel = speed * reaction_s + speed * speed / (2.0 * deceleration)
+    if curvature is not None and math.isfinite(curvature):
+        return _arc_envelope_clear(robot_pose, attached_cargo_pose, lift, cargo_id, obstacles,
+                                   current_speed, requested_speed, travel, curvature,
+                                   steering_curvature, xy_clearance, z_clearance)
     # Counter-phase 4WS at 45 degrees has |curvature| <= 2 / wheelbase.
     # A square corner can sweep this far as its heading changes.
     angular_change = min(math.pi, stopping_curvature(curvature_bound) * travel)
@@ -126,9 +147,63 @@ def loaded_envelope_clear(robot_pose, attached_cargo_pose, lift, cargo_id, obsta
     return True, None
 
 
+# Steering uncertainty around the commanded and current curvature (1/m).
+STOPPING_CURVATURE_MARGIN = 0.3
+ARC_SAMPLE_M = 0.02
+
+
+def _arc_envelope_clear(robot_pose, cargo_pose, lift, cargo_id, obstacles, current_speed,
+                        requested_speed, travel, curvature, steering_curvature,
+                        xy_clearance, z_clearance):
+    """Sweep robot and cargo along the arcs reachable while stopping."""
+    direction = requested_speed if abs(requested_speed) > 1e-9 else current_speed
+    sign = 1.0 if direction >= 0 else -1.0
+    known = [curvature] + ([steering_curvature] if steering_curvature is not None and
+                           math.isfinite(steering_curvature) else [])
+    low = max(-FULL_LOCK_CURVATURE, min(known) - STOPPING_CURVATURE_MARGIN)
+    high = min(FULL_LOCK_CURVATURE, max(known) + STOPPING_CURVATURE_MARGIN)
+    arcs = sorted({low, high, *[max(low, min(high, k)) for k in known]})
+    selected = f'cargo_station_{cargo_id}_stand'
+    margin = xy_clearance + ARC_SAMPLE_M
+    reach = travel + math.hypot(0.68, 0.68) + margin + 0.1
+    near = []
+    for model, obstacle in obstacles:
+        if model == selected:
+            continue
+        if math.hypot(obstacle.x - robot_pose[0], obstacle.y - robot_pose[1]) > reach + math.hypot(
+                obstacle.half_x, obstacle.half_y):
+            continue
+        near.append((model, Box(obstacle.name, obstacle.x, obstacle.y, obstacle.yaw,
+                                obstacle.half_x + margin, obstacle.half_y + margin,
+                                obstacle.z_min - z_clearance, obstacle.z_max + z_clearance)))
+    x0, y0, yaw0 = robot_pose
+    dx, dy = cargo_pose[0] - x0, cargo_pose[1] - y0
+    count = max(1, math.ceil(travel / ARC_SAMPLE_M))
+    for kappa in arcs:
+        for index in range(count + 1):
+            s = sign * travel * index / count
+            turn = kappa * s
+            if abs(kappa) < 1e-9:
+                fx, fy = s, 0.0
+            else:
+                fx, fy = math.sin(turn) / kappa, (1.0 - math.cos(turn)) / kappa
+            c, n = math.cos(yaw0), math.sin(yaw0)
+            pose = (x0 + c * fx - n * fy, y0 + n * fx + c * fy, yaw0 + turn)
+            ct, st = math.cos(turn), math.sin(turn)
+            cargo = (pose[0] + ct * dx - st * dy, pose[1] + st * dx + ct * dy,
+                     cargo_pose[2], cargo_pose[3] + turn)
+            parts = robot_boxes(pose, lift) + [cargo_box('cargo', cargo)]
+            for model, obstacle in near:
+                for part in parts:
+                    if boxes_overlap(part, obstacle):
+                        return False, (part.name, model, obstacle.name)
+    return True, None
+
+
 def choose_guarded_speed(robot_pose, attached_cargo_pose, lift, cargo_id, obstacles,
-                         current_speed, requested_speed, *, max_speed=1.2,
-                         curvature_bound=FULL_LOCK_CURVATURE):
+                         current_speed, requested_speed, *, max_speed=1.0,
+                         curvature_bound=FULL_LOCK_CURVATURE, curvature=None,
+                         steering_curvature=None):
     """Reduce loaded speed near tight geometry; return zero if none is safe."""
     if not math.isfinite(requested_speed):
         raise ValueError('Invalid requested velocity')
@@ -145,7 +220,8 @@ def choose_guarded_speed(robot_pose, attached_cargo_pose, lift, cargo_id, obstac
         clear, last_hit = loaded_envelope_clear(
             robot_pose, attached_cargo_pose, lift, cargo_id, obstacles,
             current_speed, value, max_speed=max_speed,
-            curvature_bound=curvature_bound)
+            curvature_bound=curvature_bound, curvature=curvature,
+            steering_curvature=steering_curvature)
         if clear:
             return value, None
     return 0.0, last_hit

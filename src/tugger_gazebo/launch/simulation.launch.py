@@ -156,17 +156,29 @@ def generate_launch_description():
         output='screen'
     )
 
-    # Bridge front and rear RGB cameras to ROS 2.
+    # Gazebo publishes contact sensors on their scoped topic (the <topic>
+    # element is ignored); bridge it and remap it to the bumper topic.
+    bumper_topic = ('/world/tugger_test/model/autonomous_tugger/link/base_footprint/'
+                    'sensor/bumper/contact')
+    bumper_bridge = Node(
+        package='ros_gz_bridge',
+        executable='parameter_bridge',
+        name='bumper_bridge',
+        arguments=[bumper_topic + '@ros_gz_interfaces/msg/Contacts[gz.msgs.Contacts'],
+        remappings=[(bumper_topic, '/tugger/bumper/contacts')],
+        output='screen'
+    )
+
+    # Bridge the depth, downward and top QR cameras to ROS 2.
     camera_bridge = Node(
         package='ros_gz_bridge',
         executable='parameter_bridge',
         name='camera_bridge',
         arguments=[
-            '/front_camera/image_raw@sensor_msgs/msg/Image[gz.msgs.Image',
-            '/front_camera/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
-            '/rear_camera/image_raw@sensor_msgs/msg/Image[gz.msgs.Image',
-            '/rear_camera/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
+            '/front_depth/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked',
+            '/rear_depth/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked',
             '/downward_camera/image_raw@sensor_msgs/msg/Image[gz.msgs.Image',
+            '/top_qr_camera/image_raw@sensor_msgs/msg/Image[gz.msgs.Image',
             '/downward_camera/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo'
         ],
         output='screen'
@@ -183,9 +195,9 @@ def generate_launch_description():
             '/cargo/station_0/detach@std_msgs/msg/Empty]gz.msgs.Empty',
             '/cargo/station_3/attach@std_msgs/msg/Empty]gz.msgs.Empty',
             '/cargo/station_3/detach@std_msgs/msg/Empty]gz.msgs.Empty',
-            '/cargo/station_0/state@std_msgs/msg/String[gz.msgs.StringMsg',
-            '/cargo/station_3/state@std_msgs/msg/String[gz.msgs.StringMsg',
-            '/tugger/collision_scene@std_msgs/msg/String[gz.msgs.StringMsg',
+            # Phase B4: cargo state and the collision scene come from the
+            # robot's own estimate (cargo_estimator), not from the simulator.
+            # The detachable joint stays as the simulated lift actuator.
         ],
         output='screen'
     )
@@ -267,6 +279,7 @@ def generate_launch_description():
         lidar_bridge,
         camera_bridge,
         cargo_attachment_bridge,
+        bumper_bridge,
         spawn_robot,
         # Controllers start only once the robot exists in Gazebo.
         RegisterEventHandler(OnProcessExit(

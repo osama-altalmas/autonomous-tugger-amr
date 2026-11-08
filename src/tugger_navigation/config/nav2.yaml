@@ -73,11 +73,19 @@ controller_server:
       required_movement_radius: 0.10
       movement_time_allowance: 10.0
 
+    # Route ends at a staging point. Laser localization jitters by a few cm,
+    # so a tighter check makes the follower chase the jitter and stall; the
+    # landmark fix at the staging stop then sets the exact pose (Phase B).
     goal_checker:
       plugin: "nav2_controller::SimpleGoalChecker"
       stateful: true
-      xy_goal_tolerance: 0.07
-      yaw_goal_tolerance: 0.07
+      xy_goal_tolerance: 0.10
+      # 15 degrees. A car-like robot cannot correct heading standing still:
+      # with 5 degrees it arrived within 1 cm but 5.4 degrees off, shuffled
+      # at 5 cm/s until the progress checker aborted the leg. The next stage
+      # plans from the measured pose and accepts 20 degrees (direction policy,
+      # rejoin gate); 15 degrees matches the station entry tolerance.
+      yaw_goal_tolerance: 0.262
 
     # A route that hands straight to camera alignment must stop with the whole
     # red frame in view. The downward camera sees it within about 5 cm forward.
@@ -99,7 +107,7 @@ controller_server:
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
 
-      max_linear_vel: 1.20
+      max_linear_vel: 1.00  # mixed traffic: 1.0 m/s maximum (safety_fields.MAX_SPEED)
       lookahead_dist: 0.65
       min_lookahead_dist: 0.40
       max_lookahead_dist: 0.90
@@ -113,7 +121,11 @@ controller_server:
 
       use_velocity_scaled_lookahead_dist: true
       min_approach_linear_velocity: 0.05
-      approach_velocity_scaling_dist: 0.60
+      # Slow over the last 1.5 m before the hand-over point. At full speed
+      # the velocity-scaled lookahead (up to 0.9 m) left a corner's sideways
+      # offset uncorrected until the final braking, which then swung the
+      # heading by up to 21 degrees on the 1.5 m straight into HOME staging.
+      approach_velocity_scaling_dist: 1.50
 
       use_collision_detection: true
       max_allowed_time_to_collision_up_to_carrot: 1.0
@@ -132,7 +144,7 @@ controller_server:
     # tracking overshoot does not trip it.
     PrecisionFollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      max_linear_vel: 0.35
+      max_linear_vel: 0.30  # transfer station: 0.3 m/s (ISO 3691-4 practice)
       lookahead_dist: 0.30
       min_lookahead_dist: 0.25
       max_lookahead_dist: 0.45
@@ -155,7 +167,7 @@ controller_server:
     # separate speed profile from the final precision approach.
     DepartureFollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      max_linear_vel: 0.45  # below the 0.5 m/s departure gate limit
+      max_linear_vel: 0.30  # transfer station: 0.3 m/s (ISO 3691-4 practice)
       lookahead_dist: 0.35
       min_lookahead_dist: 0.20
       max_lookahead_dist: 0.55
