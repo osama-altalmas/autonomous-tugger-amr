@@ -212,6 +212,8 @@ class Runner:
         self.finished = (bool(succeeded), int(status))
 
     def _busy(self):
+        if getattr(self.bridge, '_obstacle_hold', None) is not None:
+            return True     # waiting for an object is the robot working, not idle
         bridge = self.bridge
         return (bridge._follow_goal_pending or bridge._stage_validation_pending or
                 bridge._departure_pending is not None or bridge._departure_active or

@@ -83,12 +83,28 @@ class LiveRoutePlanner:
                     mask[gy, gx] = True
         return mask
 
-    def plan(self, start_pose, entries):
+    def plan(self, start_pose, entries, keep_out=()):
         """Shortest valid route to any entry (gate staging pose).
 
-        Returns ``(poses, entry)``; raises ValueError if no entry is reachable.
+        ``keep_out`` lists (x, y, radius) circles that must be avoided, for
+        objects the map does not contain. Returns ``(poses, entry)``; raises
+        ValueError if no entry is reachable.
         """
         grid, generator, spec, safe, occupancy_spec, blocked, centre_cost, boxes = self._load()
+        if keep_out:
+            safe = safe.copy()
+            resolution = float(spec['resolution'])
+            for x, y, radius in keep_out:
+                reach = int(radius / resolution) + 1
+                for i in range(-reach, reach + 1):
+                    for j in range(-reach, reach + 1):
+                        if i * i + j * j <= reach * reach:
+                            try:
+                                gx, gy = grid.cell([x + i * resolution, y + j * resolution],
+                                                   spec, safe.shape)
+                            except ValueError:
+                                continue
+                            safe[gy, gx] = False
         start = grid.cell([start_pose[0], start_pose[1]], spec, safe.shape)
         if not safe[start[1], start[0]]:
             raise ValueError('robot position is outside the clearance-safe planning map')

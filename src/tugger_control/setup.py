@@ -55,6 +55,7 @@ setup(
             'cargo_estimator = tugger_control.cargo_estimator:main',
             'cargo_id_reader = tugger_control.cargo_id_reader:main',
             'marker_localization = tugger_control.marker_localization:main',
+            'obstacle_monitor = tugger_control.obstacle_monitor:main',
             'docking_precision_controller = tugger_control.docking_precision_controller:main',
             'imu_orientation_plotter = tugger_control.imu_orientation_plotter:main',
             'nav2_startup_guard = tugger_control.nav2_startup_guard:main',

@@ -15,6 +15,7 @@ from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, TwistStamp
 from nav_msgs.msg import Path as NavPath
 from nav_msgs.msg import Odometry
 from nav2_msgs.action import ComputePathToPose, FollowPath
+from nav2_msgs.msg import SpeedLimit
 from nav2_msgs.srv import IsPathValid
 from python_qt_binding.QtCore import QTimer
 from python_qt_binding.QtWidgets import (
@@ -61,6 +62,10 @@ from tugger_control.visual_heading_gate import relative_qr_heading_consistent
 from tugger_control.visual_marker_guard import FixedMarkerGuard
 from tugger_control.docking_markers import expected_marker
 from tugger_control.live_route_planner import LiveRoutePlanner
+from tugger_control.obstacle_policy import (
+    AVOID, CARGO_HALF_WIDTH_M, CONTINUE, DETOUR_OBJECT_RADIUS_M, DETOUR_WORLD_MARGIN_M, GAP_ROUTE_M, GAP_STATION_M, HOLD_EXTRA_GAP_M,
+    HOLD_EXTRA_LOOK_AHEAD_M, LOOK_AHEAD_M, ObstacleSupervisor,
+    ROBOT_HALF_WIDTH_M, effective_phase, interfering, path_ahead, plan_detour)
 from tugger_control.saved_route_repository import (
     MissionPathRepository,
     PrecisionDockingRepository,
@@ -360,6 +365,14 @@ class OperatorBridge(Node):
         self.create_timer(0.05, self._rotation_step)
         self.create_timer(0.1, self._dock_wait_watchdog)
         self.create_timer(0.2, self._poll_live_plan)
+        self._obstacles, self._obstacles_at = [], None
+        self._obstacle_hold = None
+        self._obstacle_supervisor = ObstacleSupervisor()
+        self._obstacle_keepout = []
+        self._detour_obstacle = None
+        self._speed_limit_pub = self.create_publisher(SpeedLimit, '/speed_limit', 10)
+        self.create_subscription(String, '/tugger/obstacles', self._on_obstacles, 10)
+        self.create_timer(0.2, self._obstacle_tick)
 
     def _guard_ready(self, message):
         self._loaded_control_ready = bool(message.data)
@@ -1825,6 +1838,9 @@ class OperatorBridge(Node):
 
     def _visual_alignment_step(self, now):
         """Guard against scene, camera and odometry loss before each command."""
+        if getattr(self, '_obstacle_hold', None) is not None:
+            self._publish_precision_stop()
+            return
         self._poll_visual_plan()
         if (not self._motion_armed or self._cancel_requested):
             self._stop_qr_alignment('motion disarmed or cancelled')
@@ -2028,6 +2044,199 @@ class OperatorBridge(Node):
                 f'no progress after {QR_VISUAL_MAX_NO_PROGRESS} camera corrections; '
                 'the heading or position is outside what camera corrections can fix')
             return
+
+    def _on_obstacles(self, message):
+        try:
+            self._obstacles = json.loads(message.data)['obstacles']
+            self._obstacles_at = self.get_clock().now()
+        except (ValueError, KeyError, TypeError):
+            pass
+
+    def _obstacle_half_width(self):
+        try:
+            loaded = self._confirmed_cargo() is not None
+        except ValueError:
+            loaded = True
+        return CARGO_HALF_WIDTH_M if loaded else ROBOT_HALF_WIDTH_M
+
+    def _obstacle_phase(self):
+        hold = getattr(self, '_obstacle_hold', None)
+        if hold is not None:
+            return hold['phase']
+        if self._qr_alignment_active:
+            return 'station'
+        if self._active_follow is None or getattr(self, '_followed_path', None) is None:
+            return None
+        return 'route' if getattr(self, '_mission_phase', None) == 'route' else 'station'
+
+    def _obstacle_tick(self):
+        """Act on objects in the way; the safety fields stay independent of this."""
+        self._update_detour_speed()
+        if not self._motion_armed or self._cancel_requested:
+            self._obstacle_hold = None
+            self._obstacle_supervisor.reset()
+            return
+        phase = self._obstacle_phase()
+        if phase is None or self._obstacles_at is None:
+            return
+        now = self.get_clock().now()
+        if not 0 <= (now - self._obstacles_at).nanoseconds / 1e9 <= 1.0:
+            return
+        try:
+            pose = self._robot_pose()
+        except Exception:
+            return
+        hold = self._obstacle_hold
+        path = hold.get('path') if hold is not None else getattr(self, '_followed_path', None)
+        xy = ([(p.pose.position.x, p.pose.position.y) for p in path.poses]
+              if path is not None and not (hold is None and self._qr_alignment_active)
+              else [tuple(pose[:2])])
+        half = self._obstacle_half_width()
+        extra_gap, extra_look = (HOLD_EXTRA_GAP_M, HOLD_EXTRA_LOOK_AHEAD_M) if hold is not None else (0.0, 0.0)
+        if phase == 'route':
+            ahead = path_ahead(xy, pose[:2], length=LOOK_AHEAD_M + extra_look)
+            gap = GAP_ROUTE_M + extra_gap
+        else:
+            ahead, gap = path_ahead(xy, pose[:2], length=1e9), GAP_STATION_M + extra_gap
+        in_way = interfering(self._obstacles, ahead, half, gap)
+        detour = getattr(self, '_detour_obstacle', None)
+        if detour is not None:
+            # Already going around this one, with room to spare; a new measure
+            # of its size must not stop the detour.
+            in_way = [o for o in in_way
+                      if math.hypot(o['x'] - detour['x'], o['y'] - detour['y']) > 1.0]
+        retry = self._mission_retry
+        centre = (getattr(self, '_station_centers', {}).get(retry['destination'])
+                  if retry is not None else None)
+        phase = effective_phase(phase, in_way, centre)
+        action = self._obstacle_supervisor.update(now.nanoseconds / 1e9, phase, in_way)
+        if action == CONTINUE:
+            if hold is not None:
+                self._resume_after_obstacle(pose)
+            return
+        if hold is None:
+            self._begin_obstacle_hold(phase, action, in_way)
+        if action == AVOID and self._active_follow is None and self._obstacle_hold is not None:
+            self._avoid_obstacle(pose, in_way, half)
+
+    def _begin_obstacle_hold(self, phase, action, in_way):
+        first = in_way[0]
+        kind = 'moving' if first.get('moving') else 'stationary'
+        where = 'at the station: waiting until it is gone' if phase == 'station' else 'waiting'
+        self._report(f'OBSTACLE: {kind} object ({first["r"] * 2:.2f} m wide) at '
+                     f'({first["x"]:.2f}, {first["y"]:.2f}) in the way; {where}.')
+        self._obstacle_hold = {'phase': phase, 'path': getattr(self, '_followed_path', None)
+                               if self._active_follow is not None else None}
+        if self._active_follow is not None:
+            self._active_follow.cancel_goal_async()
+
+    def _resume_after_obstacle(self, pose):
+        hold = self._obstacle_hold
+        if self._active_follow is not None:
+            return                      # the cancel has not finished yet
+        self._obstacle_hold = None
+        self._report('OBSTACLE: the way is clear; continuing.')
+        path = hold.get('path')
+        if path is None:
+            return
+        index = min(range(len(path.poses)), key=lambda i: math.hypot(
+            path.poses[i].pose.position.x - pose[0], path.poses[i].pose.position.y - pose[1]))
+        resumed = NavPath()
+        resumed.header = path.header
+        resumed.poses = path.poses[index:]
+        if len(resumed.poses) < 2:
+            resumed.poses = path.poses[-2:]
+        self._follow(resumed)
+
+    def _detour_clear(self, points, heading, half, target):
+        """Clear of the modelled world and of nearby objects, with the gap kept.
+
+        Only objects around this detour count: one further along the route is
+        dealt with when the robot gets there.
+        """
+        nearby = [o for o in self._obstacles if math.hypot(
+            o['x'] - target['x'], o['y'] - target['y']) <= DETOUR_OBJECT_RADIUS_M]
+        if interfering(nearby, [(x, y) for x, y in points], half, GAP_ROUTE_M - 1e-3):
+            return False
+        prepared = prepare_dynamic_path(points, heading)
+        poses = [[x, y, h] for (x, y), h in zip(points, prepared['body_headings'])]
+        cargo = self._confirmed_cargo()
+        try:
+            world = Path(get_package_share_directory('tugger_gazebo')) / 'worlds/tugger_warehouse.sdf'
+            scene = decode_scene(self._collision_scene, self.get_clock().now().nanoseconds / 1e9,
+                                 expected_counts=scene_expected_counts(world))
+            # Wider than a collision check: a detour inside the safety field
+            # would be halted by protective stops.
+            if not sampled_precision_clearance(
+                    [tuple(p) for p in poses], [box for _, box in scene], 0.0,
+                    margin=DETOUR_WORLD_MARGIN_M)[0]:
+                return False
+            if cargo is not None:
+                self._modeled_loaded_path_clearance(poses, cargo)
+            return True
+        except (ValueError, TypeError):
+            return False
+
+    def _avoid_obstacle(self, pose, in_way, half):
+        """Go around if there is room, else take another way to the goal."""
+        hold = self._obstacle_hold
+        route = [(p.pose.position.x, p.pose.position.y) for p in hold['path'].poses]
+        target = min(in_way, key=lambda o: math.hypot(o['x'] - pose[0], o['y'] - pose[1]))
+        # Never squeeze past something moving: only a standing object is passed.
+        bent = (None if any(o.get('moving') for o in in_way) else
+                plan_detour(route, pose[:2], target, half,
+                            lambda points: self._detour_clear(points, pose[2], half, target)))
+        self._obstacle_hold = None
+        self._obstacle_supervisor.reset()
+        if bent is not None:
+            self._report(f'OBSTACLE: going around the object at '
+                         f'({target["x"]:.2f}, {target["y"]:.2f}) at 0.3 m/s.')
+            prepared = prepare_dynamic_path(bent, pose[2])
+            path = NavPath()
+            path.header.frame_id = 'map'
+            path.header.stamp = self.get_clock().now().to_msg()
+            for (x, y), heading in zip(bent, prepared['body_headings']):
+                path.poses.append(self._pose([x, y, heading]))
+            self._detour_obstacle = {'x': target['x'], 'y': target['y'], 'close': False}
+            self._publish_speed_limit(0.3)
+            self._follow(path)
+            return
+        retry = self._mission_retry
+        if retry is None:
+            self._report('OBSTACLE: no room to go around and no mission to replan. Robot stopped.')
+            return
+        self._report('OBSTACLE: cannot pass it here; replanning another way.')
+        self._obstacle_keepout = [(o['x'], o['y'], o['r'] + half + GAP_ROUTE_M)
+                                  for o in self._obstacles]
+        clear = [c for c in retry['candidates']
+                 if not interfering(self._obstacles, c[2], half, GAP_ROUTE_M)]
+        self._continue_after_undock = True
+        self.execute_destination(retry['destination'], clear, retry['targets'])
+
+    def _publish_speed_limit(self, speed):
+        message = SpeedLimit()
+        message.percentage = False
+        message.speed_limit = float(speed)      # 0 removes the limit
+        self._speed_limit_pub.publish(message)
+
+    def _update_detour_speed(self):
+        """Pass slowly, and lift the limit once the object is behind the robot."""
+        detour = getattr(self, '_detour_obstacle', None)
+        if detour is None:
+            return
+        try:
+            pose = self._robot_pose()
+        except Exception:
+            return
+        distance = math.hypot(pose[0] - detour['x'], pose[1] - detour['y'])
+        self._publish_speed_limit(0.3)
+        if distance < 2.0:
+            detour['close'] = True
+        elif ((detour['close'] and distance > 3.0) or
+              (self._active_follow is None and not self._follow_goal_pending and
+               getattr(self, '_obstacle_hold', None) is None)):
+            self._detour_obstacle = None
+            self._publish_speed_limit(0.0)
 
     def _carried_offset(self, cargo):
         """Attached cargo in the robot frame (forward, left, height, yaw).
@@ -2874,7 +3083,8 @@ class OperatorBridge(Node):
         self._report(f'{destination}: no preplanned path within reach; planning live '
                      'with the offline generator rules.')
         future = self._visual_plan_pool.submit(
-            self._live_planner.plan, tuple(pose), [list(p) for p in station_targets])
+            self._live_planner.plan, tuple(pose), [list(p) for p in station_targets],
+            keep_out=list(getattr(self, '_obstacle_keepout', [])))
         self._live_plan = (future, destination, pose, station_targets, generation,
                            fallback_approach, fallback_approved)
 
@@ -3227,6 +3437,7 @@ class OperatorBridge(Node):
         if (self._precision_station and self._camera_handoff_station ==
                 self._precision_station and path.poses):
             self._precision_handoff_yaw = _yaw(path.poses[-1].pose.orientation)
+        self._followed_path = path
         follower = (self._dock_follower if self._dock_precision_mode or
                     self._departure_active else self._follower)
         if not follower.server_is_ready():
@@ -3298,6 +3509,9 @@ class OperatorBridge(Node):
                 self._execution_done(False, GoalStatus.STATUS_CANCELED)
                 return
             succeeded = status == GoalStatus.STATUS_SUCCEEDED
+            if not succeeded and getattr(self, '_obstacle_hold', None) is not None:
+                self._active_follow = None      # stopped on purpose; it resumes
+                return
             if getattr(self, '_station_exit_active', False):
                 self._active_follow = None
                 self._complete_station_exit(succeeded, status)
