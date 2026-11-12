@@ -138,3 +138,47 @@ def test_stopped_replans_reduce_steering_slew_residual_in_ideal_4ws_model(target
         steering = approach(steering, desired_steering, .8, dt)
         pose = propagate(pose, speed*dt, 2*math.tan(steering)/.58)
     pytest.fail('offline steering-slew model did not converge within 225 seconds')
+
+
+def test_circular_median_ignores_one_outlier_and_wraps():
+    import math
+    from tugger_control.visual_heading_gate import circular_median
+    assert circular_median([0.10, 0.11, 0.35]) == 0.11
+    near_pi = [math.pi - 0.01, -math.pi + 0.01, math.pi - 0.02]
+    assert abs(abs(circular_median(near_pi)) - math.pi) < 0.02
+
+
+def _heading_gate(qr_angles, map_yaw=3.1):
+    """Feed QR yaw readings (one per image) to the bridge's heading check."""
+    from types import SimpleNamespace
+    from tugger_control.operator_panel import OperatorBridge
+    gate = SimpleNamespace(_qr_heading_reference=None, _qr_reference_samples=[],
+                           _qr_heading_recent=[], _qr_heading_angle=None,
+                           _qr_heading_stamp=None)
+    results = []
+    for i, angle in enumerate(qr_angles):
+        stamp = 10.0 + 0.1 * i
+        gate._qr_heading_angle, gate._qr_heading_stamp = angle, stamp
+        gate._qr_heading_recent = ([(t, a) for t, a in gate._qr_heading_recent
+                                    if stamp - t <= 0.6] + [(stamp, angle)])[-3:]
+        results.append(OperatorBridge._qr_heading_agrees(gate, (0.0, 0.0, map_yaw), stamp + 0.05))
+    return results
+
+
+def test_one_bad_qr_reading_as_the_first_sample_does_not_lock_the_hold():
+    import math
+    bad = 0.5 + math.radians(14)
+    results = _heading_gate([bad] + [0.5] * 12)
+    assert all(results[-6:])
+
+
+def test_one_bad_qr_reading_later_does_not_trigger_a_hold():
+    import math
+    readings = [0.5] * 8 + [0.5 + math.radians(14)] + [0.5] * 4
+    assert all(_heading_gate(readings))
+
+
+def test_a_lasting_qr_disagreement_still_holds():
+    import math
+    readings = [0.5] * 8 + [0.5 + math.radians(14)] * 5
+    assert not all(_heading_gate(readings)[-3:])

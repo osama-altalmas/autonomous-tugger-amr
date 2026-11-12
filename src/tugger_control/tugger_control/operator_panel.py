@@ -58,7 +58,8 @@ from tugger_control.turn_in_place import (MAX_YAW_RATE_LOADED, MAX_YAW_RATE_UNLO
 from tugger_control.station_occupancy import (
     ATTACH, DETACH, assess_destination, load_occupancy, measure_occupancy, save_occupancy,
     station_label)
-from tugger_control.visual_heading_gate import relative_qr_heading_consistent
+from tugger_control.visual_heading_gate import (angle_delta, circular_median,
+                                                relative_qr_heading_consistent)
 from tugger_control.visual_marker_guard import FixedMarkerGuard
 from tugger_control.docking_markers import expected_marker
 from tugger_control.live_route_planner import LiveRoutePlanner
@@ -345,6 +346,8 @@ class OperatorBridge(Node):
         self._qr_heading_angle = None
         self._qr_heading_stamp = None
         self._qr_heading_reference = None
+        self._qr_heading_recent = []
+        self._qr_reference_samples = []
         self.create_subscription(String, '/qr_docking/id', self._qr_id, 10)
         self.create_subscription(PoseStamped, '/qr_docking/pose',
                                  self._qr_heading_pose, 10)
@@ -1461,6 +1464,7 @@ class OperatorBridge(Node):
         if (self._qr_alignment_active and
                 message.data != expected_marker(self._qr_alignment_station)):
             self._qr_heading_reference = None
+            self._qr_reference_samples = []
         self._qr_identity = message.data
         self._qr_seen_at = self.get_clock().now()
         if (self._qr_alignment_active and
@@ -1480,18 +1484,39 @@ class OperatorBridge(Node):
                                    stamp > self._qr_heading_stamp):
             self._qr_heading_angle = yaw
             self._qr_heading_stamp = stamp
+            self._qr_heading_recent = ([(t, a) for t, a in self._qr_heading_recent
+                                        if stamp - t <= 0.6] + [(stamp, yaw)])[-3:]
 
     def _qr_heading_agrees(self, pose, frame_stamp):
         """Require a fresh QR yaw to track the map yaw from a stable reference."""
         if (self._qr_heading_stamp is None or self._qr_heading_angle is None or
                 not 0 <= frame_stamp - self._qr_heading_stamp <= 0.25):
+            self._qr_heading_detail = (
+                'no QR yaw' if self._qr_heading_stamp is None else
+                f'QR yaw {frame_stamp - self._qr_heading_stamp:+.2f} s from the frame')
             return False
+        # The QR yaw occasionally jumps by 8-14 degrees for one image while the
+        # robot stands still. Compare middle values, never single readings: a
+        # reference taken from one bad image used to make every later good
+        # image disagree, holding the robot at zero speed indefinitely.
+        recent = getattr(self, '_qr_heading_recent', None) or [
+            (self._qr_heading_stamp, self._qr_heading_angle)]
+        qr_now = circular_median([a for _, a in recent])
         if self._qr_heading_reference is None:
-            self._qr_heading_reference = (self._qr_heading_angle, pose[2])
-            return True
-        return relative_qr_heading_consistent(
-            self._qr_heading_angle, self._qr_heading_reference[0],
-            pose[2], self._qr_heading_reference[1])
+            samples = getattr(self, '_qr_reference_samples', [])
+            samples.append((qr_now, pose[2]))
+            self._qr_reference_samples = samples
+            reference = (circular_median([q for q, _ in samples]),
+                         circular_median([m for _, m in samples]))
+            if len(samples) >= QR_YAW_SAMPLES:
+                self._qr_heading_reference = reference
+        else:
+            reference = self._qr_heading_reference
+        qr_change = angle_delta(qr_now, reference[0])
+        map_change = angle_delta(pose[2], reference[1])
+        self._qr_heading_detail = (f'QR turned {math.degrees(qr_change):+.1f} deg, '
+                                   f'map {math.degrees(map_change):+.1f} deg since the reference')
+        return relative_qr_heading_consistent(qr_now, reference[0], pose[2], reference[1])
 
     def _cargo_state(self, station, message):
         """Report observed simulator attachment transitions, not commands."""
@@ -1767,7 +1792,8 @@ class OperatorBridge(Node):
             self._stop_qr_alignment(f'station heading unavailable: {exc}')
             return
         if not self._qr_heading_agrees(map_pose, stamp):
-            self._hold_visual_alignment('QR relative yaw missing or disagrees with map TF')
+            self._hold_visual_alignment('QR relative yaw missing or disagrees with map TF ('
+                                        + getattr(self, '_qr_heading_detail', '?') + ')')
             return
         if self._visual_marker_guard is None:
             self._visual_marker_guard = FixedMarkerGuard(
@@ -2190,15 +2216,17 @@ class OperatorBridge(Node):
         self._obstacle_supervisor.reset()
         if bent is not None:
             self._report(f'OBSTACLE: going around the object at '
-                         f'({target["x"]:.2f}, {target["y"]:.2f}) at 0.3 m/s.')
+                         f'({target["x"]:.2f}, {target["y"]:.2f}).')
             prepared = prepare_dynamic_path(bent, pose[2])
             path = NavPath()
             path.header.frame_id = 'map'
             path.header.stamp = self.get_clock().now().to_msg()
             for (x, y), heading in zip(bent, prepared['body_headings']):
                 path.poses.append(self._pose([x, y, heading]))
+            # The detour and the rest of the route run at normal route speed
+            # (user decision); the safety fields still slow or stop the robot.
             self._detour_obstacle = {'x': target['x'], 'y': target['y'], 'close': False}
-            self._publish_speed_limit(0.3)
+            self._publish_speed_limit(0.0)
             self._follow(path)
             return
         retry = self._mission_retry
@@ -2220,7 +2248,7 @@ class OperatorBridge(Node):
         self._speed_limit_pub.publish(message)
 
     def _update_detour_speed(self):
-        """Pass slowly, and lift the limit once the object is behind the robot."""
+        """Forget the detoured object once it is behind the robot."""
         detour = getattr(self, '_detour_obstacle', None)
         if detour is None:
             return
@@ -2229,14 +2257,12 @@ class OperatorBridge(Node):
         except Exception:
             return
         distance = math.hypot(pose[0] - detour['x'], pose[1] - detour['y'])
-        self._publish_speed_limit(0.3)
         if distance < 2.0:
             detour['close'] = True
         elif ((detour['close'] and distance > 3.0) or
               (self._active_follow is None and not self._follow_goal_pending and
                getattr(self, '_obstacle_hold', None) is None)):
             self._detour_obstacle = None
-            self._publish_speed_limit(0.0)
 
     def _carried_offset(self, cargo):
         """Attached cargo in the robot frame (forward, left, height, yaw).
@@ -2587,6 +2613,8 @@ class OperatorBridge(Node):
         self._qr_heading_angle = None
         self._qr_heading_stamp = None
         self._qr_heading_reference = None
+        self._qr_heading_recent = []
+        self._qr_reference_samples = []
         self._qr_alignment_active = True
         self._qr_alignment_station = station
         self._qr_aligned_frames = 0

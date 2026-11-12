@@ -4,7 +4,7 @@ import math
 from tugger_control.obstacle_monitor import Tracks, cluster
 from tugger_control.obstacle_policy import (
     ALERT, AVOID, CONTINUE, GAP_ROUTE_M, GAP_STATION_M, HOLD, ObstacleSupervisor,
-    ROBOT_HALF_WIDTH_M, effective_phase, interfering, path_ahead, plan_detour)
+    ROBOT_HALF_WIDTH_M, effective_phase, interfering, path_ahead, plan_detour, WAIT_BEFORE_AVOID_S)
 import numpy as np
 
 LINE = [(i * 0.1, 0.0) for i in range(200)]     # 20 m along x
@@ -135,8 +135,16 @@ def test_an_object_that_stops_gets_the_normal_wait_from_when_it_stopped():
     assert s.update(0.0, 'route', [obj(5, 0, moving=True)]) == HOLD
     assert s.update(19.0, 'route', [obj(5, 0, moving=True)]) == HOLD
     assert s.update(20.0, 'route', [obj(5, 0)]) == HOLD
-    assert s.update(28.0, 'route', [obj(5, 0)]) == HOLD
-    assert s.update(29.5, 'route', [obj(5, 0)]) == AVOID
+    assert s.update(19.0 + WAIT_BEFORE_AVOID_S - 0.5, 'route', [obj(5, 0)]) == HOLD
+    assert s.update(19.0 + WAIT_BEFORE_AVOID_S + 0.5, 'route', [obj(5, 0)]) == AVOID
+
+
+def test_a_standing_object_is_avoided_after_five_seconds():
+    assert WAIT_BEFORE_AVOID_S == 5.0
+    s = ObstacleSupervisor()
+    assert s.update(0.0, 'route', [obj(5, 0)]) == HOLD
+    assert s.update(4.5, 'route', [obj(5, 0)]) == HOLD
+    assert s.update(5.0, 'route', [obj(5, 0)]) == AVOID
 
 
 def test_a_jittering_standing_object_is_not_called_moving():

@@ -15,7 +15,7 @@ LOOK_AHEAD_M = 6.0
 PREDICT_S = 3.0            # how far ahead a moving object's path is projected
 PREDICT_STEP_S = 0.5
 STATION_RADIUS_M = 3.0     # around the destination: an object there is a station matter
-WAIT_BEFORE_AVOID_S = 10.0
+WAIT_BEFORE_AVOID_S = 5.0
 MOVING_PATIENCE_S = 30.0   # a moving object blocking this long: look for another path
 CLEAR_BEFORE_RESUME_S = 3.0
 # While paused an object must clear by this much more, so a reading near a limit

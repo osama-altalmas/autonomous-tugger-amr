@@ -28,3 +28,16 @@ def relative_qr_heading_consistent(qr_yaw, reference_qr_yaw,
     measured = angle_delta(map_yaw, reference_map_yaw)
     return min(abs(angle_delta(observed, measured)),
                abs(angle_delta(observed, -measured))) <= tolerance
+
+
+def circular_median(angles):
+    """Middle angle of a few close headings; a single outlier cannot move it.
+
+    The angles are ordered by their signed difference from the first one, so
+    values on both sides of +-pi are handled.
+    """
+    if not angles:
+        raise ValueError('no headings')
+    first = angles[0]
+    ordered = sorted(angles, key=lambda a: angle_delta(a, first))
+    return ordered[len(ordered) // 2]

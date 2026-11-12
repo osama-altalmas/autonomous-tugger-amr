@@ -4,11 +4,11 @@
 Positions suit the mission HOME -> S3, in this order:
 
   block   a box in the side lane the route starts on: too little room to go
-          around, so after 10 s the robot finds another path (the middle aisle)
+          around, so after 5 s the robot finds another path (the middle aisle)
   cross   run this as soon as the robot starts along the middle aisle: a person
           walks across it at x = 7 and leaves; the robot waits, then continues
   box     a box further along the middle aisle at x = 12, out of sensor range
-          when the robot replans: it waits 10 s, then goes around it
+          when the robot replans: it waits 5 s, then goes around it
   pace    a person keeps walking across the route (the 30 second rule)
   clear   remove everything this tool added
 
