@@ -108,12 +108,42 @@ controller_server:
       yaw_goal_tolerance: 0.01745
 
     FollowPath:
-      plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
+      # Pure pursuit for speed, direction, collision checks and the approach
+      # slow-down; steering from path-curvature tracking. Measured 2026-11-12:
+      # pure pursuit steering cut 10-17 cm inside the 1-1.5 m long route
+      # corners (it aims one look-ahead ahead and never reaches the corner
+      # curvature) and overshot about 8 cm on the way out.
+      plugin: "tugger_navigation::CurvatureTrackingController"
+      # Steering = the path's own curvature plus a correction whose strength
+      # follows the path ahead: gentle on straights (like a 1.2 m look-ahead,
+      # small localization jumps barely steer), firm near and in curves (like
+      # 0.6 m; shorter amplified localization noise in the offline model).
+      tracking_straight_lookahead: 1.2
+      tracking_curve_lookahead: 0.6
+      tracking_schedule_low_curvature: 0.1
+      tracking_schedule_high_curvature: 0.5
+      tracking_schedule_ahead: 1.0
+      tracking_schedule_behind: 0.5
+      # Covers the steering slew and one control cycle.
+      tracking_preview_time: 0.10
+      tracking_curvature_window: 0.05
+      tracking_max_curvature: 3.4
+      tracking_max_heading_error: 1.05
+      # Curve speed planned from the path: reach 0.6 m/s 0.2 m before a
+      # curve that needs it (curvature 0.25 /m, the motion gate's curve
+      # threshold) instead of braking inside it once the command turns.
+      curve_speed: 0.6
+      curve_speed_curvature: 0.25
+      curve_speed_deceleration: 1.0
+      curve_speed_margin: 0.2
+      curve_speed_scan: 2.0
 
       max_linear_vel: 1.00  # mixed traffic: 1.0 m/s maximum (safety_fields.MAX_SPEED)
-      lookahead_dist: 0.65
-      min_lookahead_dist: 0.40
-      max_lookahead_dist: 0.90
+      # The look-ahead now only sets the curvature used for speed regulation
+      # and the collision check arc.
+      lookahead_dist: 0.90
+      min_lookahead_dist: 0.60
+      max_lookahead_dist: 1.20
       lookahead_time: 1.5
 
       rotate_to_heading_angular_vel: 0.0

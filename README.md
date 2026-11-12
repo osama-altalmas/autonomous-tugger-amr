@@ -76,6 +76,7 @@ isolated ROS domain, runs a mission and writes a JSON result.
 ```bash
 source /opt/ros/lyrical/setup.bash && source install/setup.bash
 export GZ_IP=127.0.0.1 QT_QPA_PLATFORM=offscreen RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export CYCLONEDDS_URI='<CycloneDDS><Domain><Discovery><ParticipantIndex>auto</ParticipantIndex><MaxAutoParticipantIndex>200</MaxAutoParticipantIndex></Discovery></Domain></CycloneDDS>'
 tools/mission_validation/isolated_stack.sh up 77
 until [ -f /tmp/tugger_validation/domain_77/nav2_ready ]; do sleep 2; done
 ROS_DOMAIN_ID=77 GZ_PARTITION=tugger_validation_77 python3 tools/mission_validation/mission_runner.py \
@@ -142,6 +143,14 @@ Camera docking stage     → /tugger/precision_cmd_vel│   (one owner at a time
 Turn in place            → /tugger/rotate_cmd_vel   ┘    stops on /tugger/safety/state)
 ```
 
+**Route following:** `tugger_navigation::CurvatureTrackingController`, a Nav2
+controller plugin. Regulated Pure Pursuit still sets speed, direction, collision
+stops and the end-of-path slow-down. Steering is the path's own curvature plus a
+correction for sideways and heading error: gentle on straights (like a 1.2 m
+look-ahead), firm near and in curves (like 0.6 m). The robot slows to the 0.6 m/s
+curve speed before a curve, planned from the path. Pure pursuit alone cut route
+corners by 10-17 cm.
+
 **Localization:** wheel odometry + IMU (EKF) → AMCL on the merged scan → corrected
 by floor markers at stations. Ground truth from Gazebo is used only to score tests;
 the robot never reads it.
@@ -156,7 +165,7 @@ not on the map are tracked up to 6 m ahead and classed as stationary or moving.
 | Situation | Reaction |
 |---|---|
 | Object does not interfere with the path | Continue |
-| Stationary object in the way, room to pass | Wait 10 s, then detour at 0.3 m/s with a 0.5 m gap (from the cargo edge when loaded), rejoin the route |
+| Stationary object in the way, room to pass | Wait 5 s, then detour at normal route speed with a 0.5 m gap (from the cargo edge when loaded), rejoin the route |
 | No room to pass | Take another aisle through the route network |
 | Moving object | Stop and wait; after 30 s look for another path |
 | Interfering object at a station | Hold and alert until it is gone |
@@ -168,7 +177,7 @@ not on the map are tracked up to 6 m ahead and classed as stationary or moving.
 | `src/tugger_description` | Robot model (URDF/Xacro, meshes) |
 | `src/tugger_gazebo` | Warehouse world `tugger_warehouse.sdf`, simulation launch, controllers, QR assets, C++ Gazebo plugins |
 | `src/tugger_control` | Python nodes, operator panel, all mission logic, tests |
-| `src/tugger_navigation` | Nav2 and AMCL configuration, maps, custom RRT* Reeds-Shepp planner plugin |
+| `src/tugger_navigation` | Nav2 and AMCL configuration, maps, custom RRT* Reeds-Shepp planner plugin, route-following controller plugin |
 | `src/tugger_ground_truth` | True pose from Gazebo, for evaluation only |
 | `tools/v1_manhattan_bezier` | Route generator and the generated routes (`mission_paths/`, `routes/`, `phase14/`) |
 | `tools/mission_approaches` | Generated station gate approaches |

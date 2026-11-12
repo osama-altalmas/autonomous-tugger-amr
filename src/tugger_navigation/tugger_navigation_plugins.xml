@@ -19,3 +19,14 @@
     </description>
   </class>
 </library>
+
+<library path="tugger_curvature_tracking_controller">
+  <class
+    type="tugger_navigation::CurvatureTrackingController"
+    base_class_type="nav2_core::Controller">
+    <description>
+      Regulated Pure Pursuit speed handling with path-curvature tracking
+      steering (curvature feedforward plus lateral and heading feedback).
+    </description>
+  </class>
+</library>

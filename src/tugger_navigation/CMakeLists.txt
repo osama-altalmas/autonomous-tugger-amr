@@ -14,6 +14,8 @@ find_package(visualization_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(ompl REQUIRED)
+find_package(nav2_regulated_pure_pursuit_controller REQUIRED)
+find_package(std_msgs REQUIRED)
 
 add_library(tugger_bidirectional_planner SHARED
   src/bidirectional_planner.cpp
@@ -69,6 +71,36 @@ target_link_libraries(tugger_rrt_star_planner PUBLIC
   ${tf2_geometry_msgs_TARGETS}
 )
 
+# Route follower: pure pursuit speed handling with path-curvature tracking.
+add_library(tugger_curvature_tracking_controller SHARED
+  src/curvature_tracking_controller.cpp
+)
+
+target_include_directories(tugger_curvature_tracking_controller PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
+target_link_libraries(tugger_curvature_tracking_controller PUBLIC
+  rclcpp::rclcpp
+  pluginlib::pluginlib
+  nav2_core::nav2_core
+  nav2_costmap_2d::nav2_costmap_2d_core
+  nav2_ros_common::nav2_ros_common
+  nav2_regulated_pure_pursuit_controller::nav2_regulated_pure_pursuit_controller
+  ${nav_msgs_TARGETS}
+  ${geometry_msgs_TARGETS}
+  ${std_msgs_TARGETS}
+  tf2::tf2
+)
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_path_tracking_law test/test_path_tracking_law.cpp)
+  target_include_directories(test_path_tracking_law PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+endif()
+
 pluginlib_export_plugin_description_file(
   nav2_core
   tugger_navigation_plugins.xml
@@ -76,6 +108,7 @@ pluginlib_export_plugin_description_file(
 
 install(
   TARGETS tugger_bidirectional_planner tugger_rrt_star_planner
+    tugger_curvature_tracking_controller
   EXPORT export_tugger_bidirectional_planner
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
@@ -114,6 +147,8 @@ ament_export_dependencies(
   tf2
   tf2_geometry_msgs
   ompl
+  nav2_regulated_pure_pursuit_controller
+  std_msgs
 )
 
 

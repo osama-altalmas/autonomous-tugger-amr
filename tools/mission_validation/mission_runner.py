@@ -32,6 +32,13 @@ STATION_CENTERS = {
     'HOME': (0.0, 0.0),
 }
 FULL_LOCK_RAD = math.radians(40.0)
+STEER_REVERSAL_RAD = math.radians(2.0)   # smaller swings are noise, not weaving
+YAW_FLIP_RAD_S = 0.05
+
+
+def _curvature(msg):
+    v = msg.twist.linear.x
+    return msg.twist.angular.z / v if abs(v) > 0.05 else 0.0
 
 
 class Recorder(Node):
@@ -43,10 +50,16 @@ class Recorder(Node):
         self.owner = 'STOP'
         self.pose = None
         self.pose_lookup = None
+        self.path_lookup = None     # the path being followed (nav_msgs/Path) or None
         self.reset()
         self.create_subscription(String, '/tugger/motion_owner', self._owner, 10)
         self.create_subscription(TwistStamped, '/tugger/dock_nav_cmd_vel', self._dock_cmd, 10)
         self.create_subscription(TwistStamped, '/tugger/guarded_cmd_vel', self._guarded, 10)
+        self.create_subscription(TwistStamped, '/tugger/nav_cmd_vel', self._nav_cmd, 10)
+        # Route follower report: lateral, heading error, path curvature,
+        # commanded curvature, pure pursuit curvature, look-ahead, planned
+        # speed limit, commanded speed, path ahead (curvature tracking plugin).
+        self.create_subscription(Float64MultiArray, '/tugger/path_tracking', self._tracking, 10)
         self.create_subscription(Float64MultiArray, '/four_ws/motion_state', self._motion, 10)
         self.create_subscription(PoseStamped, '/tugger/ground_truth_pose', self._pose,
                                  qos_profile_sensor_data)
@@ -67,6 +80,15 @@ class Recorder(Node):
         self._trace_t = None
         self._dock_sign = 0
         self._speed = 0.0
+        # Route following at 10 Hz: sim time, signed cross-track error (left
+        # of the path positive), steering angle, commanded yaw rate, speed,
+        # target steering, Nav2 and gate curvature, estimated cross-track
+        # error, latest route follower report (or None).
+        self.track = []
+        self._track_t = None
+        self._steer = self._omega = self._target_steer = 0.0
+        self._nav_k = self._gate_k = 0.0
+        self._tracking_report = None
 
     def _phase(self):
         return self.phases.setdefault(self.owner, {
@@ -74,7 +96,12 @@ class Recorder(Node):
             'steer_samples': 0, 'first_t': None, 'last_t': None, 'first_pose': None,
             'path_m': 0.0, '_last': None, 'max_abs_speed': 0.0,
             'max_estimate_error_m': 0.0, 'slow_s': 0.0, '_slow_t': None,
-            'max_cross_track_m': 0.0})
+            'max_cross_track_m': 0.0,
+            # Path-following quality ("weaving"), only while moving.
+            'xte_sum_sq': 0.0, 'xte_samples': 0, 'moving_m': 0.0,
+            'steer_reversals': 0, '_steer_peak': None, '_steer_dir': 0,
+            'yaw_rate_flips': 0, '_yaw_sign': 0, '_path_id': None, '_path_xy': None,
+            '_path_i': 0})
 
     def _now(self):
         return self.get_clock().now().nanoseconds / 1e9
@@ -90,8 +117,15 @@ class Recorder(Node):
         if sign:
             self._dock_sign = sign
 
-    def _guarded(self, _msg):
+    def _guarded(self, msg):
         self._phase()['guarded_samples'] += 1
+        self._gate_k = _curvature(msg)
+
+    def _tracking(self, msg):
+        self._tracking_report = [round(v, 4) for v in msg.data]
+
+    def _nav_cmd(self, msg):
+        self._nav_k = _curvature(msg)
 
     def _motion(self, msg):
         if len(msg.data) < 4:
@@ -99,6 +133,29 @@ class Recorder(Node):
         phase = self._phase()
         phase['steer_samples'] += 1
         phase['full_lock_samples'] += abs(msg.data[3]) >= FULL_LOCK_RAD
+        if len(msg.data) < 7 or abs(msg.data[1]) < 0.05:
+            return
+        # A reversal: the steering turns back by at least STEER_REVERSAL_RAD
+        # from its last peak. Smooth curves give few; weaving gives many.
+        delta = msg.data[3]
+        self._steer, self._omega, self._target_steer = delta, msg.data[4], msg.data[2]
+        peak, direction = phase['_steer_peak'], phase['_steer_dir']
+        if peak is None:
+            phase['_steer_peak'] = delta
+        elif direction == 0:
+            if abs(delta - peak) >= STEER_REVERSAL_RAD:
+                phase['_steer_dir'], phase['_steer_peak'] = (1 if delta > peak else -1), delta
+        elif direction * (delta - peak) > 0:
+            phase['_steer_peak'] = delta                 # still turning the same way
+        elif abs(delta - peak) >= STEER_REVERSAL_RAD:
+            phase['steer_reversals'] += 1
+            phase['_steer_dir'], phase['_steer_peak'] = -direction, delta
+        yaw_rate = msg.data[4]
+        sign = (yaw_rate > YAW_FLIP_RAD_S) - (yaw_rate < -YAW_FLIP_RAD_S)
+        if sign and phase['_yaw_sign'] and sign != phase['_yaw_sign']:
+            phase['yaw_rate_flips'] += 1
+        if sign:
+            phase['_yaw_sign'] = sign
 
     def _pose(self, msg):
         q = msg.pose.orientation
@@ -110,8 +167,11 @@ class Recorder(Node):
         phase['last_t'] = now
         phase['first_pose'] = phase['first_pose'] or self.pose
         if phase['_last'] is not None:
-            phase['path_m'] += math.hypot(self.pose[0] - phase['_last'][0],
-                                          self.pose[1] - phase['_last'][1])
+            step = math.hypot(self.pose[0] - phase['_last'][0], self.pose[1] - phase['_last'][1])
+            phase['path_m'] += step
+            if abs(self._speed) >= 0.05:
+                phase['moving_m'] += step
+                self._cross_track(phase)
         phase['_last'] = self.pose
         if phase['_slow_t'] is not None and abs(self._speed) < 0.3:
             phase['slow_s'] += max(0.0, now - phase['_slow_t'])
@@ -133,6 +193,58 @@ class Recorder(Node):
                                  (None, None, None)),
                                round(self._speed, 3)])
 
+    def _cross_track(self, phase):
+        """True distance from the path being followed (not the estimate)."""
+        path = self.path_lookup() if self.path_lookup is not None else None
+        if path is None or len(path.poses) < 2:
+            return
+        if phase['_path_id'] != id(path):
+            phase['_path_id'] = id(path)
+            phase['_path_xy'] = [(p.pose.position.x, p.pose.position.y) for p in path.poses]
+            phase['_path_i'] = 0
+        xy, best, best_i = phase['_path_xy'], None, phase['_path_i']
+        start = max(phase['_path_i'] - 20, 0)
+        for i in range(start, min(start + 200, len(xy) - 1)):
+            (ax, ay), (bx, by) = xy[i], xy[i + 1]
+            dx, dy = bx - ax, by - ay
+            length = dx * dx + dy * dy
+            t = 0.0 if length == 0 else max(0.0, min(1.0, ((self.pose[0] - ax) * dx +
+                                                          (self.pose[1] - ay) * dy) / length))
+            d = math.hypot(self.pose[0] - ax - t * dx, self.pose[1] - ay - t * dy)
+            if best is None or d < best:
+                best, best_i = d, i
+        if best is None:
+            return
+        (ax, ay), (bx, by) = xy[best_i], xy[best_i + 1]
+        side = (bx - ax) * (self.pose[1] - ay) - (by - ay) * (self.pose[0] - ax)
+        segment = math.hypot(bx - ax, by - ay)
+        if segment > 1e-9:
+            # Sideways distance from the segment's line. When a new path
+            # starts a few centimetres ahead of the robot, the straight-line
+            # distance to its first point is an along-track gap (it read as
+            # 8-14 cm "cross-track" peaks at every hand-over, 2026-11-12).
+            best = abs(side) / segment
+        now = self._now()
+        if self.owner == 'NAV' and (self._track_t is None or now - self._track_t >= 0.1):
+            self._track_t = now
+            estimated = None
+            if self.pose_lookup is not None:
+                try:
+                    ex, ey = self.pose_lookup()[:2]
+                    dx, dy = bx - ax, by - ay
+                    length = math.hypot(dx, dy) or 1.0
+                    estimated = round(((ex - ax) * dy * -1 + (ey - ay) * dx) / length, 4)
+                except Exception:
+                    estimated = None
+            self.track.append([round(now, 2), round(best if side >= 0 else -best, 4),
+                               round(self._steer, 4), round(self._omega, 4), round(self._speed, 3),
+                               round(self._target_steer, 4), round(self._nav_k, 4), round(self._gate_k, 4),
+                               estimated, self._tracking_report])
+        phase['_path_i'] = best_i
+        phase['xte_sum_sq'] += best * best
+        phase['xte_samples'] += 1
+        phase['max_cross_track_m'] = max(phase['max_cross_track_m'], best)
+
     def _guard(self, msg):
         self.guard[msg.data] = self.guard.get(msg.data, 0) + 1
         self.guard_events.append({'t': self._now(), 'reason': msg.data,
@@ -150,9 +262,14 @@ class Recorder(Node):
         result = {}
         for name, data in self.phases.items():
             result[name] = {key: value for key, value in data.items()
-                            if key not in ('_last', '_slow_t')}
+                            if not key.startswith('_')}
             samples = max(data['steer_samples'], 1)
             result[name]['full_lock_fraction'] = data['full_lock_samples'] / samples
+            per_10m = 10.0 / max(data['moving_m'], 1.0)
+            result[name]['rms_cross_track_m'] = (
+                math.sqrt(data['xte_sum_sq'] / data['xte_samples']) if data['xte_samples'] else None)
+            result[name]['steer_reversals_per_10m'] = data['steer_reversals'] * per_10m
+            result[name]['yaw_rate_flips_per_10m'] = data['yaw_rate_flips'] * per_10m
         return result
 
 
@@ -196,6 +313,8 @@ class Runner:
             self.entries.get(destination, []))
         self.recorder = Recorder()
         self.recorder.pose_lookup = self.bridge._robot_pose
+        self.recorder.path_lookup = lambda: (getattr(self.bridge, '_followed_path', None)
+                                             if self.bridge._active_follow is not None else None)
         self.executor = SingleThreadedExecutor()
         self.executor.add_node(self.bridge)
         self.executor.add_node(self.recorder)
@@ -437,6 +556,7 @@ class Runner:
             'guard_reasons': dict(self.recorder.guard),
             'guard_events': list(self.recorder.guard_events),
             'trace': list(self.recorder.trace),
+            'track': list(self.recorder.track),
             'reports': self.reports[first_report:],
         })
         return result
@@ -607,6 +727,13 @@ def main():
             result['failure'] = 'centre error above the 10 mm requirement'
             Path(args.output).write_text(json.dumps(results, indent=1))
         print(destination, result['outcome'], f"{result['center_error_m']:.4f} m", flush=True)
+        nav = result['phases'].get('NAV', {})
+        if nav.get('rms_cross_track_m') is not None:
+            print(f"  tracking: rms {nav['rms_cross_track_m'] * 100:.1f} cm, "
+                  f"max {nav['max_cross_track_m'] * 100:.1f} cm, "
+                  f"{nav['steer_reversals_per_10m']:.1f} steering reversals / 10 m, "
+                  f"{nav['yaw_rate_flips_per_10m']:.1f} yaw flips / 10 m over "
+                  f"{nav['moving_m']:.0f} m", flush=True)
         if result['outcome'] != 'SUCCESS':
             break
     runner.bridge.destroy_node()
