@@ -18,6 +18,7 @@ source install/setup.bash
 set -u
 export GZ_IP=127.0.0.1 QT_QPA_PLATFORM=offscreen
 export RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}
+export CYCLONEDDS_URI=${CYCLONEDDS_URI:-'<CycloneDDS><Domain><Discovery><ParticipantIndex>auto</ParticipantIndex><MaxAutoParticipantIndex>200</MaxAutoParticipantIndex></Discovery></Domain></CycloneDDS>'}
 for cycle in $(seq 1 "$CYCLES"); do
     tools/mission_validation/isolated_stack.sh down "$DOMAIN"
     rm -f "$RUN_DIR/nav2_ready"

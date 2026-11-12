@@ -47,6 +47,10 @@ export GZ_IP=127.0.0.1 IGN_IP=127.0.0.1 ROS_LOG_DIR="$RUN_DIR/ros_log"
 # Cyclone DDS, as Nav2 recommends: Fast DDS intermittently failed to match
 # Nav2 servers with their clients at startup ("action server not available").
 export RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}
+# Cyclone DDS gives each process on a machine a participant index and by
+# default allows only a few; the full stack has more processes than that, so
+# a late starter (often Gazebo) fails with "no free participant index".
+export CYCLONEDDS_URI=${CYCLONEDDS_URI:-'<CycloneDDS><Domain><Discovery><ParticipantIndex>auto</ParticipantIndex><MaxAutoParticipantIndex>200</MaxAutoParticipantIndex></Discovery></Domain></CycloneDDS>'}
 
 setsid bash -c '
   echo $$ > "$0"
