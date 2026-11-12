@@ -27,6 +27,8 @@ echo "4/7 routes the forward search cannot build, by reversing their opposite"
 (cd tools/v1_manhattan_bezier && python3 complete_reverse_routes.py \
     --database routes/route_database.json \
     --map ../../src/tugger_navigation/maps/warehouse_map.yaml) || true
+echo "4b/7 station config staging poses from the route database"
+python3 tools/v1_manhattan_bezier/sync_station_entries.py
 echo "5/7 segment 2 approaches for every station gate"
 NEW="$(mktemp --suffix=.json)"; rm -f "$NEW"
 (cd tools/mission_approaches && python3 generate_candidates.py --output "$NEW")

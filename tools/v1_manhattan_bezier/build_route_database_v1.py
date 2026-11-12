@@ -557,6 +557,41 @@ def smooth_lead_out(start, goal, safe, required, axis, run_cells, smooth, final_
     raise ValueError(last)
 
 
+def align_route_ends(points, start_xy=None, goal_xy=None):
+    """Move the first and last straight runs onto the exact staging poses.
+
+    ``points`` are the compressed corner points of an axis-aligned route at
+    grid cell centres. The end points become the exact poses and the corner
+    point next to each end moves with them along the run's normal (at most
+    half a cell), so every run stays axis-aligned and every corner stays 90
+    degrees. A single run is only re-anchored when both poses lie on it.
+    """
+    out = [list(map(float, point)) for point in points]
+    if len(out) < 2:
+        return out
+
+    def horizontal(a, b):
+        return abs(b[1] - a[1]) <= abs(b[0] - a[0])
+
+    if len(out) == 2:
+        if start_xy is not None and goal_xy is not None:
+            same_line = (abs(start_xy[1] - goal_xy[1]) < 1e-6 if horizontal(out[0], out[1])
+                         else abs(start_xy[0] - goal_xy[0]) < 1e-6)
+            if same_line:
+                out[0][:2] = start_xy[:2]
+                out[1][:2] = goal_xy[:2]
+        return out
+    if start_xy is not None:
+        across = 1 if horizontal(out[0], out[1]) else 0
+        out[0][:2] = start_xy[:2]
+        out[1][across] = float(start_xy[across])
+    if goal_xy is not None:
+        across = 1 if horizontal(out[-2], out[-1]) else 0
+        out[-1][:2] = goal_xy[:2]
+        out[-2][across] = float(goal_xy[across])
+    return out
+
+
 def smooth_and_validate(
     cells,
     spec,
@@ -564,12 +599,14 @@ def smooth_and_validate(
     occupancy_spec,
     blocked,
     trim,
-    curvature_limit
+    curvature_limit,
+    start_xy=None,
+    goal_xy=None,
 ):
-    points = p.compress([
+    points = align_route_ends(p.compress([
         p.world(q, spec)
         for q in cells
-    ])
+    ]), start_xy, goal_xy)
 
     if len(points) < 2:
         raise ValueError("Degenerate route")
@@ -676,16 +713,18 @@ def staging_candidates(station, spec, safe, blocked, distance):
                 safe.shape
             )
 
-            xy = p.world(grid, spec)
-            snapped = [xy[0], xy[1], yaw]
-
             if not safe[grid[1], grid[0]]:
                 raise ValueError(
                     "Staging position fails static clearance"
                 )
 
+            # The staging pose stays exactly on the station axis. Snapping it
+            # to the grid cell centre moved it 2.5 cm sideways, and the
+            # station approach then bent back to the axis: a 2-3 cm S-bend at
+            # both ends of every route (found 2026-11-12). The cell is only
+            # the search start; align_route_ends() puts the route on the pose.
             if not footprint_is_free(
-                snapped,
+                pose,
                 spec,
                 blocked
             ):
@@ -696,7 +735,7 @@ def staging_candidates(station, spec, safe, blocked, distance):
             item.update({
                 "available": True,
                 "grid_cell": list(grid),
-                "pose": snapped,
+                "pose": pose,
                 "reason": None,
             })
 
@@ -806,7 +845,8 @@ def build_connection(
                     int(math.ceil(args.corner_trim / float(spec["resolution"]))) + 1,
                     lambda cells: smooth_and_validate(
                         cells, spec, safe, occupancy_spec, blocked,
-                        args.corner_trim, args.max_curvature),
+                        args.corner_trim, args.max_curvature,
+                        source["pose"][:2], target["pose"][:2]),
                     final_run=int(math.ceil(FINAL_STRAIGHT_M / float(spec["resolution"]))),
                     centre_cost=getattr(args, "centre_cost", None),
                     centre_weight=getattr(args, "centre_weight", 0.0),
@@ -881,7 +921,8 @@ def build_connection(
                                           float(spec["resolution"]))) + 1,
                             lambda cells: smooth_and_validate(
                                 cells, spec, safe, occupancy_spec, blocked,
-                                args.corner_trim, args.max_curvature),
+                                args.corner_trim, args.max_curvature,
+                                source["pose"][:2], target["pose"][:2]),
                             final_run=int(math.ceil(FINAL_STRAIGHT_M /
                                                     float(spec["resolution"]))),
                             centre_cost=None, centre_weight=0.0)

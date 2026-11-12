@@ -78,3 +78,25 @@ def test_coarse_to_fine_search_matches_the_rules_and_reports_no_route():
         assert time.time() - t < 5.0
         return
     raise AssertionError('a route through a wall was returned')
+
+
+def test_route_ends_sit_exactly_on_the_staging_poses():
+    """Cell-centre lanes are moved onto the station axes; corners stay 90 degrees."""
+    from build_route_database_v1 import align_route_ends
+    # Cell centres 2.5 cm off the axes: start (2, 0) east-west, goal (17.5, 5) north-south.
+    points = [[2.025, 0.025], [17.525, 0.025], [17.525, 5.025]]
+    out = align_route_ends(points, (2.0, 0.0), (17.5, 5.0))
+    assert out == [[2.0, 0.0], [17.5, 0.0], [17.5, 5.0]]
+    # Longer route: only the corners next to the ends move.
+    points = [[2.025, 0.025], [6.525, 0.025], [6.525, 7.025], [15.525, 7.025]]
+    out = align_route_ends(points, (2.0, 0.0), (15.5, 7.0))
+    assert out == [[2.0, 0.0], [6.525, 0.0], [6.525, 7.0], [15.5, 7.0]]
+    for a, b in zip(out, out[1:]):
+        assert a[0] == b[0] or a[1] == b[1]          # every run axis-aligned
+    # A single straight run is re-anchored only when both poses lie on one line.
+    assert align_route_ends([[2.025, 0.025], [9.025, 0.025]], (2.0, 0.0), (9.0, 0.0)) == \
+        [[2.0, 0.0], [9.0, 0.0]]
+    assert align_route_ends([[2.025, 0.025], [9.025, 0.025]], (2.0, 0.0), (9.0, 0.05)) == \
+        [[2.025, 0.025], [9.025, 0.025]]
+    # Without poses nothing changes.
+    assert align_route_ends(points) == [[float(v) for v in p] for p in points]
