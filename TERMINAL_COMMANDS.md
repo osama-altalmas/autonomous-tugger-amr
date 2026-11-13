@@ -9,7 +9,13 @@ Every terminal uses Cyclone DDS (`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`), as
 Nav2 recommends. All terminals must use the same setting, including the `ros2`
 checks in T8; a terminal without it may not see the others.
 
-Start order: **Step 0 → T1 → T2 → T3 → T4 → T8 map activation → T4b → T5 → T8 checks → T6**.
+Every terminal also sets `CYCLONEDDS_URI`. Cyclone gives each ROS process on the
+computer a numbered slot and by default offers only about 10; the full stack
+fills them, so any process started later (`ros2` commands, RViz, viewers) was
+refused with "Failed to find a free participant index". The setting raises the
+limit to 200.
+
+Start order: **Step 0 → T1 → T2 → T3 → T4 → T4a map activation → T4b → T5 → T8 checks → T6**.
 T6b, T7, T9 and T10 are optional.
 
 ## Step 0 — Start clean (every session)
@@ -36,6 +42,7 @@ unset AMENT_PREFIX_PATH COLCON_PREFIX_PATH CMAKE_PREFIX_PATH PYTHONPATH
 source /opt/ros/lyrical/setup.bash
 source install/setup.bash
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export CYCLONEDDS_URI='<CycloneDDS><Domain><Discovery><ParticipantIndex>auto</ParticipantIndex><MaxAutoParticipantIndex>200</MaxAutoParticipantIndex></Discovery></Domain></CycloneDDS>'
 export GZ_IP=127.0.0.1
 export IGN_IP=127.0.0.1
 ros2 launch tugger_gazebo simulation.launch.py
@@ -53,6 +60,7 @@ unset AMENT_PREFIX_PATH COLCON_PREFIX_PATH CMAKE_PREFIX_PATH PYTHONPATH
 source /opt/ros/lyrical/setup.bash
 source install/setup.bash
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export CYCLONEDDS_URI='<CycloneDDS><Domain><Discovery><ParticipantIndex>auto</ParticipantIndex><MaxAutoParticipantIndex>200</MaxAutoParticipantIndex></Discovery></Domain></CycloneDDS>'
 ros2 launch tugger_control control.launch.py
 ```
 
@@ -67,6 +75,7 @@ unset AMENT_PREFIX_PATH COLCON_PREFIX_PATH CMAKE_PREFIX_PATH PYTHONPATH
 source /opt/ros/lyrical/setup.bash
 source install/setup.bash
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export CYCLONEDDS_URI='<CycloneDDS><Domain><Discovery><ParticipantIndex>auto</ParticipantIndex><MaxAutoParticipantIndex>200</MaxAutoParticipantIndex></Discovery></Domain></CycloneDDS>'
 ros2 launch tugger_ground_truth simulation_localization.launch.py
 ```
 
@@ -78,15 +87,39 @@ unset AMENT_PREFIX_PATH COLCON_PREFIX_PATH CMAKE_PREFIX_PATH PYTHONPATH
 source /opt/ros/lyrical/setup.bash
 source install/setup.bash
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export CYCLONEDDS_URI='<CycloneDDS><Domain><Discovery><ParticipantIndex>auto</ParticipantIndex><MaxAutoParticipantIndex>200</MaxAutoParticipantIndex></Discovery></Domain></CycloneDDS>'
 ros2 run nav2_map_server map_server --ros-args \
   -r __node:=map_server \
   -p "yaml_filename:=$PWD/src/tugger_navigation/maps/warehouse_map.yaml" \
   -p use_sim_time:=true
 ```
 
+## T4a — Map activation (right after T4, every startup)
+
+Run it in a new terminal as soon as T4 is running, before T4b and T5. Without
+it Nav2's global costmap never receives the map, and every path check fails
+with "Path validation failed or reported an obstacle". The `CYCLONEDDS_URI`
+line lets this short-lived `ros2` process join even when the running stack has
+used Cyclone DDS's default of about 10 processes ("Failed to find a free
+participant index").
+
+```bash
+cd ~/Autonomous_Tugger_Project_V2/autonomous_tugger_ws
+source /opt/ros/lyrical/setup.bash
+source install/setup.bash
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export CYCLONEDDS_URI='<CycloneDDS><Domain><Discovery><ParticipantIndex>auto</ParticipantIndex><MaxAutoParticipantIndex>200</MaxAutoParticipantIndex></Discovery></Domain></CycloneDDS>'
+ros2 lifecycle set /map_server configure
+ros2 lifecycle set /map_server activate
+ros2 lifecycle get /map_server
+```
+
+It must say `active`. If `configure` says `Node not found`, wait a few seconds
+and run both commands again.
+
 ## T4b — Localization (AMCL)
 
-Start after the map is activated (T8) and before T5. Without it the robot has
+Start after the map is activated (T4a) and before T5. Without it the robot has
 no `map` position and Nav2 cannot start its work.
 
 ```bash
@@ -95,6 +128,7 @@ unset AMENT_PREFIX_PATH COLCON_PREFIX_PATH CMAKE_PREFIX_PATH PYTHONPATH
 source /opt/ros/lyrical/setup.bash
 source install/setup.bash
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export CYCLONEDDS_URI='<CycloneDDS><Domain><Discovery><ParticipantIndex>auto</ParticipantIndex><MaxAutoParticipantIndex>200</MaxAutoParticipantIndex></Discovery></Domain></CycloneDDS>'
 ros2 launch tugger_navigation localization.launch.py
 ```
 
@@ -106,6 +140,7 @@ unset AMENT_PREFIX_PATH COLCON_PREFIX_PATH CMAKE_PREFIX_PATH PYTHONPATH
 source /opt/ros/lyrical/setup.bash
 source install/setup.bash
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export CYCLONEDDS_URI='<CycloneDDS><Domain><Discovery><ParticipantIndex>auto</ParticipantIndex><MaxAutoParticipantIndex>200</MaxAutoParticipantIndex></Discovery></Domain></CycloneDDS>'
 ros2 launch tugger_navigation nav2.launch.py
 ```
 
@@ -117,6 +152,7 @@ unset AMENT_PREFIX_PATH COLCON_PREFIX_PATH CMAKE_PREFIX_PATH PYTHONPATH
 source /opt/ros/lyrical/setup.bash
 source install/setup.bash
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export CYCLONEDDS_URI='<CycloneDDS><Domain><Discovery><ParticipantIndex>auto</ParticipantIndex><MaxAutoParticipantIndex>200</MaxAutoParticipantIndex></Discovery></Domain></CycloneDDS>'
 ros2 run rqt_gui rqt_gui -s tugger_control
 ```
 
@@ -153,36 +189,30 @@ cd ~/Autonomous_Tugger_Project_V2/autonomous_tugger_ws
 source /opt/ros/lyrical/setup.bash
 source install/setup.bash
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export CYCLONEDDS_URI='<CycloneDDS><Domain><Discovery><ParticipantIndex>auto</ParticipantIndex><MaxAutoParticipantIndex>200</MaxAutoParticipantIndex></Discovery></Domain></CycloneDDS>'
 rviz2 --ros-args -p use_sim_time:=true
 ```
 
-## T8 — Map activation and checks
+## T8 — Checks
 
-Map activation is required on every startup, after T4 and before T5:
+After starting T5, wait about 30 s, then check Nav2 and the controllers:
 
 ```bash
 cd ~/Autonomous_Tugger_Project_V2/autonomous_tugger_ws
 source /opt/ros/lyrical/setup.bash
 source install/setup.bash
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-ros2 lifecycle set /map_server configure
-ros2 lifecycle set /map_server activate
+export CYCLONEDDS_URI='<CycloneDDS><Domain><Discovery><ParticipantIndex>auto</ParticipantIndex><MaxAutoParticipantIndex>200</MaxAutoParticipantIndex></Discovery></Domain></CycloneDDS>'
 ros2 lifecycle get /map_server
-```
-
-It must say `active`. If `configure` says `Node not found`, wait a few seconds
-and run both commands again.
-
-After starting T5, wait about 30 s, then check Nav2 and the controllers:
-
-```bash
 ros2 lifecycle get /planner_server
 ros2 lifecycle get /controller_server
 ros2 lifecycle get /docking/controller_server
 ros2 control list_controllers
 ```
 
-All three Nav2 servers must be `active` and all four controllers `active`.
+The map server and all three Nav2 servers must be `active`, and all four
+controllers `active`. If the map server is `unconfigured`, T4a was missed: run it
+now; Nav2 picks the map up without a restart.
 `Node not found` means T5 is not running. If a Nav2 server is `unconfigured`
 (a startup race), stop T5 with Ctrl+C and start it again.
 
@@ -208,6 +238,7 @@ unset AMENT_PREFIX_PATH COLCON_PREFIX_PATH CMAKE_PREFIX_PATH PYTHONPATH
 source /opt/ros/lyrical/setup.bash
 source install/setup.bash
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export CYCLONEDDS_URI='<CycloneDDS><Domain><Discovery><ParticipantIndex>auto</ParticipantIndex><MaxAutoParticipantIndex>200</MaxAutoParticipantIndex></Discovery></Domain></CycloneDDS>'
 ros2 run rqt_image_view rqt_image_view
 ```
 
@@ -231,7 +262,8 @@ python3 tools/mission_view/scene_objects.py clear   # remove them all
 
 ## Required Nav2 controller check
 
-T5 must provide exactly these two FollowPath action servers:
+T5 must provide exactly these two FollowPath action servers (run it in the
+T8 terminal, which has the Cyclone DDS settings):
 
 ```bash
 ros2 action list | grep -E '^/follow_path$|^/docking/follow_path$'
@@ -245,8 +277,9 @@ the 4WS controller.
 Speed profile:
 
 - Straight route: up to **1.0 m/s** (0.95 m/s loaded).
-- Curves: the motion gate caps genuine curves at **0.6 m/s** while preserving
-  the requested curvature.
+- Curves: **0.6 m/s**. The route follower slows down before each curve,
+  planned from the path; the motion gate also caps genuine curves at 0.6 m/s
+  while preserving the requested curvature.
 - Station approach and departure: **0.3 m/s**. The gate slows the robot further
   near stand legs using its stopping-distance check.
 - Final camera correction: capped at **0.05 m/s**, loaded or not.

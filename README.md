@@ -15,7 +15,7 @@ delivers the cargo, and reacts to unexpected obstacles. No physical robot exists
 
 | Area | State |
 |---|---|
-| Route driving, docking, lift, cargo delivery, return to HOME | Working in simulation |
+| Route driving, docking, lift, cargo delivery, return to HOME | Working in simulation. About 1-2 cm rms from the path, 3-5 cm at worst; docking within 10 mm |
 | Laser localization (AMCL) with floor-marker correction | Working in simulation |
 | Safety: protective and warning fields, E-stops, bumper, stale-sensor stop | Working in simulation |
 | Turn in place (optional checkbox) and crab motion at the docking camera stage | Working in simulation |
@@ -97,6 +97,12 @@ python3 -m pytest -q src/tugger_control/test
 `test_flake8`, `test_pep257` and `test_mypy` currently fail on code style only;
 that cleanup has not been done. All other tests should pass.
 
+The route follower's control law has its own C++ tests (after a build):
+
+```bash
+./build/tugger_navigation/test_path_tracking_law
+```
+
 ## The robot and the warehouse
 
 | Item | Value |
@@ -154,6 +160,16 @@ corners by 10-17 cm.
 **Localization:** wheel odometry + IMU (EKF) → AMCL on the merged scan → corrected
 by floor markers at stations. Ground truth from Gazebo is used only to score tests;
 the robot never reads it.
+- `scan_merger` bins the two scanners into 0.5° slices published at each slice's
+  centre (publishing the slice edge turned the scan and biased AMCL's heading by 0.3°).
+- AMCL expects little odometry noise from straight driving and more from turning
+  (`amcl.yaml`), so its estimate stays steady on straights but still absorbs wheel
+  slip in curves.
+- Near a station AMCL is paused and the pose rides on odometry from the exact
+  marker fix. When the robot leaves, `marker_localization` re-seeds AMCL at the
+  current pose before resuming, so the whole departure is not applied as one step
+  (that jumped the pose by up to 37 cm).
+- Result in simulation: 1.5-2 cm rms, under 5 cm at worst.
 
 **Safety (`safety_monitor`, independent of mission logic):** at 1 m/s the protective
 field reaches 0.84 m ahead and the warning field 2.34 m. Protective stops, warning
@@ -200,6 +216,10 @@ files there are libraries. `operator_panel.py` is the mission engine and rqt pan
 | To change | Edit |
 |---|---|
 | Route speed, look-ahead, arrival tolerance | `src/tugger_navigation/config/nav2.yaml` |
+| Route follower steering and curve speed (`tracking_*`, `curve_speed*`) | `FollowPath` in `src/tugger_navigation/config/nav2.yaml`; law in `src/tugger_navigation/include/tugger_navigation/path_tracking_law.hpp` |
+| Localization noise model | `src/tugger_navigation/config/amcl.yaml` |
+| Station zones, marker corrections, re-seed on departure | `src/tugger_control/tugger_control/marker_localization.py` |
+| Route shape (grid search, corner rounding, staging distance) | `tools/v1_manhattan_bezier/build_route_database_v1.py`, `plan_routes.py`, then `tools/regenerate_paths_from_world.sh` |
 | Robot speed, acceleration limits | `src/tugger_control/config/sim_speed.yaml` |
 | Limits enforced on every command | `src/tugger_control/tugger_control/sim_motion_gate.py` |
 | Safety field sizes | `src/tugger_control/tugger_control/safety_fields.py` |
@@ -213,18 +233,24 @@ After a config or C++ change, rebuild and restart the affected terminals.
 
 ## Rules the code relies on
 
-- Routes are generated, never hand-written. Regenerated routes need review before use.
+- Routes are generated, never hand-written. Station centres come from the world
+  file; each gate's staging pose is 2.0 m out along the station axis, and routes
+  end exactly on it. Regenerated routes are not approved and need review before use.
+- The station config (`src/tugger_control/config/operator_stations.json`) is written
+  by the generator (`sync_station_entries.py`); do not edit its poses by hand.
 - A station is left by the gate the robot entered, unless turn in place is on and faster.
 - Nothing commands the wheels except through `sim_motion_gate`.
 - Do not start a second copy of any launch file; duplicate nodes break the gate's checks.
-- All terminals must use `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`.
+- All terminals must use `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp` and the `CYCLONEDDS_URI` setting from TERMINAL_COMMANDS.md.
 
 ## Common problems
 
 | Symptom | Cause and fix |
 |---|---|
 | `action server not available`, Nav2 stuck | Leftover processes. Run Step 0 in TERMINAL_COMMANDS.md and restart |
-| Robot has no `map` position | Map server not activated, or AMCL started before it. Follow the order in TERMINAL_COMMANDS.md |
+| Robot has no `map` position | AMCL (T4b) not running, or started before its map. Follow the order in TERMINAL_COMMANDS.md |
+| "Path validation failed or reported an obstacle; RUN is not enabled" with nothing in the way | Map server not activated, so Nav2's costmap has no map. Run T4a; no restart needed |
+| `Failed to find a free participant index for domain 0` | The running stack used Cyclone DDS's default of about 10 processes. Every terminal block in TERMINAL_COMMANDS.md sets `CYCLONEDDS_URI` to raise it; add that line to any other terminal |
 | Panel cannot find routes | Built without `--symlink-install` |
 | Robot stopped and will not restart | Safety latched. Clear the cause and press **Reset safety** |
 | Topics invisible between terminals | One terminal is missing the Cyclone DDS setting |
@@ -237,13 +263,24 @@ After a config or C++ change, rebuild and restart the affected terminals.
 - Test obstacles are at fixed positions.
 - Obstacle positions are not remembered, so a replan avoids only where an object is now.
 - A bumper hit needs a manual reset, and there is no reverse recovery.
-- Path following can weave from side to side; it has not been measured and tuned yet.
+- Each route corner is a Bézier curve whose steering rises, dips and rises again
+  (about 21° → 12° → 23°): a visible wobble of the wheels. Constant-radius corners
+  are planned.
+- Steering gives both wheels on an axle the same angle (not Ackermann), so the
+  wheels slip sideways in curves; with cargo the estimate can drift several cm in
+  a corner until AMCL corrects it.
+- AMCL can still wander 2-3 cm on some straights.
 - Motor overload and per-wheel load are not modelled.
 
 ## Planned
 
-YOLO perception to classify objects, reinforcement learning as a small, bounded
-correction on top of the path follower, then a headless mission node before moving to hardware.
+1. Constant-radius route corners (steady steering instead of the 21° → 12° → 23° wobble).
+2. Ackermann steering: each wheel at its own angle, so no sideways slip in curves,
+   with odometry from all four wheels.
+3. AI: YOLO perception to classify objects, reinforcement learning as a small,
+   bounded correction on top of the path follower.
+4. A headless mission node before moving to hardware; a differential-drive
+   variant on its own branch.
 
 ## License
 
