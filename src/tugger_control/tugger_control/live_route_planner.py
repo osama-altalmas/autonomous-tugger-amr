@@ -13,7 +13,7 @@ from pathlib import Path
 
 class LiveRoutePlanner:
     def __init__(self, tools_dir, map_yaml, *, world=None, clearance=1.05, corner_trim=1.0,
-                 max_curvature=2.5, centre_weight=None):
+                 max_curvature=1.6, centre_weight=None):
         self.tools_dir = Path(tools_dir)
         self.map_yaml = Path(map_yaml)
         self.world = Path(world) if world is not None else None

@@ -100,19 +100,47 @@ def sampled_line(a,b):
     return [(a+(b-a)*t/n).tolist() for t in range(n+1)]
 
 
-def bezier_quintic(a,b,u,v):
-    a=np.asarray(a,float); b=np.asarray(b,float)
-    # Zero end curvature: first three/last three control points collinear.
-    extent=float(np.linalg.norm(b-a)); k=0.18*extent
-    control=np.array([a,a+k*u,a+2*k*u,b-2*k*v,b-k*v,b])
-    n=max(30,math.ceil(extent/STEP))
-    result=[]
-    for t in np.linspace(0,1,n+1):
-        result.append(sum(math.comb(5,j)*(1-t)**(5-j)*t**j*control[j] for j in range(6)).tolist())
+# Weight of the middle control point of a rational quadratic Bezier that is an
+# exact 90-degree circular arc: cos(45 degrees).
+ARC_WEIGHT = math.cos(math.pi / 4.0)
+
+
+def bezier_arc(a, b, u, v):
+    """90-degree corner from a (heading u) to b (heading v) as a circular arc.
+
+    A rational quadratic Bezier (control points a, the corner point, b; middle
+    weight cos 45 degrees) is an exact circle: the curvature, and so the
+    steering, is constant through the corner. The arc is tangent to both
+    straights; its radius is the distance from a (or b) to the corner point.
+    It replaced a quintic Bezier whose curvature rose, dipped and rose again
+    (steering about 21 -> 12 -> 23 degrees for a 1 m corner, 2026-11-13); a
+    1 m corner now holds about 16 degrees.
+    """
+    a = np.asarray(a, float); b = np.asarray(b, float)
+    u = np.asarray(u, float); v = np.asarray(v, float)
+    if abs(float(u @ v)) > 1e-5:
+        raise ValueError('Circular-arc corners need a 90-degree turn')
+    # Corner point where the two straights meet; radius = |corner - a|.
+    corner = a + u * float(np.dot(b - a, u))
+    radius = float(np.linalg.norm(corner - a))
+    if radius < 1e-6 or abs(float(np.linalg.norm(b - corner)) - radius) > 1e-6:
+        raise ValueError('Corner arc needs equal distances to the corner point')
+    n = max(30, math.ceil(radius * math.pi / 2.0 / STEP))
+    result = []
+    for t in np.linspace(0, 1, n + 1):
+        w0, w1, w2 = (1 - t) ** 2, 2 * t * (1 - t) * ARC_WEIGHT, t * t
+        result.append(((w0 * a + w1 * corner + w2 * b) / (w0 + w1 + w2)).tolist())
     return result
 
 
-def smooth(points, trim):
+def smooth(points, trim, final_straight=0.0):
+    """Straight runs joined by circular-arc corners of radius up to ``trim``.
+
+    ``final_straight`` (m): the last corner is rounded no more than leaves this
+    much straight before the route's end, where the follower settles its
+    heading before the station hand-over. The 1.0 m rounding otherwise took
+    1.0 m of the planner's final run and left 1.475 m on two HOME routes.
+    """
     if len(points)<2: raise ValueError('At least two route points required')
     out=[list(points[0])]; cursor=np.asarray(points[0],float)
     for i in range(1,len(points)-1):
@@ -122,9 +150,11 @@ def smooth(points, trim):
         u=v1/l1;v=v2/l2
         if abs(float(u@v))>1e-5: raise ValueError('Only 90-degree corners allowed')
         d=min(trim,0.45*l1,0.45*l2)
+        if i==len(points)-2 and final_straight>0.0 and l2-final_straight>0.05:
+            d=min(d,l2-final_straight)
         entry=b-d*u;depart=b+d*v
         out+=sampled_line(cursor,entry)[1:]
-        out+=bezier_quintic(entry,depart,u,v)[1:]
+        out+=bezier_arc(entry,depart,u,v)[1:]
         cursor=depart
     out+=sampled_line(cursor,points[-1])[1:]
     return [out[0]]+[p for p,q in zip(out[1:],out[:-1]) if math.dist(p,q)>1e-8]
@@ -232,7 +262,7 @@ def main():
     ap.add_argument('--out',required=True,type=Path)
     ap.add_argument('--clearance',type=float,default=0.9,help='Conservative circular footprint radius in meters')
     ap.add_argument('--corner-trim',type=float,default=1.5)
-    ap.add_argument('--max-curvature',type=float,default=2.5)
+    ap.add_argument('--max-curvature',type=float,default=1.6)
     ap.add_argument('--max-alternatives',type=int,default=8)
     args=ap.parse_args()
     stations=json.loads(args.stations.read_text())

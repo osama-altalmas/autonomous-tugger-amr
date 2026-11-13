@@ -511,6 +511,10 @@ FINAL_STRAIGHT_M = 1.6
 # detour is shorter than about twice the length it would otherwise run
 # off-centre, so open crossings are crossed in the middle, not along a rack.
 CENTRE_WEIGHT = 2.0
+# Straight actually driven into a gate after the last corner's arc (the audit,
+# audit_mission_paths.FINAL_STRAIGHT_M, requires 1.5 m; 2 cm of margin for its
+# sampled heading check).
+DRIVEN_FINAL_STRAIGHT_M = 1.52
 # Each corner slows the robot and swings its steering: worth about this much
 # straight driving. Without it the search adds a side-step for any small bend
 # of the centre line (measured: 1-2 m still let routes side-step 1 m in open
@@ -617,7 +621,8 @@ def smooth_and_validate(
         try:
             xy = p.smooth(
                 points,
-                trim * factor
+                trim * factor,
+                final_straight=DRIVEN_FINAL_STRAIGHT_M
             )
 
             k = p.curvature(xy)
@@ -1033,10 +1038,12 @@ def main():
         default=1.0
     )
 
+    # Ackermann steering at 45 degrees on the inner wheel turns no tighter
+    # than 0.51 m (1.96 /m); 1.6 /m (0.625 m) leaves room for tracking.
     ap.add_argument(
         "--max-curvature",
         type=float,
-        default=2.5
+        default=1.6
     )
 
     ap.add_argument(

@@ -34,9 +34,10 @@ STEP = 3
 # part must never pass under a stand. HOME has no stand.
 STATION_INTERIOR_M = 1.5
 # The straight into a gate must let the path follower settle its heading.
-# The planner keeps the last corner FINAL_STRAIGHT_M (1.6 m) from the gate
-# (build_route_database_v1.FINAL_STRAIGHT_M); the rounded corner uses about
-# 0.1 m of that, so the driven straight measured here is at least 1.5 m.
+# The planner keeps the last corner point at least 1.6 m from the gate
+# (build_route_database_v1.FINAL_STRAIGHT_M), and rounds the last corner no
+# more than leaves DRIVEN_FINAL_STRAIGHT_M (1.52 m) of straight after its arc;
+# the driven straight measured here must be at least 1.5 m.
 FINAL_STRAIGHT_M = 1.5
 # Routes keep as far from obstacles as the space allows: on straight
 # stretches the nearer side must be clear by CLEARANCE_GOAL_M, or by half the
