@@ -76,10 +76,13 @@ def test_unexpected_cargo_or_excess_speed_fails_closed():
 def test_station_legs_reduce_speed_instead_of_expanding_cargo_to_floor():
     legs = [('station_legs', Box(f'leg_{x}_{y}', x, y, 0.0, 0.04, 0.04, 0, 0.28))
             for x in (-0.56, 0.56) for y in (-0.56, 0.56)]
+    # Asked for 0.3 m/s: the legs under the cargo slow the robot, not block it.
+    # (With the former 0.29 m turning limit 0.1 m/s was already slowed; the
+    # tighter Ackermann limit sweeps less, so a faster request is needed.)
     velocity, hit = choose_guarded_speed(
-        (0, 0, 0), (0, 0, 0.065, 0), LIFT_UP_M, 0, legs, 0.0, 0.1)
+        (0, 0, 0), (0, 0, 0.065, 0), LIFT_UP_M, 0, legs, 0.0, 0.3)
     assert hit is None
-    assert 0.0 < velocity < 0.1
+    assert 0.0 < velocity < 0.3
 
 
 def test_known_world_manifest_includes_all_fixed_legs_and_payloads():

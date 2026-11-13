@@ -75,7 +75,7 @@ class Recorder(Node):
         self.guard = {}
         self.guard_events = []
         # Diagnostic trace at 2 Hz: sim time, owner, true pose, estimated
-        # pose, wheel speed. Used to explain stalls and alignment failures.
+        # pose, wheel speed, wheel odometry pose. Used to explain stalls and alignment failures.
         self.trace = []
         self._trace_t = None
         self._dock_sign = 0
@@ -191,7 +191,14 @@ class Recorder(Node):
                                *(round(v, 4) for v in self.pose),
                                *((round(v, 4) for v in estimate[:3]) if estimate else
                                  (None, None, None)),
-                               round(self._speed, 3)])
+                               round(self._speed, 3),
+                               # Raw wheel odometry pose (odom frame), to measure
+                               # drift through corners against the true pose. It is
+                               # the latest message, about 50 ms behind the true pose
+                               # beside it: shift it by that before comparing, or every
+                               # 90 degree corner shows about 5 cm of false drift.
+                               *((round(v, 4) for v in self._odom_pose)
+                                 if getattr(self, '_odom_pose', None) else (None, None, None))])
 
     def _cross_track(self, phase):
         """True distance from the path being followed (not the estimate)."""
@@ -255,6 +262,9 @@ class Recorder(Node):
 
     def _odom(self, msg):
         self._speed = float(msg.twist.twist.linear.x)
+        q = msg.pose.pose.orientation
+        self._odom_pose = (msg.pose.pose.position.x, msg.pose.pose.position.y,
+                           math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z)))
         phase = self._phase()
         phase['max_abs_speed'] = max(phase['max_abs_speed'], abs(self._speed))
 

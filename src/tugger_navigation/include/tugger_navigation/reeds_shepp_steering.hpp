@@ -52,7 +52,7 @@ class ReedsSheppSteering
 {
 public:
   explicit ReedsSheppSteering(
-    double turning_radius = 0.29,
+    double turning_radius = 0.51,
     double sample_resolution = 0.05);
 
   SteeringResult connect(

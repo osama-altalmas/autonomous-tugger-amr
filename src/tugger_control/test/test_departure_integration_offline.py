@@ -21,6 +21,7 @@ from tugger_control.lift_geometry import LIFT_CONTACT_M, LIFT_UP_M, lift_is_rais
 
 from tugger_control.cargo_policy import CARGO_IDS, confirmed_cargo
 from tugger_control.precision_scene_clearance import FULL_LOCK_CURVATURE
+from tugger_control.steering_geometry import MAX_CURVATURE, curvature_from_virtual
 from tugger_control.loaded_motion_guard import choose_guarded_speed
 from tugger_control.mission_planning import plan_is_current
 from tugger_control.station_departure import plan_station_departure
@@ -80,6 +81,7 @@ def gate_test_class():
         'confirmed_cargo': confirmed_cargo, 'CARGO_IDS': CARGO_IDS,
         'lift_is_raised': lift_is_raised,
         'FULL_LOCK_CURVATURE': FULL_LOCK_CURVATURE, 'STOPPING_CURVATURE_MARGIN': 0.3,
+        'MAX_CURVATURE': MAX_CURVATURE, 'curvature_from_virtual': curvature_from_virtual,
         'CAMERA_SPEED_LIMIT': 0.05, 'PRECISION_APPROACH_LIMIT': 0.4,
         'choose_guarded_speed': choose_guarded_speed,
         'precision_stopping_envelope': Mock(return_value=(True, None)),
@@ -398,7 +400,7 @@ def test_loaded_departure_yaw_rate_respects_4ws_steering_limit():
     gate._tick()
     output = gate._output.publish.call_args.args[0].twist
     assert output.linear.x == pytest.approx(0.3)  # transfer-station limit
-    assert abs(output.angular.z) <= 2 * abs(output.linear.x) / 0.58 + 1e-9
+    assert abs(output.angular.z) <= MAX_CURVATURE * abs(output.linear.x) + 1e-9
 
 
 def test_departure_is_refused_when_no_route_leaves_by_the_entry_gate():

@@ -9,6 +9,7 @@ The resulting path is a candidate, not authorization to drive.
 import math
 
 from tugger_control.direction_policy import prepare_dynamic_path, wrap
+from tugger_control.steering_geometry import MAX_VIRTUAL_STEERING_RAD
 
 
 def plan_station_departure(current_pose, approach_poses, *,
@@ -16,7 +17,7 @@ def plan_station_departure(current_pose, approach_poses, *,
                            maximum_body_yaw_error_deg=20.0,
                            minimum_exit_distance_m=0.50,
                            wheelbase_m=0.58,
-                           maximum_steering_rad=math.pi / 4):
+                           maximum_steering_rad=MAX_VIRTUAL_STEERING_RAD):
     """Return an execution-direction-consistent *candidate* to approach staging.
 
     ``approach_poses`` runs from the free-space staging point into the dock.

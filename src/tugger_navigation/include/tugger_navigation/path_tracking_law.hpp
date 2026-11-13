@@ -56,7 +56,7 @@ struct TrackingGains
   double schedule_behind = 0.5;     // m travelled before a passed curve stops counting
   double preview_time = 0.10;  // s, covers the steering slew and control delay
   double curvature_window = 0.05;  // m, half window for the path curvature
-  double max_curvature = 3.4;  // 1/m, 45 degree counter-phase lock at 0.58 m
+  double max_curvature = 1.96;  // 1/m, Ackermann at 45 deg on the inner wheel (0.51 m)
   double curve_speed = 0.6;    // m/s, curve speed (motion gate curve limit)
   double curve_speed_curvature = 0.25;  // 1/m, path curvature that needs it
   double speed_deceleration = 1.0;  // m/s^2, planned braking toward a curve

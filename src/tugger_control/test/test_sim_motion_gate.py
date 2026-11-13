@@ -149,7 +149,10 @@ def test_unloaded_docking_is_speed_limited_and_height_aware():
 
 
 def test_unloaded_docking_reduces_for_obstacle_and_stops_for_stale_scene():
-    obstacle = Box('unexpected', 0.55, 0, 0, 0.02, 0.02, 0, 0.15)
+    # Ackermann steering turns no tighter than 0.51 m, so the robot sweeps less
+    # while stopping than with the former 0.29 m limit; the obstacle sits
+    # inside the new, smaller envelope.
+    obstacle = Box('unexpected', 0.53, 0, 0, 0.02, 0.02, 0, 0.15)
     item = gate([('unexpected', obstacle)])
     item._states = {0: 'detached', 3: 'detached'}
     item._owner = 'DOCK_NAV'
@@ -176,7 +179,8 @@ def test_docking_camera_curvature_is_clamped_to_4ws_limit():
     SimMotionGate._tick(item)
     output = item._output.publish.call_args.args[0]
     assert output.twist.linear.x == pytest.approx(-0.02)
-    assert output.twist.angular.z == pytest.approx(2 * .02 / .58)
+    from tugger_control.steering_geometry import MAX_CURVATURE
+    assert output.twist.angular.z == pytest.approx(MAX_CURVATURE * .02)
 
 
 def test_home_camera_owner_is_guarded_as_low_speed_precision_motion():

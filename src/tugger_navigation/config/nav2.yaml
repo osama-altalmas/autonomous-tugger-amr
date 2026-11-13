@@ -7,6 +7,9 @@ planner_server:
 
     GridBased:
       plugin: "tugger_navigation::RRTStarReedsSheppPlanner"
+      # Tightest Ackermann curve: 45 degrees on the inner wheel
+      # (tugger_control/steering_geometry.py MIN_TURN_RADIUS_M).
+      turning_radius: 0.51
 
       Forward:
         tolerance: 0.25
@@ -21,7 +24,7 @@ planner_server:
         analytic_expansion_ratio: 3.5
         analytic_expansion_max_length: 3.0
 
-        minimum_turning_radius: 0.29
+        minimum_turning_radius: 0.51
 
         reverse_penalty: 2.0
         change_penalty: 0.0
@@ -42,7 +45,7 @@ planner_server:
         analytic_expansion_ratio: 3.5
         analytic_expansion_max_length: 3.0
 
-        minimum_turning_radius: 0.29
+        minimum_turning_radius: 0.51
 
         reverse_penalty: 2.0
         change_penalty: 0.0
@@ -127,7 +130,7 @@ controller_server:
       # Covers the steering slew and one control cycle.
       tracking_preview_time: 0.10
       tracking_curvature_window: 0.05
-      tracking_max_curvature: 3.4
+      tracking_max_curvature: 1.96  # steering_geometry.MAX_CURVATURE (0.51 m)
       tracking_max_heading_error: 1.05
       # Curve speed planned from the path: reach 0.6 m/s 0.2 m before a
       # curve that needs it (curvature 0.25 /m, the motion gate's curve
@@ -166,12 +169,12 @@ controller_server:
       use_regulated_linear_velocity_scaling: true
       use_cost_regulated_linear_velocity_scaling: true
 
-      regulated_linear_scaling_min_radius: 0.29
+      regulated_linear_scaling_min_radius: 0.51
       regulated_linear_scaling_min_speed: 0.05
 
     # Segment 2 only. The look-ahead must stay well above the distance travelled
     # while the steering slews (about 0.36 s to full lock) and comparable to the
-    # 0.29 m minimum turning radius. The former 0.06-0.14 m values saturated the
+    # 0.51 m minimum turning radius. The former 0.06-0.14 m values saturated the
     # steering from a 7 cm handover offset and aborted in Gazebo. The request
     # stays below the motion gate's 0.40 m/s current-speed limit so normal
     # tracking overshoot does not trip it.
@@ -193,7 +196,7 @@ controller_server:
       max_allowed_time_to_collision_up_to_carrot: 1.0
       use_regulated_linear_velocity_scaling: true
       use_cost_regulated_linear_velocity_scaling: true
-      regulated_linear_scaling_min_radius: 0.29
+      regulated_linear_scaling_min_radius: 0.51
       regulated_linear_scaling_min_speed: 0.01
 
     # Loaded departure uses the independent docking controller, but has a
@@ -216,7 +219,7 @@ controller_server:
       max_allowed_time_to_collision_up_to_carrot: 1.0
       use_regulated_linear_velocity_scaling: true
       use_cost_regulated_linear_velocity_scaling: true
-      regulated_linear_scaling_min_radius: 0.29
+      regulated_linear_scaling_min_radius: 0.51
       regulated_linear_scaling_min_speed: 0.05
 
 

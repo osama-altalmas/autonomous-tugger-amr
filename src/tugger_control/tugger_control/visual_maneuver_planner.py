@@ -10,6 +10,14 @@ import heapq
 import itertools
 import time
 
+from tugger_control.steering_geometry import MAX_CURVATURE
+
+# Steered arcs in the camera stage stay inside the Ackermann turning limit
+# (0.51 m radius) with room for steering slew. The former 3.0 /m (0.33 m)
+# arcs need more than 45 degrees on the inner wheel; sideways corrections use
+# crab moves instead and arcs only trim the heading.
+CAMERA_ARC_CURVATURE = 0.9 * MAX_CURVATURE
+
 # Fraction of the position tolerance that a preferred plan must end within.
 TIGHT_FRACTION = 0.5
 
@@ -134,7 +142,7 @@ def _strict_visible_plan(target, clearance, *, max_depth=6, beam_width=220,
     primitives = [(direction * length, curvature)
                   for length in (0.025, 0.05)
                   for direction in (-1, 1)
-                  for curvature in (-3.0, 0.0, 3.0)]
+                  for curvature in (-CAMERA_ARC_CURVATURE, 0.0, CAMERA_ARC_CURVATURE)]
 
     def cost(pose):
         return (math.hypot(target[0] - pose[0], target[1] - pose[1]) +
@@ -216,25 +224,10 @@ def plan_visual_maneuver(target, clearance, *, max_depth=6, beam_width=220,
             pose = advance(pose, primitive)
         return pose
 
-    # Explore short 4WS parallel-parking maneuvers plus one measured yaw
-    # correction. Smaller arcs are critical after steering-slew leaves a few
-    # millimetres of residual error at the end of the first sequence.
-    sign = 1 if target[1] >= 0 else -1
+    # Sideways corrections are crab moves (all wheels at one angle), then
+    # one measured yaw trim. The former parallel-parking macros (four short
+    # 3.0 /m arcs) need tighter turns than Ackermann steering allows.
     macros = []
-    for length in (.025, .035, .038, .039, .04, .045, .05):
-        macros.extend((
-            # Alternate directions to limit longitudinal excursion.
-            ((-length, -3*sign), (length, 3*sign),
-             (length, -3*sign), (-length, 3*sign)),
-            ((length, -3*sign), (-length, 3*sign),
-             (-length, -3*sign), (length, 3*sign)),
-            ((length, 3*sign), (length, -3*sign),
-             (-length, 3*sign), (-length, -3*sign)),
-            ((length, -3*sign), (-length, 3*sign),
-             (-length, -3*sign), (length, 3*sign)),
-            ((-length, -3*sign), (-length, 3*sign),
-             (length, -3*sign), (length, 3*sign)),
-        ))
     # Crab first: one diagonal move (all wheels at one angle) per macro.
     crabs = crab_macros(target)
     macros = crabs + macros
@@ -268,7 +261,7 @@ def plan_visual_maneuver(target, clearance, *, max_depth=6, beam_width=220,
                 if 1e-6 < abs(yaw_delta) <= .15:
                     trims = []
                     for direction in (-1, 1):
-                        amount = max(.005, abs(yaw_delta) / 3.0)
+                        amount = max(.005, abs(yaw_delta) / CAMERA_ARC_CURVATURE)
                         if amount <= .05:
                             distance = direction * amount
                             trims.append(((distance, yaw_delta / distance),))
@@ -334,7 +327,7 @@ def plan_visual_maneuver(target, clearance, *, max_depth=6, beam_width=220,
     primitives = [(direction * length, curvature)
                   for length in (0.025, 0.05, 0.01, 0.005)
                   for direction in (-1, 1)
-                  for curvature in (-3.0, 0.0, 3.0)]
+                  for curvature in (-CAMERA_ARC_CURVATURE, 0.0, CAMERA_ARC_CURVATURE)]
     # Best-first, heuristic-dominated search, with capped depth and expansions.
     # Beam width bounds queue pressure, not just final depth candidates.
     counter = itertools.count()

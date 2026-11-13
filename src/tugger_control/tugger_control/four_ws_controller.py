@@ -19,8 +19,8 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import TwistStamped
 from std_msgs.msg import Float64MultiArray
-from .motion_math import (approach, front_wheel_speed, speed_limit_for_steering,
-                          steering_for_twist, wheel_speeds)
+from .motion_math import approach, speed_limit_for_steering, steering_for_twist, wheel_speeds
+from .steering_geometry import max_curvature, rolling_speeds, virtual_from_curvature
 from .crab_motion import (CRAB_FRAME, CRAB_MAX_SPEED, crab_command, crab_steering,
                           crab_wheel_speeds)
 from .turn_in_place import (MAX_YAW_RATE_UNLOADED, PIVOT_SETTLE_S, PIVOT_STEERING,
@@ -44,6 +44,16 @@ class FourWSController(Node):
             setattr(self, name, float(self.get_parameter(name).value))
         if any(getattr(self, name) <= 0 for name in defaults if name != 'max_steering_angle'):
             raise ValueError('All motion limits and geometry parameters must be positive')
+        # max_steering_angle limits each wheel. With Ackermann steering the
+        # inner wheel reaches it first, so the virtual single steering angle
+        # (and the path curvature) is limited further: 45 degrees on the
+        # inner wheel is a 0.51 m turning radius.
+        self.max_virtual_steering = virtual_from_curvature(
+            max_curvature(self.max_steering_angle, self.wheelbase, self.track_width),
+            self.wheelbase)
+        half_l, half_w = self.wheelbase / 2.0, self.track_width / 2.0
+        self.wheel_positions = ((half_l, half_w), (half_l, -half_w),
+                                (-half_l, half_w), (-half_l, -half_w))
         self.steering_pub = self.create_publisher(Float64MultiArray, '/steering_controller/commands', 10)
         self.traction_pub = self.create_publisher(Float64MultiArray, '/traction_controller/commands', 10)
         # Diagnostics: [target_v, commanded_v, target_front_delta, commanded_front_delta, commanded_omega]
@@ -118,7 +128,7 @@ class FourWSController(Node):
             # stand legs) resume with unwound wheels and leave its path.
             self.target_v = 0.
             return
-        self.target_delta = steering_for_twist(v, omega, self.wheelbase, self.max_steering_angle)
+        self.target_delta = steering_for_twist(v, omega, self.wheelbase, self.max_virtual_steering)
 
     def _in_drive_pattern(self):
         return steering_reached(self.wheel_angles, drive_steering(self.delta), 1e-6)
@@ -131,16 +141,11 @@ class FourWSController(Node):
         elif self._in_drive_pattern():
             _, _, omega = wheel_speeds(self.v, self.delta, self.wheelbase,
                                        self.track_width, self.wheel_radius)
-            # Every driven wheel rolls at the body's velocity at that wheel
-            # projected on its own heading, so no axle pushes against the
-            # other in a curve (the steering is not exact Ackermann; with all
-            # four wheels driven, other speeds made them scrub and slip). By
-            # counter-phase symmetry front and rear on one side are equal, and
-            # the odometry's v = mean(rear) * cos(delta) stays exact.
-            fl, fr = (front_wheel_speed(self.v, omega, self.delta, self.wheelbase, side,
-                                        self.track_width, self.wheel_radius)
-                      for side in (1.0, -1.0))
-            rl, rr = fl, fr
+            # Ackermann wheel angles: every wheel rolls around the same
+            # turning centre at the speed of its own circle, so no wheel
+            # slides sideways or scrubs against the others.
+            fl, fr, rl, rr = rolling_speeds(self.v, omega, self.wheel_angles,
+                                            self.wheel_radius, self.wheel_positions)
         else:
             # Pivot pattern or changing between patterns: all four wheels turn
             # the robot in place (zero while the wheels are still steering).
@@ -211,12 +216,26 @@ class FourWSController(Node):
         # A direction reversal must pass through zero speed.
         rate = self.max_acceleration if abs(self.target_v) > abs(self.v) and self.target_v * self.v >= 0 else self.max_deceleration
         self.v = approach(self.v, self.target_v, rate, dt)
-        self.delta = approach(self.delta, self.target_delta, self.max_steering_rate, dt)
+        self.delta = self._wheel_rate_limited(
+            approach(self.delta, self.target_delta, self.max_steering_rate, dt), dt)
         self.wheel_angles = list(drive_steering(self.delta))
         safe_speed = speed_limit_for_steering(self.delta, self.wheelbase,
                                               self.max_lateral_acceleration, self.max_linear_speed)
         self.v = max(-safe_speed, min(safe_speed, self.v))
         self.publish()
+
+    def _wheel_rate_limited(self, proposed, dt):
+        """Shorten a virtual steering step so no wheel turns faster than allowed.
+
+        With Ackermann steering the inner wheel turns faster than the virtual
+        angle near full lock; max_steering_rate limits the real wheels.
+        """
+        now, new = drive_steering(self.delta), drive_steering(proposed)
+        largest = max(abs(a - b) for a, b in zip(now, new))
+        allowed = self.max_steering_rate * dt
+        if largest <= allowed or largest < 1e-12:
+            return proposed
+        return self.delta + (proposed - self.delta) * allowed / largest
 
     def _slew_wheels(self, target, dt):
         self.wheel_angles = [approach(angle, goal, self.max_steering_rate, dt)

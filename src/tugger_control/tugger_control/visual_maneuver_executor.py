@@ -9,6 +9,7 @@ import math
 
 from tugger_control.crab_motion import CRAB_FRAME, CRAB_MAX_ANGLE_RAD, crab_propagate
 from tugger_control.visual_maneuver_planner import propagate
+from tugger_control.steering_geometry import MAX_CURVATURE
 
 # Crab primitives (distance, 0, wheel angle) may be longer than arcs: one
 # diagonal move replaces a parallel-parking sequence.
@@ -54,7 +55,7 @@ class VisualManeuverExecutor:
                 if (k != 0.0 or abs(beta) > CRAB_MAX_ANGLE_RAD or
                         not 0.005 <= abs(d) <= CRAB_MAX_DISTANCE):
                     raise ValueError('crab primitive outside 4WS limits')
-            elif not 0.005 <= abs(d) <= 0.05 or abs(k) > 2.0 / 0.58:
+            elif not 0.005 <= abs(d) <= 0.05 or abs(k) > MAX_CURVATURE:
                 raise ValueError('primitive outside 4WS limits')
         self.speed = speed
         self.crab_speed = crab_speed

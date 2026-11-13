@@ -9,6 +9,7 @@ import math
 
 from tugger_control.clearance_2_5d import Box, boxes_overlap, collision_pairs
 from tugger_control.warehouse_clearance import robot_boxes
+from tugger_control.steering_geometry import MAX_CURVATURE
 
 
 def sampled_precision_clearance(poses, obstacles, lift, *, margin=0.01):
@@ -78,8 +79,9 @@ def sampled_precision_clearance(poses, obstacles, lift, *, margin=0.01):
     return True, sample_index + 1, None
 
 
-# Counter-phase 4WS at 45 degrees and a 0.58 m wheelbase: |curvature| <= 2/0.58.
-FULL_LOCK_CURVATURE = 2.0 / 0.58
+# Tightest curve the steering can drive (Ackermann, 45 degrees on the inner
+# wheel: 0.51 m radius), from steering_geometry.
+FULL_LOCK_CURVATURE = MAX_CURVATURE
 
 
 def stopping_curvature(curvature_bound):

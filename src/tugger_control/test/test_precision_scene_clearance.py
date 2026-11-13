@@ -62,7 +62,10 @@ def test_uncertain_inputs_fail_closed(lift, margin, obstacles):
 def test_stopping_envelope_distinguishes_elevated_cargo_and_low_obstacle():
     table = Box('table', 0, 0, 0, .65, .65, .28, .31)
     assert precision_stopping_envelope((0, 0, 0), 0.0, [table], 0.0, -0.05)[0]
-    obstacle = Box('obstacle', .55, 0, 0, .02, .02, 0, .15)
+    # Ackermann steering turns no tighter than 0.51 m, so the robot sweeps less
+    # while stopping than with the former 0.29 m limit; the obstacle sits
+    # inside the new, smaller envelope.
+    obstacle = Box('obstacle', .51, 0, 0, .02, .02, 0, .15)
     clear, hit = precision_stopping_envelope((0, 0, 0), 0.0, [table, obstacle], 0.0, 0.05)
     assert not clear and hit[1] == 'obstacle'
 

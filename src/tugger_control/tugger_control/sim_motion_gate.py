@@ -31,6 +31,7 @@ from tugger_control.rotation_clearance import rotation_clear, stopping_turn
 from tugger_control.turn_in_place import (MAX_YAW_RATE_LOADED, MAX_YAW_RATE_UNLOADED,
                                           YAW_ACCELERATION)
 from tugger_control.warehouse_clearance import validate_modeled_geometry
+from tugger_control.steering_geometry import MAX_CURVATURE, curvature_from_virtual
 
 
 # Stay under the 1.0 m/s loaded guard limit. Requesting exactly the limit lets
@@ -256,7 +257,7 @@ class SimMotionGate(Node):
         steer, steer_at = getattr(self, '_steer', None), getattr(self, '_steer_at', None)
         if steer is None or not self._fresh(steer_at, now, 0.3):
             return FULL_LOCK_CURVATURE
-        current = abs(2.0 * math.tan(steer) / 0.58)
+        current = abs(curvature_from_virtual(steer))
         commanded = abs(omega / v) if abs(v) > 1e-6 else 0.0
         return min(FULL_LOCK_CURVATURE, max(current, commanded) + STOPPING_CURVATURE_MARGIN)
 
@@ -268,7 +269,7 @@ class SimMotionGate(Node):
         steer, steer_at = getattr(self, '_steer', None), getattr(self, '_steer_at', None)
         if abs(v) < 1e-6 or steer is None or not self._fresh(steer_at, now, 0.3):
             return {}
-        return {'curvature': omega / v, 'steering_curvature': 2.0 * math.tan(steer) / 0.58}
+        return {'curvature': omega / v, 'steering_curvature': curvature_from_virtual(steer)}
 
     def _snapshot(self, now):
         if not self._model_valid:
@@ -403,7 +404,7 @@ class SimMotionGate(Node):
                     if hit is not None:
                         raise ValueError(f'precision stopping envelope intersects {hit}')
                     omega = omega * limited / v if abs(v) > 1e-6 else 0.0
-                    omega_limit = 2.0 * abs(limited) / 0.58
+                    omega_limit = MAX_CURVATURE * abs(limited)
                     omega = max(-omega_limit, min(omega_limit, omega))
                     v = limited
                     reason = ('precision speed reduced' if
@@ -442,8 +443,8 @@ class SimMotionGate(Node):
                     omega = omega * limited / v if abs(v) > 1e-6 else 0.0
                     v = limited
                     if owner == 'DOCK_DEPART' or camera:
-                        # 45-degree counter-phase 4WS steering at 0.58 m wheelbase.
-                        omega_limit = 2.0 * abs(v) / 0.58
+                        # Tightest Ackermann curve (steering_geometry).
+                        omega_limit = MAX_CURVATURE * abs(v)
                         omega = max(-omega_limit, min(omega_limit, omega))
                 if cargo is None and owner == 'NAV':
                     v, omega = speed_profile(v, omega)

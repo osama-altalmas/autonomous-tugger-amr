@@ -49,7 +49,7 @@ private:
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr
     tree_marker_pub_;
 
-  double turning_radius_{0.29};
+  double turning_radius_{0.51};  // Ackermann, 45 deg inner wheel
   double sample_resolution_{0.05};
   double max_extension_length_{1.0};
   double neighbor_radius_{2.0};

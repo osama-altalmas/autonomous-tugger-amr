@@ -2,6 +2,8 @@
 
 import math
 
+import pytest
+
 from geometry_msgs.msg import TwistStamped
 import rclpy
 
@@ -17,8 +19,12 @@ from tugger_control.turn_in_place import (
 def test_pivot_angle_fits_the_54_degree_steering_limit():
     assert math.isclose(math.degrees(PIVOT_STEERING_RAD), 52.8153, abs_tol=1e-3)
     assert PIVOT_STEERING_RAD < STEERING_LIMIT_RAD <= math.radians(54.0) + 1e-12
-    # Car-like driving keeps its 45-degree limit, so no existing motion changes.
-    assert all(abs(a) <= math.pi / 4 for a in drive_steering(math.pi / 4))
+    # Car-like driving keeps its 45-degree limit on every wheel (Ackermann: the
+    # inner wheel reaches it at the tightest curve).
+    from tugger_control.steering_geometry import MAX_VIRTUAL_STEERING_RAD
+    assert all(abs(a) <= math.pi / 4 + 1e-9 for a in drive_steering(MAX_VIRTUAL_STEERING_RAD))
+    assert max(abs(a) for a in drive_steering(-MAX_VIRTUAL_STEERING_RAD)) == \
+        pytest.approx(math.pi / 4)
 
 
 def test_pivot_wheels_turn_the_robot_without_moving_its_centre():

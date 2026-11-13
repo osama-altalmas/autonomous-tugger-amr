@@ -5,7 +5,7 @@ wheel steers tangent to a circle around the robot centre, so the robot
 rotates without moving its centre. For a wheelbase L and track W every wheel
 needs atan((L/2) / (W/2)) = 52.8 degrees; the steering joints allow
 STEERING_LIMIT_RAD (54 degrees), the least angle with a safety margin.
-Car-like driving keeps its own 45 degree limit.
+Car-like driving keeps its own 45 degree limit (steering_geometry).
 
 Wheel order everywhere: front left, front right, rear left, rear right.
 Pure functions; no robot commands.
@@ -13,9 +13,8 @@ Pure functions; no robot commands.
 
 import math
 
-WHEELBASE_M = 0.58
-TRACK_M = 0.44
-WHEEL_RADIUS_M = 0.055
+from tugger_control.steering_geometry import (  # noqa: F401  (re-exported)
+    TRACK_M, WHEEL_RADIUS_M, WHEELBASE_M, ackermann_steering, curvature_from_virtual)
 # Each wheel tangent to the circle through the four wheel contact points.
 PIVOT_STEERING_RAD = math.atan2(WHEELBASE_M / 2.0, TRACK_M / 2.0)
 STEERING_LIMIT_RAD = math.radians(54.0)
@@ -47,8 +46,12 @@ SETTLE_S = 0.5
 
 
 def drive_steering(delta):
-    """Counter-phase car-like steering for one front angle ``delta``."""
-    return (delta, delta, -delta, -delta)
+    """Car-like wheel angles for the virtual steering angle ``delta``.
+
+    Counter-phase Ackermann: front and rear opposite, inner wheels steer more
+    (steering_geometry.ackermann_steering). Straight ahead is all zeros.
+    """
+    return ackermann_steering(curvature_from_virtual(delta))
 
 
 def steering_reached(measured, target, tolerance=0.02):

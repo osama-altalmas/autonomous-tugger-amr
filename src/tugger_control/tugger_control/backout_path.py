@@ -11,7 +11,7 @@ Offline geometry only; no robot commands.
 
 import math
 
-FULL_LOCK_CURVATURE = 2.0 / 0.58
+from tugger_control.steering_geometry import MAX_CURVATURE as FULL_LOCK_CURVATURE  # noqa: E402
 # Leave room for steering slew and tracking error.
 MAX_CURVATURE = 0.6 * FULL_LOCK_CURVATURE
 BLEND_LENGTHS_M = (0.4, 0.6, 0.8, 1.0, 1.4, 1.8)

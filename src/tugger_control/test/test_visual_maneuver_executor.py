@@ -7,6 +7,7 @@ from tugger_control.visual_maneuver_executor import VisualManeuverExecutor
 from tugger_control.visual_maneuver_planner import (propagate, plan_visual_maneuver,
                                                    replan_visual_maneuver, marker_visible)
 from tugger_control.motion_math import approach, steering_for_twist
+from tugger_control.visual_maneuver_planner import CAMERA_ARC_CURVATURE as K
 
 
 def update(executor, pose=(0., 0., 0.), speed=0., now=1., **kwargs):
@@ -16,16 +17,16 @@ def update(executor, pose=(0., 0., 0.), speed=0., now=1., **kwargs):
 
 
 def test_forward_reverse_requires_stationary_feedback_between_arcs():
-    executor = VisualManeuverExecutor(((.025, 3.), (-.025, -3.)))
+    executor = VisualManeuverExecutor(((.025, K), (-.025, -K)))
     assert update(executor, now=.6)['state'] == 'WAIT_STOP'
     assert update(executor)['linear_x'] > 0
-    end = propagate((0., 0., 0.), .025, 3.)
+    end = propagate((0., 0., 0.), .025, K)
     assert update(executor, end, .01, 2.)['state'] == 'WAIT_STOP'
     assert update(executor, end, .01, 2.1)['state'] == 'WAIT_STOP'
     # Stopped, but not yet for 0.3 s: the next primitive still waits.
     assert update(executor, end, 0., 2.2)['state'] == 'WAIT_STOP'
     assert update(executor, end, 0., 2.6)['linear_x'] < 0
-    final = propagate(end, -.025, -3.)
+    final = propagate(end, -.025, -K)
     assert update(executor, final, -.01, 3.)['state'] == 'WAIT_STOP'
     assert update(executor, final, 0., 3.1)['state'] == 'WAIT_STOP'
     assert update(executor, final, 0., 3.5)['state'] == 'DONE'
@@ -56,9 +57,10 @@ def test_cancellation_and_divergence_stop():
 
 
 def test_robot_that_does_not_turn_during_an_arc_is_stopped():
-    # Regression: a 6 degree correction (-0.035 m at curvature -3) driven
-    # straight used to pass the fixed 0.10 rad yaw check and loop forever.
-    executor = VisualManeuverExecutor(((-.035, -3.),), speed=.005)
+    # Regression: a heading correction arc (-0.035 m at the camera-stage
+    # curvature) driven straight used to pass the fixed 0.10 rad yaw check
+    # and loop forever.
+    executor = VisualManeuverExecutor(((-.035, -K),), speed=.005)
     update(executor, now=.6)
     assert update(executor)['state'] == 'MOVING'
     stopped = None
@@ -73,9 +75,12 @@ def test_robot_that_does_not_turn_during_an_arc_is_stopped():
 
 def test_straight_after_a_full_lock_arc_allows_the_wheels_to_unwind():
     # Seen in Gazebo: 0.020 rad yaw on the straight after a -3 curvature arc
-    # while the wheels unwound from 41 degrees; that is not a divergence.
-    executor = VisualManeuverExecutor(((-.035, -3.), (.028, 0.)), speed=.005)
-    assert executor.slew_lag[1] == executor.slew_lag[0] > 0.02
+    # (before Ackermann) while the wheels unwound; that is not a divergence.
+    # The allowance scales with the arc's curvature and steering angle.
+    executor = VisualManeuverExecutor(((-.035, -K), (.028, 0.)), speed=.005)
+    expected = K * .005 * 2.0 * math.atan(.58 * K / 2.0) / .8
+    assert executor.slew_lag[1] == executor.slew_lag[0] == pytest.approx(expected)
+    assert expected > 0.005
     executor = VisualManeuverExecutor(((.028, 0.),), speed=.005)
     assert executor.slew_lag[0] == 0.0
 
@@ -83,10 +88,10 @@ def test_straight_after_a_full_lock_arc_allows_the_wheels_to_unwind():
 def test_next_primitive_waits_until_the_robot_has_really_stopped():
     # Seen in Gazebo: the robot still rolled 2 mm back after the reverse arc
     # when the next primitive started at under 3 mm/s, which read as divergence.
-    executor = VisualManeuverExecutor(((-.035, -3.), (.028, 0.)), speed=.005)
+    executor = VisualManeuverExecutor(((-.035, -K), (.028, 0.)), speed=.005)
     update(executor, now=.6)
     assert update(executor)['state'] == 'MOVING'
-    end = propagate((0., 0., 0.), -.035, -3.)
+    end = propagate((0., 0., 0.), -.035, -K)
     assert update(executor, end, -.002, 9.)['state'] == 'WAIT_STOP'
     assert update(executor, end, -.002, 9.5)['state'] == 'WAIT_STOP'
     assert update(executor, end, 0., 9.6)['state'] == 'WAIT_STOP'

@@ -50,7 +50,7 @@ class FourWSOdometry(Node):
         )
 
         self.get_logger().info(
-            '4WS linked-axle wheel odometry started '
+            '4WS wheel odometry (all-wheel fit) started '
             f'(L={self.wheelbase:.3f} m, '
             f'W={self.track_width:.3f} m, '
             f'R={self.wheel_radius:.3f} m)'
@@ -92,74 +92,30 @@ class FourWSOdometry(Node):
         delta_rl = msg.position[rl_steer_index]
         delta_rr = msg.position[rr_steer_index]
 
-        # Mechanical linkage means these should be equal.
-        # Average measured positions to reduce small simulation/controller
-        # tracking differences.
-        rear_angle = 0.5 * (
-            delta_rl + delta_rr
-        )
-
         omega_rl_wheel = msg.velocity[rl_wheel_index]
         omega_rr_wheel = msg.velocity[rr_wheel_index]
 
-        speed_rl = (
-            omega_rl_wheel *
-            self.wheel_radius
-        )
-
-        speed_rr = (
-            omega_rr_wheel *
-            self.wheel_radius
-        )
-
-        # Recover body longitudinal velocity from both rear wheels.
-        #
-        # With common rear steering angle:
-        #
-        # s_rl*cos(delta_r) = v - wz*W/2
-        # s_rr*cos(delta_r) = v + wz*W/2
-        #
-        # Averaging eliminates the yaw-rate contribution.
-        linear_velocity = 0.5 * (
-            speed_rl + speed_rr
-        ) * math.cos(rear_angle)
-
-        # Symmetric counter-phase 4WS:
-        #
-        # delta_front = -delta_rear
-        #
-        # wz / v = 2*tan(delta_front)/L
-        #        = -2*tan(delta_rear)/L
-        lateral_velocity = 0.0
+        # Rigid-body motion (vx, vy, yaw rate) fitted to every measured wheel,
+        # each rolling along its own steering angle. With Ackermann steering
+        # the inner and outer wheels have different angles, so the former
+        # linked-axle model (one rear angle, v = mean(rear speed) * cos) no
+        # longer applies; the same fit already covered turning in place,
+        # crab moves and pattern changes.
+        half_l, half_w = 0.5 * self.wheelbase, 0.5 * self.track_width
+        steering = [delta_rl, delta_rr]
+        speeds = [omega_rl_wheel, omega_rr_wheel]
+        positions = [(-half_l, half_w), (-half_l, -half_w)]
         front = self._front_wheels(msg, joint_index)
-        # Car-like counter-phase steering has front = -rear. Anything else
-        # (crab: all four at one angle) is not the linked-axle model.
-        crab_like = (front is not None and
-                     abs(0.5 * (front[0] + front[1]) + rear_angle) > 0.05)
-        if abs(delta_rl - delta_rr) > 0.05 or crab_like:
-            # Rear wheels not linked (turning in place, crab, or changing
-            # between patterns): fit the rigid-body motion to every measured
-            # wheel instead of the linked-axle model.
-            half_l, half_w = 0.5 * self.wheelbase, 0.5 * self.track_width
-            steering = [delta_rl, delta_rr]
-            speeds = [omega_rl_wheel, omega_rr_wheel]
-            positions = [(-half_l, half_w), (-half_l, -half_w)]
-            if front is not None:
-                steering += [front[0], front[1]]
-                speeds += [front[2], front[3]]
-                positions += [(half_l, half_w), (half_l, -half_w)]
+        if front is not None:
+            steering += [front[0], front[1]]
+            speeds += [front[2], front[3]]
+            positions += [(half_l, half_w), (half_l, -half_w)]
+        try:
             linear_velocity, lateral_velocity, angular_velocity = pivot_odometry(
                 steering, speeds, wheel_positions=positions,
                 wheel_radius=self.wheel_radius)
-        elif abs(self.wheelbase) > 1e-9:
-            angular_velocity = (
-                -2.0 *
-                linear_velocity *
-                math.tan(rear_angle) /
-                self.wheelbase
-            )
-        else:
-            angular_velocity = 0.0
+        except ValueError:
+            return
 
         current_time = self.get_clock().now()
 
