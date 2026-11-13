@@ -104,8 +104,10 @@ def test_station_three_dropoff_route_starts_at_loaded_departure_staging_pose():
     assert route['source_entrance'] == 'south'
     assert route['target_entrance'] == 'north'
     assert route['departure_transition_validated'] is True
-    assert route['poses'][0][:2] == pytest.approx([17.525, 5.025])
-    assert route['source_pose'][:2] == pytest.approx([17.525, 5.025])
+    # Exactly on the station axis (2.0 m from the stand centre), not the
+    # grid cell centre 2.5 cm beside it (S-bend fix, 2026-11-12).
+    assert route['poses'][0][:2] == pytest.approx([17.5, 5.0])
+    assert route['source_pose'][:2] == pytest.approx([17.5, 5.0])
     assert entry['source_entrance'] == 'south'
     assert entry['departure_transition_validated'] is True
 

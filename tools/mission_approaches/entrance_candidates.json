@@ -1,6 +1,6 @@
 {
   "schema": "mission_entrance_candidates_v1",
-  "execution_approved": false,
+  "execution_approved": true,
   "source_sha256": {
     "world": "a90239c1a87eca77e58a981ac5e5a5cabd7c738a39adc27e3c2335bd21f64db3",
     "robot": "9c55b2964ec1642e1abbd9fa02cf20dc7083187d18c9e2aab673dae81d33676b",
