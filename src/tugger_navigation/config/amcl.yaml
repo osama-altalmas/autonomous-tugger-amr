@@ -16,11 +16,21 @@ amcl:
     # Motion noise must cover real odometry error: wheels + IMU drift a few
     # percent in curves (measured up to ~10 cm over a 90-degree curve). Too
     # small a value makes the filter overconfident and it loses the robot.
-    alpha1: 0.15
-    alpha2: 0.15
-    alpha3: 0.15
-    alpha4: 0.15
-    alpha5: 0.15
+    # That drift comes from turning (the linked axles steer both wheels to
+    # the same angle, so they slip sideways in curves), so the noise driven
+    # by rotation (alpha1, alpha4) stays at 0.15. Straight driving is
+    # accurate: at 0.15 the translation-driven terms assumed about 4 cm of
+    # random error per 10 cm travelled, so the particle cloud spread wide and
+    # its mean jumped 0.5-2 cm sideways 2-3 times a second and wandered 2-4 cm
+    # on straights (measured 2026-11-12). Omni model (nav2_amcl):
+    #   rotation    sd = sqrt(alpha1 d_rot^2 + alpha2 d_trans^2)
+    #   translation sd = sqrt(alpha3 d_trans^2 + alpha4 d_rot^2)
+    #   strafe      sd = sqrt(alpha4 d_rot^2 + alpha5 d_trans^2)
+    alpha1: 0.15  # rotation noise from rotation
+    alpha2: 0.03  # rotation noise from translation (IMU yaw is accurate)
+    alpha3: 0.03  # translation noise from translation
+    alpha4: 0.15  # translation and strafe noise from rotation (curve slip)
+    alpha5: 0.03  # strafe noise from translation
     laser_model_type: "likelihood_field"
     laser_likelihood_max_dist: 2.0
     laser_max_range: 30.0

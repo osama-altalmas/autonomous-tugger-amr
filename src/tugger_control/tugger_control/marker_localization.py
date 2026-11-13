@@ -63,6 +63,20 @@ def suspend_laser_updates(near_station, route_transit):
     return near_station and not route_transit
 
 
+def zone_action(previous_station, station):
+    """What to do when the station-zone state changes.
+
+    'suspend' entering a zone, 'reseed' leaving one (re-seed AMCL at the
+    current pose, then restore the normal thresholds a tick later), 'resume'
+    at start-up (no zone before), None when nothing changed.
+    """
+    if station == previous_station:
+        return None
+    if station:
+        return 'suspend'
+    return 'reseed' if previous_station else 'resume'
+
+
 def _yaw(q):
     return math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
 
@@ -179,6 +193,7 @@ class MarkerLocalization(Node):
                                  self._on_route_transit, 10)
         self._amcl_params = self.create_client(SetParameters, '/amcl/set_parameters')
         self._station_mode = None
+        self._resume_pending = False
         self._centres = [(sum(p[0] for p in legs) / len(legs), sum(p[1] for p in legs) / len(legs))
                          for legs in self._legs.values()]
         # HOME has no stand, but its floor marker fixes the pose exactly in the
@@ -261,18 +276,42 @@ class MarkerLocalization(Node):
         x, y = t.transform.translation.x, t.transform.translation.y
         near = any(math.hypot(x - cx, y - cy) <= STATION_ZONE_M for cx, cy in self._centres)
         station = suspend_laser_updates(near, self._route_transit)
+        if getattr(self, '_resume_pending', False) and not station:
+            # One tick after the re-seed: AMCL has taken it, so the normal
+            # thresholds cannot apply the suspended travel as one step.
+            self._resume_pending = False
+            self._set_update_thresholds(station=False)
         if station != self._station_mode and self._amcl_params.service_is_ready():
-            self._station_mode = station
+            previous, self._station_mode = self._station_mode, station
+            action = zone_action(previous, station)
             self.get_logger().info(f'laser updates {"suspended" if station else "active"} '
                                    f'at ({x:.2f}, {y:.2f})')
-            # Normal thresholds as in amcl.yaml; huge ones in the station zone.
-            distance, angle = (100.0, 100.0) if station else (0.10, 0.08)
-            request = SetParameters.Request()
-            for name, value in (('update_min_d', distance), ('update_min_a', angle)):
-                request.parameters.append(ParameterMsg(
-                    name=name, value=ParameterValue(type=ParameterType.PARAMETER_DOUBLE,
-                                                    double_value=value)))
-            self._amcl_params.call_async(request)
+            if action == 'reseed':
+                # Leaving a station zone: AMCL's filter last moved where the
+                # suspension began, and its next update would apply the whole
+                # departure (about 2 m) as one motion step. With noise scaled
+                # by that step the particle cloud spread to tens of cm and
+                # degrees, and a poor scan match there jumped the pose 15-37
+                # cm at the Station 2 south gate (measured 2026-11-12). Start
+                # the filter afresh at the current pose, which has ridden on
+                # odometry from the exact marker fix, with the fix's spread.
+                self._send(t.header.stamp, x, y, _yaw(t.transform.rotation),
+                           POSITION_STD_M, YAW_STD_RAD)
+                self._resume_pending = True
+                self.get_logger().info('AMCL re-seeded at the current pose before resuming')
+            else:
+                self._resume_pending = False
+                self._set_update_thresholds(station=station)
+
+    def _set_update_thresholds(self, station):
+        """Normal thresholds as in amcl.yaml; huge ones in the station zone."""
+        distance, angle = (100.0, 100.0) if station else (0.10, 0.08)
+        request = SetParameters.Request()
+        for name, value in (('update_min_d', distance), ('update_min_a', angle)):
+            request.parameters.append(ParameterMsg(
+                name=name, value=ParameterValue(type=ParameterType.PARAMETER_DOUBLE,
+                                                double_value=value)))
+        self._amcl_params.call_async(request)
 
     def _on_odom(self, msg):
         self._speed = math.hypot(msg.twist.twist.linear.x, msg.twist.twist.linear.y)

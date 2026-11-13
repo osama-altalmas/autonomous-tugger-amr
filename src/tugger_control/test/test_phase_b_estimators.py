@@ -119,3 +119,54 @@ def test_laser_updates_stay_on_when_a_route_only_passes_a_station():
     assert suspend_laser_updates(True, False)        # working at the station
     assert not suspend_laser_updates(True, True)     # a route passing through
     assert not suspend_laser_updates(False, False)   # open floor
+
+
+def test_zone_actions():
+    from tugger_control.marker_localization import zone_action
+    assert zone_action(None, False) == 'resume'      # start-up on open floor
+    assert zone_action(None, True) == 'suspend'
+    assert zone_action(False, True) == 'suspend'     # arriving at a station
+    assert zone_action(True, False) == 'reseed'      # leaving a station
+    assert zone_action(True, True) is None
+    assert zone_action(False, False) is None
+
+
+def test_leaving_a_station_reseeds_before_updates_resume():
+    """Issue 9: AMCL must not apply the whole departure as one motion step."""
+    import math
+    from types import SimpleNamespace
+    from tugger_control import marker_localization as ml
+
+    calls = []
+    pose = {'x': -17.5, 'y': 6.9}
+
+    def lookup(*_):
+        return SimpleNamespace(header=SimpleNamespace(stamp='stamp'), transform=SimpleNamespace(
+            translation=SimpleNamespace(x=pose['x'], y=pose['y']),
+            rotation=SimpleNamespace(x=0.0, y=0.0, z=math.sin(math.pi / 4), w=math.cos(math.pi / 4))))
+
+    node = SimpleNamespace(
+        _tf=SimpleNamespace(lookup_transform=lookup), _centres=[(-17.5, 7.0)],
+        _route_transit=False, _station_mode=None, _resume_pending=False,
+        _amcl_params=SimpleNamespace(service_is_ready=lambda: True),
+        get_logger=lambda: SimpleNamespace(info=lambda *_: None))
+    node._send = lambda stamp, x, y, yaw, p_std, y_std: calls.append(('reseed', x, y, yaw, p_std))
+    node._set_update_thresholds = lambda station: calls.append(('thresholds', station))
+    tick = lambda: ml.MarkerLocalization._zone_tick(node)   # noqa: E731
+
+    tick()                                     # docked: suspend
+    assert calls == [('thresholds', True)]
+    calls.clear()
+    pose['y'] = 5.1
+    node._route_transit = True                 # route driving begins
+    tick()
+    assert [c[0] for c in calls] == ['reseed']           # re-seed only, still suspended
+    _, x, y, yaw, p_std = calls[0]
+    assert (x, y) == (-17.5, 5.1) and abs(yaw - math.pi / 2) < 1e-9
+    assert p_std == ml.POSITION_STD_M
+    calls.clear()
+    tick()                                     # next tick: normal thresholds
+    assert calls == [('thresholds', False)]
+    calls.clear()
+    tick()
+    assert calls == []
