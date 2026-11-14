@@ -64,6 +64,18 @@ def main():
         'image': pgm.name, 'mode': 'trinary', 'resolution': res,
         'origin': [ox, oy, 0.0], 'negate': 0,
         'occupied_thresh': 0.65, 'free_thresh': 0.196}, sort_keys=False))
+    # AMCL's copy of the same image, its origin half a cell further on.
+    # nav2_amcl looks cells up with floor((x - origin) / res + 0.5): it
+    # rounds, so it treats each cell as centred on its lower corner and saw
+    # every wall half a cell (1 cm) to the south-west; its best scan fit sat
+    # 1 cm south-west of the truth (offline test, 2026-11-14). With the
+    # origin moved by +half a cell its rounding lands on the true cell.
+    # Everything else (scan refinement, obstacles) uses the true map.
+    amcl = OUT.parent / (OUT.name + '_amcl.yaml')
+    amcl.write_text(yaml.safe_dump({
+        'image': pgm.name, 'mode': 'trinary', 'resolution': res,
+        'origin': [ox + res / 2, oy + res / 2, 0.0], 'negate': 0,
+        'occupied_thresh': 0.65, 'free_thresh': 0.196}, sort_keys=False))
     print(f'{seen} boxes in the scan plane; {int(occupied.sum())} occupied cells -> {pgm}')
 
 

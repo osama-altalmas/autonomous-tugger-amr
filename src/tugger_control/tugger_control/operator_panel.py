@@ -240,6 +240,9 @@ class OperatorBridge(Node):
         self._landmark_fix_at = None
         self.create_subscription(String, '/tugger/localization/landmark_fix',
                                  self._on_landmark_fix, 10)
+        # refined_localization's watchdog: AMCL and the scan match disagreeing.
+        self.create_subscription(String, '/tugger/localization/warning',
+                                 lambda m: self._report(f'LOCALIZATION WARNING: {m.data}.'), 10)
         # Turn in place: an optional capability (operator panel switch).
         self.turn_in_place_enabled = False
         self._pending_rotation = None

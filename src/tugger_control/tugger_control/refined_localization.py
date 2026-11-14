@@ -49,6 +49,38 @@ SUSPENDED_MIN_D = 10.0
 # odometry is used instead (start-up only, in practice).
 PENDING_TIMEOUT_S = 2.0
 
+# Keeping AMCL near the refined pose. AMCL alone drifts 2-3 cm off (a
+# map-dependent offset while driving, measured live 2026-11-14), and it is
+# the fallback whenever a fit is refused. After RECENTRE_GOOD_FITS good fits
+# in a row, with all three directions pinned, AMCL is re-seeded at the
+# refined pose when it is more than RECENTRE_SHIFT_M / RECENTRE_TURN_RAD
+# away, at most every RECENTRE_INTERVAL_S and never in a station zone. The
+# robot drives on the refined pose either way, so it feels nothing; only the
+# fallback improves.
+RECENTRE_GOOD_FITS = 10
+RECENTRE_SHIFT_M = 0.03
+RECENTRE_TURN_RAD = math.radians(0.5)
+RECENTRE_INTERVAL_S = 5.0
+RECENTRE_POSITION_STD_M = 0.02
+RECENTRE_YAW_STD_RAD = math.radians(0.6)
+# Watchdog: AMCL and the scan match disagreeing by more than this for
+# longer than DISAGREE_S is reported (warning only; the gated pose is used).
+DISAGREE_SHIFT_M = 0.10
+DISAGREE_TURN_RAD = math.radians(3.0)
+DISAGREE_S = 3.0
+DISAGREE_REPEAT_S = 15.0
+
+
+def should_recentre(good_fits, constrained, shift_m, turn_rad, since_last_s, suspended):
+    """Re-seed AMCL at the refined pose? (pure; see the constants above)"""
+    return (not suspended and good_fits >= RECENTRE_GOOD_FITS and constrained == 3 and
+            (shift_m > RECENTRE_SHIFT_M or turn_rad > RECENTRE_TURN_RAD) and
+            (since_last_s is None or since_last_s >= RECENTRE_INTERVAL_S))
+
+
+def disagrees(shift_m, turn_rad):
+    return shift_m > DISAGREE_SHIFT_M or turn_rad > DISAGREE_TURN_RAD
+
 
 def _yaw(q):
     return math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
@@ -62,6 +94,10 @@ class RefinedLocalization(Node):
     def __init__(self):
         super().__init__('tugger_refined_localization')
         self.set_parameters([Parameter('use_sim_time', value=True)])
+        # Test switch: false = fits are still computed and reported but not
+        # used, exactly as if every fit were refused (AMCL's pose is used).
+        # Measures the fallback; never set on a working robot.
+        self.declare_parameter('use_refinement', True)
         self._tf = Buffer()
         self._listener = TransformListener(self._tf, self)
         self._broadcaster = TransformBroadcaster(self)
@@ -89,6 +125,12 @@ class RefinedLocalization(Node):
         self._initial_query = None
         self._query_timer = self.create_timer(1.0, self._query_suspension)
         self._status = self.create_publisher(String, '/tugger/localization/refinement', 10)
+        self._initial_pose = self.create_publisher(PoseWithCovarianceStamped, '/initialpose', 10)
+        self._warning = self.create_publisher(String, '/tugger/localization/warning', 10)
+        self._good_fits = 0
+        self._last_recentre = None
+        self._disagree_since = None
+        self._last_warning = None
         # Keep the transform alive between AMCL updates, as AMCL does.
         self.create_timer(0.05, self._republish)
         self.get_logger().info('refined localization: AMCL + scan-to-map match on both scanners')
@@ -219,13 +261,68 @@ class RefinedLocalization(Node):
                               constrained=result.constrained,
                               refined=[round(v, 4) for v in
                                        sr.compose(result.transform, robot_odom)])
+                if not self.get_parameter('use_refinement').value:
+                    result.accepted = False
+                    result.reason = status['reason'] = 'switched off (test)'
                 if result.accepted:
                     status['used'] = 'refined'
         self._map_odom = result.transform if result is not None and result.accepted else prior
+        self._backup_and_watchdog(msg, result, robot_odom, status)
         self._publish(msg.header.stamp)
         out = String()
         out.data = json.dumps(status)
         self._status.publish(out)
+
+    def _backup_and_watchdog(self, msg, result, robot_odom, status):
+        """Keep AMCL near the refined pose; report lasting disagreement."""
+        now = self.get_clock().now().nanoseconds / 1e9
+        accepted = result is not None and result.accepted
+        self._good_fits = self._good_fits + 1 if accepted and result.constrained == 3 else 0
+        if result is not None:
+            since = None if self._last_recentre is None else now - self._last_recentre
+            if accepted and should_recentre(self._good_fits, result.constrained, result.shift_m,
+                                            result.turn_rad, since, self._suspended):
+                refined = sr.compose(result.transform, robot_odom)
+                self._send_initial_pose(msg.header.stamp, refined)
+                self._last_recentre = now
+                status['recentred'] = True
+            # Watchdog: the scan match and AMCL far apart (refused for size,
+            # or an accepted fit near the limits) for longer than DISAGREE_S.
+            if disagrees(result.shift_m, result.turn_rad) and result.inlier_fraction >= 0.5:
+                if self._disagree_since is None:
+                    self._disagree_since = now
+                lasting = now - self._disagree_since
+                if lasting >= DISAGREE_S and (self._last_warning is None or
+                                              now - self._last_warning >= DISAGREE_REPEAT_S):
+                    self._last_warning = now
+                    self._warn(f'laser localization and the scan match disagree by '
+                               f'{result.shift_m * 100:.0f} cm and '
+                               f'{math.degrees(result.turn_rad):.1f} deg for {lasting:.0f} s; '
+                               f'using the {"scan match" if accepted else "AMCL"} pose '
+                               f'({result.reason})')
+            elif self._disagree_since is not None:
+                if self._last_warning is not None:
+                    self._warn('laser localization and the scan match agree again')
+                self._disagree_since = self._last_warning = None
+
+    def _send_initial_pose(self, stamp, pose):
+        p = PoseWithCovarianceStamped()
+        p.header.stamp = stamp
+        p.header.frame_id = 'map'
+        p.pose.pose.position.x, p.pose.pose.position.y = pose[0], pose[1]
+        p.pose.pose.orientation.z = math.sin(pose[2] / 2)
+        p.pose.pose.orientation.w = math.cos(pose[2] / 2)
+        covariance = [0.0] * 36
+        covariance[0] = covariance[7] = RECENTRE_POSITION_STD_M ** 2
+        covariance[35] = RECENTRE_YAW_STD_RAD ** 2
+        p.pose.covariance = covariance
+        self._initial_pose.publish(p)
+
+    def _warn(self, text):
+        self.get_logger().warning(text)
+        out = String()
+        out.data = text
+        self._warning.publish(out)
 
     def _publish(self, stamp=None):
         if self._map_odom is None:

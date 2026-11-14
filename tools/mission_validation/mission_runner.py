@@ -83,6 +83,10 @@ class Recorder(Node):
         self.phases = {}
         self.guard = {}
         self.refinement = {}
+        # AMCL's and the used pose's error against the true pose of the same
+        # instant, one row per localization update while driving:
+        # [stamp, owner, used, amcl dx, dy, dyaw, used dx, dy, dyaw] (map frame).
+        self.localization = []
         self.guard_events = []
         # Diagnostic trace at 2 Hz: sim time, owner, true pose, estimated
         # pose, wheel speed, wheel odometry pose. Used to explain stalls and alignment failures.
@@ -234,6 +238,20 @@ class Recorder(Node):
             return
         key = status.get('used', '?') + ': ' + status.get('reason', '?')
         self.refinement[key] = self.refinement.get(key, 0) + 1
+        amcl, stamp = status.get('amcl'), status.get('stamp')
+        if not amcl or stamp is None or not self._truth_history:
+            return
+        t, truth = min(self._truth_history, key=lambda item: abs(
+            item[0].sec + item[0].nanosec * 1e-9 - stamp))
+        if abs(t.sec + t.nanosec * 1e-9 - stamp) > 0.05:
+            return
+        used = status.get('refined') if status.get('used') == 'refined' else amcl
+
+        def err(p):
+            return [round(p[0] - truth[0], 4), round(p[1] - truth[1], 4),
+                    round(math.atan2(math.sin(p[2] - truth[2]), math.cos(p[2] - truth[2])), 5)]
+        self.localization.append([round(stamp, 2), self.owner, status.get('used'),
+                                  *err(amcl), *err(used), bool(status.get('recentred'))])
 
     def _cross_track(self, phase):
         """True distance from the path being followed (not the estimate)."""
@@ -606,6 +624,7 @@ class Runner:
             'phases': self.recorder.summary(),
             'guard_reasons': dict(self.recorder.guard),
             'refinement': dict(self.recorder.refinement),
+            'localization': list(self.recorder.localization),
             'guard_events': list(self.recorder.guard_events),
             'trace': list(self.recorder.trace),
             'track': list(self.recorder.track),
@@ -696,6 +715,15 @@ def sweep(runner, args):
     return results
 
 
+def set_refinement(enabled_off):
+    """Switch the scan refinement off (True) or on (False) for the next leg."""
+    value = 'false' if enabled_off else 'true'
+    done = subprocess.run(['ros2', 'param', 'set', '/tugger_refined_localization',
+                           'use_refinement', value], capture_output=True, text=True, timeout=30)
+    print(f'scan refinement {"OFF" if enabled_off else "on"} for the next leg: '
+          f'{done.stdout.strip() or done.stderr.strip()}', flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('destinations', nargs='*',
@@ -734,6 +762,9 @@ def main():
                         help='test only: ignore preplanned paths so live planning runs')
     parser.add_argument('--turn-in-place', action='store_true',
                         help='switch the panel\'s turn-in-place capability on')
+    parser.add_argument('--refinement-off-legs', default='',
+                        help='comma-separated leg numbers (1 = first destination) driven '
+                             'with the scan refinement switched off, to measure the fallback')
     parser.add_argument('--settle', type=float, default=30.0,
                         help='seconds to wait after the stack reports ready')
     args = parser.parse_args()
@@ -770,7 +801,11 @@ def main():
             results.append(runner.cancel_after(destination, 600.0, args.cancel_when_moved))
             print('cancelled on purpose at', runner.recorder.pose, flush=True)
             continue
+        off = str(index + 1) in [v.strip() for v in args.refinement_off_legs.split(',') if v.strip()]
+        if args.refinement_off_legs:
+            set_refinement(off)
         result = runner.mission(destination)
+        result['refinement_switched_off'] = off
         results.append(result)
         Path(args.output).write_text(json.dumps(results, indent=1))
         # The requirement is judged on the true pose: 10 mm from the centre.

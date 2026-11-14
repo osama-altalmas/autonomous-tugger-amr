@@ -9,7 +9,9 @@ amcl:
     scan_topic: scan
     # Accurate localization map (see localization.launch.py), not the
     # conservative navigation map.
-    map_topic: /localization_map
+    # Its own copy of the localization map, origin half a cell on (see
+    # localization.launch.py): nav2_amcl rounds cell lookups.
+    map_topic: /localization_map_amcl
     # 4WS: turning in place and pivot transitions move the robot sideways a
     # little, so the omnidirectional motion model fits better.
     robot_model_type: "nav2_amcl::OmniMotionModel"
