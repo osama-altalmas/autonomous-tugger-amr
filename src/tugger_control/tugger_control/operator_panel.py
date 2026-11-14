@@ -1477,11 +1477,21 @@ class OperatorBridge(Node):
             return
         stamp = message.header.stamp.sec + message.header.stamp.nanosec / 1e9
         age = self.get_clock().now().nanoseconds / 1e9 - stamp
-        if message.header.frame_id != 'downward_camera_link' or not 0 <= age <= 0.5:
-            return
         yaw = _yaw(message.pose.orientation)
-        if math.isfinite(yaw) and (self._qr_heading_stamp is None or
-                                   stamp > self._qr_heading_stamp):
+        # Keep why the latest QR yaw was refused: one HOME dock (2026-11-14)
+        # held 200 s on a stale QR yaw while QR identities kept arriving, and
+        # the log could not say which of these checks refused them.
+        if message.header.frame_id != 'downward_camera_link':
+            self._qr_heading_rejected = f'frame {message.header.frame_id!r}'
+        elif not 0 <= age <= 0.5:
+            self._qr_heading_rejected = f'image age {age:+.2f} s'
+        elif not math.isfinite(yaw):
+            self._qr_heading_rejected = 'yaw not finite'
+        elif self._qr_heading_stamp is not None and stamp <= self._qr_heading_stamp:
+            self._qr_heading_rejected = f'stamp {stamp - self._qr_heading_stamp:+.3f} s not newer'
+        else:
+            self._qr_heading_rejected = None
+        if self._qr_heading_rejected is None:
             self._qr_heading_angle = yaw
             self._qr_heading_stamp = stamp
             self._qr_heading_recent = ([(t, a) for t, a in self._qr_heading_recent
@@ -1494,6 +1504,11 @@ class OperatorBridge(Node):
             self._qr_heading_detail = (
                 'no QR yaw' if self._qr_heading_stamp is None else
                 f'QR yaw {frame_stamp - self._qr_heading_stamp:+.2f} s from the frame')
+            rejected = getattr(self, '_qr_heading_rejected', None)
+            if rejected:
+                self._qr_heading_detail += f'; latest QR yaw refused: {rejected}'
+            elif self._qr_heading_stamp is not None:
+                self._qr_heading_detail += '; no QR yaw received since'
             return False
         # The QR yaw occasionally jumps by 8-14 degrees for one image while the
         # robot stands still. Compare middle values, never single readings: a
