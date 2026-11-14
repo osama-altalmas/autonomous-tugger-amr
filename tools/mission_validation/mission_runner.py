@@ -6,6 +6,7 @@ used; this script only presses the equivalent of Check/plan and RUN. It writes
 one JSON result per mission so reliability can be measured across many runs.
 """
 import argparse
+import collections
 import json
 import math
 import os
@@ -50,6 +51,11 @@ class Recorder(Node):
         self.owner = 'STOP'
         self.pose = None
         self.pose_lookup = None
+        # Estimate at a given stamp (map -> base_footprint at that time), to
+        # compare it with the true pose of the same instant; comparing the
+        # newest of each mixed in ~20 ms of age, which at 1 m/s reads as 2 cm.
+        self.stamped_pose_lookup = None
+        self._truth_history = collections.deque(maxlen=200)
         self.path_lookup = None     # the path being followed (nav_msgs/Path) or None
         self.reset()
         self.create_subscription(String, '/tugger/motion_owner', self._owner, 10)
@@ -65,6 +71,9 @@ class Recorder(Node):
                                  qos_profile_sensor_data)
         self.create_subscription(String, '/tugger/loaded_guard/status', self._guard, 10)
         self.create_subscription(Odometry, '/wheel/odom', self._odom, 10)
+        # Refined localization: how often its scan match is used, and why not.
+        self.create_subscription(String, '/tugger/localization/refinement',
+                                 self._refinement, 10)
         self.map_received = False
         self.create_subscription(
             OccupancyGrid, '/map', self._map,
@@ -73,6 +82,7 @@ class Recorder(Node):
     def reset(self):
         self.phases = {}
         self.guard = {}
+        self.refinement = {}
         self.guard_events = []
         # Diagnostic trace at 2 Hz: sim time, owner, true pose, estimated
         # pose, wheel speed, wheel odometry pose. Used to explain stalls and alignment failures.
@@ -161,6 +171,7 @@ class Recorder(Node):
         q = msg.pose.orientation
         yaw = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
         self.pose = (msg.pose.position.x, msg.pose.position.y, yaw)
+        self._truth_history.append((msg.header.stamp, self.pose))
         phase = self._phase()
         now = self._now()
         phase['first_t'] = now if phase['first_t'] is None else phase['first_t']
@@ -198,7 +209,31 @@ class Recorder(Node):
                                # beside it: shift it by that before comparing, or every
                                # 90 degree corner shows about 5 cm of false drift.
                                *((round(v, 4) for v in self._odom_pose)
-                                 if getattr(self, '_odom_pose', None) else (None, None, None))])
+                                 if getattr(self, '_odom_pose', None) else (None, None, None)),
+                               # True pose ~0.2 s ago and the estimate AT ITS STAMP
+                               # (same instant; TF covers it by then): indices 12-17.
+                               *self._same_instant(now)])
+
+    def _same_instant(self, now):
+        empty = (None,) * 6
+        if self.stamped_pose_lookup is None or not self._truth_history:
+            return empty
+        target = now - 0.2
+        stamp, truth = min(self._truth_history, key=lambda item: abs(
+            item[0].sec + item[0].nanosec * 1e-9 - target))
+        try:
+            estimate = self.stamped_pose_lookup(stamp)
+        except Exception:
+            return empty
+        return (*(round(v, 4) for v in truth), *(round(v, 4) for v in estimate[:3]))
+
+    def _refinement(self, msg):
+        try:
+            status = json.loads(msg.data)
+        except ValueError:
+            return
+        key = status.get('used', '?') + ': ' + status.get('reason', '?')
+        self.refinement[key] = self.refinement.get(key, 0) + 1
 
     def _cross_track(self, phase):
         """True distance from the path being followed (not the estimate)."""
@@ -323,6 +358,12 @@ class Runner:
             self.entries.get(destination, []))
         self.recorder = Recorder()
         self.recorder.pose_lookup = self.bridge._robot_pose
+        def _estimate_at(stamp, tf=self.bridge._tf):
+            t = tf.lookup_transform('map', 'base_footprint', rclpy.time.Time.from_msg(stamp))
+            q = t.transform.rotation
+            return (t.transform.translation.x, t.transform.translation.y,
+                    math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z)))
+        self.recorder.stamped_pose_lookup = _estimate_at
         self.recorder.path_lookup = lambda: (getattr(self.bridge, '_followed_path', None)
                                              if self.bridge._active_follow is not None else None)
         self.executor = SingleThreadedExecutor()
@@ -564,6 +605,7 @@ class Runner:
             'docked_station': self.bridge.docked_station,
             'phases': self.recorder.summary(),
             'guard_reasons': dict(self.recorder.guard),
+            'refinement': dict(self.recorder.refinement),
             'guard_events': list(self.recorder.guard_events),
             'trace': list(self.recorder.trace),
             'track': list(self.recorder.track),

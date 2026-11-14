@@ -62,7 +62,11 @@ amcl:
     update_min_d: 0.10
     update_min_a: 0.08
     save_pose_rate: 0.5
-    tf_broadcast: true
+    # map -> odom comes from tugger_control/refined_localization, which
+    # sharpens AMCL's pose with a scan-to-map match (AMCL 2-3 cm, refined
+    # under 1 cm) and passes AMCL's own transform through when the match is
+    # not clearly good or in a station zone. AMCL still publishes amcl_pose.
+    tf_broadcast: false
     transform_tolerance: 0.3
     # The robot starts on HOME.
     set_initial_pose: true

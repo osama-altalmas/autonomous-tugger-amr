@@ -1,4 +1,6 @@
-"""Real localization: AMCL on the merged safety-scanner scan (Phase B3).
+"""Real localization: AMCL on the merged safety-scanner scan (Phase B3),
+refined by a scan-to-map match on both raw scans (refined_localization,
+which publishes map -> odom in AMCL's place).
 
 AMCL matches scans against its own localization map (accurate walls, only
 what the scanners see; tools/warehouse_validation/export_localization_map.py),
@@ -23,6 +25,10 @@ def generate_launch_description():
                           'topic_name': 'localization_map', 'frame_id': 'map'}]),
         Node(package='nav2_amcl', executable='amcl', name='amcl', output='screen',
              parameters=[config]),
+        # Publishes map -> odom (AMCL's tf_broadcast is off): AMCL's pose,
+        # sharpened by the scan match when it is clearly good.
+        Node(package='tugger_control', executable='refined_localization',
+             name='tugger_refined_localization', output='screen'),
         Node(package='nav2_lifecycle_manager', executable='lifecycle_manager',
              name='lifecycle_manager_localization', output='screen',
              parameters=[{'use_sim_time': True, 'autostart': True,
