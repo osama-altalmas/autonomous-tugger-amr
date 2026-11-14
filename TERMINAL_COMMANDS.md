@@ -184,26 +184,12 @@ mission: it runs the mission.
 
 ## T7 — RViz: path tracking and localization view (optional)
 
-Two terminals, both with this setup:
+One command; it sets up the terminal itself, starts the trail and correction
+view and opens RViz with the ready-made layout (top-down view of the map, every
+display already selected). Closing RViz stops both.
 
 ```bash
-cd ~/Autonomous_Tugger_Project_V2/autonomous_tugger_ws
-source /opt/ros/lyrical/setup.bash
-source install/setup.bash
-export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-export CYCLONEDDS_URI='<CycloneDDS><Domain><Discovery><ParticipantIndex>auto</ParticipantIndex><MaxAutoParticipantIndex>200</MaxAutoParticipantIndex></Discovery></Domain></CycloneDDS>'
-```
-
-T7a, the trails and correction lines:
-
-```bash
-python3 tools/mission_view/localization_view.py
-```
-
-T7b, RViz with the ready-made layout (top-down view of the map):
-
-```bash
-rviz2 -d tools/mission_view/tracking.rviz --ros-args -p use_sim_time:=true
+~/Autonomous_Tugger_Project_V2/autonomous_tugger_ws/tools/mission_view/tracking_view.sh
 ```
 
 | In RViz | Meaning |
@@ -217,7 +203,7 @@ rviz2 -d tools/mission_view/tracking.rviz --ros-args -p use_sim_time:=true
 | Red points | The laser scan; it should sit on the map walls |
 
 White on top of blue means good path tracking; white on top of yellow means good
-localization. Add `--scale 20` to T7a to make the ticks longer. Restart T7a to
+localization. Add `--scale 20` to the command to make the ticks longer. Run it again to
 clear the trails. AMCL's particles can be ticked on in the display list.
 
 ## T8 — Checks
