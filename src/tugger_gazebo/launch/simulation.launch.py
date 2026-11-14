@@ -3,7 +3,7 @@ import os
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument, IncludeLaunchDescription,
-    RegisterEventHandler, SetEnvironmentVariable)
+    OpaqueFunction, RegisterEventHandler, SetEnvironmentVariable)
 from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import Command, LaunchConfiguration
@@ -21,6 +21,22 @@ SWITCH_TIMEOUT_S = '30'
 
 
 def generate_launch_description():
+    return LaunchDescription([
+        # Empty keeps the normal GUI. Validation runs pass
+        # '-s --headless-rendering' so cameras render without a window.
+        DeclareLaunchArgument('gz_extra_args', default_value=''),
+        # Fault testing only (tools/fault_testing): 'true' publishes the
+        # laser scanners and the IMU under /sim_raw/..., and the fault relay
+        # passes them on to the normal topics, with a chosen fault applied.
+        DeclareLaunchArgument('sensor_faults', default_value='false'),
+        # Fault testing only: the simulated wheel radius (odometry keeps 0.055).
+        DeclareLaunchArgument('sim_wheel_radius', default_value='0.055'),
+        OpaqueFunction(function=_simulation),
+    ])
+
+
+def _simulation(context):
+    raw = '/sim_raw' if LaunchConfiguration('sensor_faults').perform(context) == 'true' else ''
 
     description_pkg = get_package_share_directory(
         'tugger_description'
@@ -53,6 +69,17 @@ def generate_launch_description():
         ]),
         value_type=str
     )
+    # Fault testing only: simulated tyres of another radius (e.g. compressed
+    # under load). Only the simulated contact sphere changes; the description
+    # file and everything the robot computes keep the real 0.055 m wheel.
+    sim_wheel_radius = LaunchConfiguration('sim_wheel_radius').perform(context)
+    if float(sim_wheel_radius) != 0.055:
+        import subprocess
+        urdf = subprocess.run(['xacro', xacro_file], check=True, capture_output=True,
+                              text=True).stdout
+        contact = '<sphere radius="0.055"/>'
+        assert urdf.count(contact) == 4, 'expected four wheel contact spheres'
+        robot_description = urdf.replace(contact, f'<sphere radius="{sim_wheel_radius}"/>')
 
     # Allow Gazebo to resolve package://tugger_description/... mesh URIs.
     gazebo_resource_path = os.pathsep.join([
@@ -139,7 +166,7 @@ def generate_launch_description():
             '/imu@sensor_msgs/msg/Imu[gz.msgs.IMU'
         ],
         remappings=[
-            ('/imu', '/imu/data')
+            ('/imu', raw + '/imu/data')
         ],
         output='screen'
     )
@@ -152,6 +179,10 @@ def generate_launch_description():
         arguments=[
             '/front_left/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
             '/rear_right/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan'
+        ],
+        remappings=[
+            ('/front_left/scan', raw + '/front_left/scan'),
+            ('/rear_right/scan', raw + '/rear_right/scan'),
         ],
         output='screen'
     )
@@ -266,10 +297,7 @@ def generate_launch_description():
         output='screen'
     )
 
-    return LaunchDescription([
-        # Empty keeps the normal GUI. Validation runs pass
-        # '-s --headless-rendering' so cameras render without a window.
-        DeclareLaunchArgument('gz_extra_args', default_value=''),
+    return [
         set_gazebo_resource_path,
         set_gazebo_plugin_path,
         robot_state_publisher,
@@ -290,4 +318,4 @@ def generate_launch_description():
                 traction_controller_spawner,
                 lift_controller_spawner,
             ])),
-    ])
+    ]

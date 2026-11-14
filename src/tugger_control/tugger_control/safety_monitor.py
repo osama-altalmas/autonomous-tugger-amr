@@ -38,6 +38,16 @@ DEPTH_CLOUDS = ('/front_depth/points', '/rear_depth/points')
 ESTOP_BUTTONS = ('front_left', 'front_right', 'rear_left', 'rear_right', 'panel')
 STATION_OWNERS = ('DOCK_NAV', 'DOCK_CAMERA', 'DOCK_DEPART', 'PRECISION', 'ROTATE')
 SCAN_MAX_AGE_S = 0.2           # 5 missed 25 Hz scans
+# Window check. A certified safety scanner monitors its own window and stops
+# when it is dirty; the simulated one cannot, so the robot checks: indoors
+# nearly every beam returns something within 40 m. The same beams returning
+# nothing over BLIND_SECTOR_DEG while the robot drives BLIND_TRAVEL_M means
+# the window is covered there, and the robot stops. On every saved route the
+# largest such sector was 35 deg (heading for the open loading door, ray-cast
+# over the localization map, 2026-11-14); a 120 deg film went unnoticed
+# before this check (fault test).
+BLIND_SECTOR_DEG = 60.0
+BLIND_TRAVEL_M = 1.5
 DEPTH_MAX_AGE_S = 0.5
 # Obstacle heights the robot can touch: unloaded it passes under anything
 # above its lift top (0.2375 m), for example a stand's top plate; loaded,
@@ -60,6 +70,43 @@ SOUNDS = {CLEAR: 'OFF', WARNING: 'WARNING_TONE', PROTECTIVE_STOP: 'STOP_TONE',
           EMERGENCY_STOP: 'ALARM'}
 
 
+def longest_run(mask):
+    """Length of the longest run of True in a 1-D boolean array."""
+    best = run = 0
+    for value in mask:
+        run = run + 1 if value else 0
+        best = max(best, run)
+    return best
+
+
+class BlindSectorCheck:
+    """Beams with no return that stay without one while the robot drives."""
+
+    def __init__(self, sector_deg=BLIND_SECTOR_DEG, travel_m=BLIND_TRAVEL_M):
+        self.sector_rad, self.travel_m = math.radians(sector_deg), travel_m
+        self.persistent, self.travel, self.blind_deg = None, 0.0, 0.0
+
+    def update(self, no_return, increment_rad, moved_m):
+        """Feed one scan; returns the blind sector (deg) once confirmed, else 0."""
+        beams = max(1, int(math.ceil(self.sector_rad / abs(increment_rad))))
+        now_run = longest_run(no_return)
+        if self.blind_deg and now_run >= beams:
+            return self.blind_deg            # still covered: stay stopped
+        self.blind_deg = 0.0
+        if self.persistent is None or len(self.persistent) != len(no_return):
+            self.persistent, self.travel = no_return.copy(), 0.0
+        else:
+            self.persistent &= no_return
+            self.travel += moved_m
+        run = longest_run(self.persistent)
+        if run < beams:
+            self.persistent, self.travel = no_return.copy(), 0.0
+            return 0.0
+        if self.travel >= self.travel_m:
+            self.blind_deg = math.degrees(run * abs(increment_rad))
+        return self.blind_deg
+
+
 def _yaw(q):
     return math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
 
@@ -73,6 +120,9 @@ class SafetyMonitor(Node):
         self._mounts = {}
         self._scan_points = {topic: None for topic in SCANNERS}
         self._scan_at = {topic: None for topic in SCANNERS}
+        self._blind = {topic: BlindSectorCheck() for topic in SCANNERS}
+        self._blind_deg = {topic: 0.0 for topic in SCANNERS}
+        self._blind_stamp = {topic: None for topic in SCANNERS}
         self._depth_points = {topic: None for topic in DEPTH_CLOUDS}
         self._depth_at = {topic: None for topic in DEPTH_CLOUDS}
         self._depth_seen = set()
@@ -135,6 +185,12 @@ class SafetyMonitor(Node):
         r = ranges[ok]
         self._scan_points[topic] = np.column_stack((mx + r * np.cos(a), my + r * np.sin(a)))
         self._scan_at[topic] = self._now()
+        stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        last, self._blind_stamp[topic] = self._blind_stamp[topic], stamp
+        speed = abs(self._motion[1]) if self._motion is not None and len(self._motion) > 1 else 0.0
+        moved = speed * min(max(stamp - last, 0.0), 0.5) if last is not None else 0.0
+        no_return = ~np.isfinite(ranges) | (ranges >= msg.range_max)
+        self._blind_deg[topic] = self._blind[topic].update(no_return, msg.angle_increment, moved)
 
     def _on_depth(self, topic, msg):
         try:
@@ -227,8 +283,14 @@ class SafetyMonitor(Node):
         station = self._owner in STATION_OWNERS
         reason = ''
         stale = [t for t in SCANNERS if not self._fresh(self._scan_at[t], now, SCAN_MAX_AGE_S)]
+        blind = [(t, d) for t, d in self._blind_deg.items() if d > 0.0]
         if stale:
             measured, reason = PROTECTIVE_STOP, f'scanner data stale: {", ".join(stale)}'
+        elif blind:
+            topic, deg = blind[0]
+            measured, reason = PROTECTIVE_STOP, (
+                f'{topic.strip("/").split("/")[0]} scanner sees nothing over {deg:.0f} deg '
+                f'while driving (window dirty or covered?)')
         elif self._motion is None or len(self._motion) < 4:
             measured, reason = PROTECTIVE_STOP, 'motion feedback missing'
         else:

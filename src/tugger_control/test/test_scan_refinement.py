@@ -88,6 +88,8 @@ def test_a_corridor_keeps_amcl_front_to_back_but_fixes_sideways():
     est = sr.compose(result.transform, odom)
     assert abs(est[1] - truth[1]) < 0.003        # sideways fixed
     assert est[0] - truth[0] == pytest.approx(0.04, abs=0.003)  # kept AMCL's
+    (free,) = result.free_directions             # and that is the free direction
+    assert abs(free[0]) > 0.99
 
 
 def test_points_on_unmapped_objects_are_ignored():
@@ -154,3 +156,39 @@ def test_distance_field_reads_zero_on_a_wall_surface():
     assert d[0] == pytest.approx(0.0, abs=0.002)
     assert d[1] == pytest.approx(0.10, abs=0.002)
     assert gx[1] < 0                              # distance falls toward the wall
+
+
+def _distinct_room():
+    """A 12 x 8 m room with a few racks: no two places look alike."""
+    occ = np.zeros((int(8 / RES), int(12 / RES)), dtype=bool)
+    occ[:2, :] = occ[-2:, :] = True
+    occ[:, :2] = occ[:, -2:] = True
+    occ[150:190, 100:300] = True          # rack 2 x 0.8 m
+    occ[250:300, 400:440] = True          # pillar
+    occ[60:80, 450:560] = True            # bench
+    return occ
+
+
+def test_a_robot_moved_by_hand_is_found_again():
+    occ = _distinct_room()
+    field = sr.DistanceField(occ, RES, (0.0, 0.0))
+    truth = (6.0, 4.5, 0.4)
+    odom = (1.0, 2.0, 0.1)                     # odometry knows nothing of the push
+    pts = _odom_points(occ, truth, odom)
+    believed = sr.compose(sr.compose(truth, (-0.6, 0.3, math.radians(-10))), sr.inverse(odom))
+    transform, score, runner_up = sr.search(field, pts, believed, odom)
+    found = sr.compose(transform, odom)
+    assert math.hypot(found[0] - truth[0], found[1] - truth[1]) < 0.06
+    assert abs(found[2] - truth[2]) < math.radians(1.5)
+    assert score > 0.6 and runner_up < sr.SEARCH_UNIQUE_RATIO
+    assert sr.fit_score(field, pts, believed) < 0.4 * score
+
+
+def test_a_corridor_has_no_unique_answer_along_it():
+    occ = _corridor()
+    field = sr.DistanceField(occ, RES, (0.0, 0.0))
+    truth = (15.0, 2.0, 0.0)
+    pts = _odom_points(occ, truth, truth)
+    believed = sr.compose(sr.compose(truth, (0.5, 0.0, 0.0)), sr.inverse(truth))
+    _, _, runner_up = sr.search(field, pts, believed, truth)
+    assert runner_up > sr.SEARCH_UNIQUE_RATIO

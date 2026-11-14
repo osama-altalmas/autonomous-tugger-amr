@@ -3,11 +3,14 @@ import math
 import re
 from pathlib import Path
 
+import numpy as np
 import yaml
 
-from tugger_control.refined_localization import (DISAGREE_SHIFT_M, RECENTRE_GOOD_FITS,
-                                                 RECENTRE_INTERVAL_S, RECENTRE_SHIFT_M,
-                                                 disagrees, should_recentre)
+from tugger_control.refined_localization import (continues, CONTINUITY_SHIFT_M,
+                                                 DISAGREE_SHIFT_M, disagrees,
+                                                 recentre_covariance, RECENTRE_GOOD_FITS,
+                                                 RECENTRE_INTERVAL_S, RECENTRE_POSITION_STD_M,
+                                                 RECENTRE_SHIFT_M, should_recentre)
 
 ROOT = Path(__file__).resolve().parents[3]
 MAPS = ROOT / 'src/tugger_navigation/maps'
@@ -46,7 +49,8 @@ def test_recentre_only_after_a_run_of_good_fully_pinned_fits():
     big = RECENTRE_SHIFT_M + 0.01
     assert should_recentre(RECENTRE_GOOD_FITS, 3, big, 0.0, None, False)
     assert not should_recentre(RECENTRE_GOOD_FITS - 1, 3, big, 0.0, None, False)
-    assert not should_recentre(RECENTRE_GOOD_FITS, 2, big, 0.0, None, False)   # corridor
+    assert should_recentre(RECENTRE_GOOD_FITS, 2, big, 0.0, None, False)       # aisle
+    assert not should_recentre(RECENTRE_GOOD_FITS, 1, big, 0.0, None, False)
 
 
 def test_recentre_needs_real_drift_and_respects_interval_and_zones():
@@ -62,3 +66,34 @@ def test_watchdog_threshold():
     assert not disagrees(DISAGREE_SHIFT_M - 0.01, 0.0)
     assert disagrees(DISAGREE_SHIFT_M + 0.01, 0.0)
     assert disagrees(0.0, math.radians(3.5))
+
+
+def test_an_aisle_recentre_keeps_amcl_spread_along_the_aisle():
+    amcl = [0.0] * 36
+    amcl[0], amcl[7], amcl[35] = 0.15 ** 2, 0.04 ** 2, math.radians(2) ** 2
+    cov = recentre_covariance([(1.0, 0.0, 0.0)], amcl)      # along x not pinned
+    assert math.isclose(cov[0][0], 0.15 ** 2)
+    assert math.isclose(cov[1][1], RECENTRE_POSITION_STD_M ** 2)
+    assert cov[2][2] < math.radians(1) ** 2
+    full = recentre_covariance([], amcl)
+    assert np.allclose(np.diag(full)[:2], RECENTRE_POSITION_STD_M ** 2)
+
+
+def test_a_fit_far_from_amcl_is_used_only_when_it_continues_the_last_fit():
+    robot = (3.0, 1.0, 0.2)
+    last = (0.50, -0.20, 0.01)
+    near = (0.50 + CONTINUITY_SHIFT_M / 2, -0.20, 0.01)
+    assert continues(last, near, robot, 0.5, 0.18)
+    assert not continues(last, (0.70, -0.20, 0.01), robot, 0.5, 0.18)    # a jump
+    assert not continues(last, near, robot, 5.0, 0.18)                    # too long ago
+    assert not continues(None, near, robot, 0.5, 0.18)
+    assert not continues(last, near, robot, 0.5, 0.80)                    # AMCL far gone
+
+
+def test_a_search_result_is_judged_same_relocalize_or_lost():
+    from tugger_control.refined_localization import judge_search
+    assert judge_search(0.30, 0.50, 0.95, 0.03, 0.01) == 'same'          # clutter only
+    assert judge_search(0.20, 0.70, 0.60, 0.65, 0.17) == 'relocalize'    # pushed by hand
+    assert judge_search(0.20, 0.70, 0.95, 0.65, 0.17) == 'lost'          # not unique
+    assert judge_search(0.40, 0.50, 0.60, 0.65, 0.17) == 'lost'          # not clearly better
+    assert judge_search(0.10, 0.20, 0.50, 0.03, 0.01) == 'lost'          # nothing fits

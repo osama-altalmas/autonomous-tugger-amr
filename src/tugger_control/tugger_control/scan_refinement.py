@@ -152,6 +152,9 @@ class Refinement:
     turn_rad: float
     constrained: int            # number of directions the scan pinned down (0-3)
     information: tuple          # eigenvalues of the information matrix
+    # Unit eigen-directions (x, y, yaw * ROTATION_LENGTH_M) the scan did not
+    # pin down; along them the result is the prior's.
+    free_directions: tuple = ()
 
 
 def _rotate_about(transform, centre, dyaw, dx, dy):
@@ -172,6 +175,7 @@ def refine(field, odom_points, prior, robot_odom, iterations=MAX_ITERATIONS):
     pts = np.asarray(odom_points, dtype=float)
     x = tuple(float(v) for v in prior)
     eigvals = np.zeros(3)
+    vecs = np.eye(3)
     constrained = 0
     converged = False
     for _ in range(iterations):
@@ -225,5 +229,76 @@ def refine(field, odom_points, prior, robot_odom, iterations=MAX_ITERATIONS):
               (turn > MAX_TURN_RAD, f'{math.degrees(turn):.1f} deg from AMCL'))
     reason = next((text for failed, text in checks if failed), 'ok')
     x[2] = math.atan2(math.sin(x[2]), math.cos(x[2]))
+    free = tuple(tuple(float(c) for c in vecs[:, k]) for k in range(3)
+                 if eigvals[k] < MIN_INFORMATION)
     return Refinement(tuple(float(v) for v in x), reason == 'ok', reason, n_in, fraction,
-                      rms, shift, turn, constrained, tuple(float(v) for v in eigvals))
+                      rms, shift, turn, constrained, tuple(float(v) for v in eigvals), free)
+
+
+# Relocalization: a robot moved by hand (or a pose lost after a fault) is
+# found by trying every pose within SEARCH_RADIUS_M and SEARCH_TURN_RAD of the
+# current estimate and scoring how well the scan lies on the map's walls.
+# Fault test 2026-11-14: pushed 0.6 m at HOME the robot drove off 67 cm wrong;
+# pushed 0.8 m out of a station it drove 25 m up to 90 cm wrong.
+SEARCH_RADIUS_M = 1.0
+SEARCH_STEP_M = 0.05
+SEARCH_TURN_RAD = math.radians(20.0)
+SEARCH_TURN_STEP_RAD = math.radians(1.0)
+SEARCH_SIGMA_M = 0.05
+SEARCH_POINTS = 160
+# The best pose must stand out: any pose this far from it scores at most
+# SEARCH_UNIQUE_RATIO of it (a long aisle has many equally good poses).
+SEARCH_DISTINCT_M = 0.30
+SEARCH_DISTINCT_RAD = math.radians(5.0)
+SEARCH_UNIQUE_RATIO = 0.85
+
+
+def fit_score(field, odom_points, transform):
+    """Share of scan points on a wall (Gaussian-weighted, 1 = all on walls)."""
+    world = transform_points(transform, odom_points)
+    d, _, _ = field.lookup(world[:, 0], world[:, 1])
+    return float(np.mean(np.exp(-0.5 * (d / SEARCH_SIGMA_M) ** 2)))
+
+
+def search_steps(field, odom_points, prior, robot_odom, radius=SEARCH_RADIUS_M,
+                 turn=SEARCH_TURN_RAD):
+    """The search below, one heading at a time: yields None after each
+    heading and finally (transform, score, runner_up_ratio). A node runs a
+    few steps per timer tick, so its other work never waits long."""
+    pts = np.asarray(odom_points, dtype=float)
+    if len(pts) > SEARCH_POINTS:
+        pts = pts[np.linspace(0, len(pts) - 1, SEARCH_POINTS).astype(int)]
+    centre = transform_points(prior, [robot_odom[:2]])[0]
+    offsets = np.arange(-radius, radius + 1e-9, SEARCH_STEP_M)
+    gx, gy = np.meshgrid(offsets, offsets)
+    shifts = np.column_stack([gx.ravel(), gy.ravel()])
+    shifts = shifts[np.hypot(shifts[:, 0], shifts[:, 1]) <= radius + 1e-9]
+    results = []        # (score, dyaw, dx, dy)
+    for dyaw in np.arange(-turn, turn + 1e-9, SEARCH_TURN_STEP_RAD):
+        base = transform_points(_rotate_about(tuple(prior), centre, float(dyaw), 0.0, 0.0), pts)
+        xs = base[None, :, 0] + shifts[:, None, 0]
+        ys = base[None, :, 1] + shifts[:, None, 1]
+        d, _, _ = field.lookup(xs.ravel(), ys.ravel())
+        scores = np.exp(-0.5 * (d.reshape(xs.shape) / SEARCH_SIGMA_M) ** 2).mean(axis=1)
+        results += [(float(sc), float(dyaw), float(dx), float(dy))
+                    for sc, (dx, dy) in zip(scores, shifts)]
+        yield None
+    results.sort(reverse=True)
+    best = results[0]
+    runner_up = next((r for r in results[1:]
+                      if math.hypot(r[2] - best[2], r[3] - best[3]) >= SEARCH_DISTINCT_M or
+                      abs(r[1] - best[1]) >= SEARCH_DISTINCT_RAD), (0.0,))
+    transform = _rotate_about(tuple(prior), centre, best[1], best[2], best[3])
+    yield transform, best[0], runner_up[0] / max(best[0], 1e-9)
+
+
+def search(field, odom_points, prior, robot_odom, radius=SEARCH_RADIUS_M,
+           turn=SEARCH_TURN_RAD):
+    """Best map -> odom near ``prior`` by exhaustive scoring.
+
+    Returns (transform, score, runner_up_ratio): the runner-up is the best
+    score at least SEARCH_DISTINCT_M / SEARCH_DISTINCT_RAD from the best.
+    """
+    for step in search_steps(field, odom_points, prior, robot_odom, radius, turn):
+        if step is not None:
+            return step

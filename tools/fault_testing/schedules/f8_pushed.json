@@ -1,0 +1,32 @@
+{
+ "setup": [
+  {
+   "note": "robot pushed 0.6 m and turned 10 deg while idle at HOME"
+  },
+  {
+   "push": [
+    0.6,
+    -0.3,
+    0.17453292519943295
+   ]
+  }
+ ],
+ "events": [
+  {
+   "leg": 3,
+   "after_s": 0,
+   "do": [
+    {
+     "note": "robot pushed 0.8 m out of S2 after the drop-off"
+    },
+    {
+     "push": [
+      0.8,
+      0.0,
+      0.0
+     ]
+    }
+   ]
+  }
+ ]
+}

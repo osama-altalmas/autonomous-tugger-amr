@@ -7,7 +7,14 @@ are independent of this and can always stop the robot.
 """
 import math
 
-GAP_ROUTE_M = 0.5        # free space kept to an object on an open route
+GAP_ROUTE_M = 0.5        # free space kept to an object on an open route at full speed
+# A standing object closer than GAP_ROUTE_M but at least GAP_ROUTE_MIN_M from
+# the robot's (or its cargo's) side is passed at SLOW_PASS_SPEED_M_S (user
+# decision 2026-11-14); closer than that it is in the way. A moving object
+# (a person) keeps the full GAP_ROUTE_M. The speed is an assumption, no
+# standard value: slow enough that the safety fields stay small.
+GAP_ROUTE_MIN_M = 0.15
+SLOW_PASS_SPEED_M_S = 0.3
 GAP_STATION_M = 0.15     # stations are tight: only a really close object counts
 ROBOT_HALF_WIDTH_M = 0.33
 CARGO_HALF_WIDTH_M = 0.68  # 1.3 m plate plus the 3 cm capture allowance
@@ -74,11 +81,40 @@ def predicted_positions(obstacle):
     return points
 
 
+def edge_distance(obstacle, path, centre=None):
+    """Distance from the object's nearest edge to ``path``.
+
+    With an outline (the shape the sensors saw) that is the nearest outline
+    point; a circle of half the longest extent would reach past the sides of
+    a long object. ``centre`` moves the object there (a predicted position).
+    """
+    cx, cy = centre if centre is not None else (obstacle['x'], obstacle['y'])
+    shape = obstacle.get('outline')
+    if not shape:
+        return point_to_path((cx, cy), path) - obstacle['r']
+    dx, dy = cx - obstacle['x'], cy - obstacle['y']
+    return (min(point_to_path((px + dx, py + dy), path) for px, py in shape) -
+            obstacle.get('outline_margin', 0.03))
+
+
 def interfering(obstacles, path, half_width, gap):
     """Objects whose edge is, or is about to be, within ``gap`` of the robot's edge."""
     return [o for o in obstacles
-            if any(point_to_path(point, path) - o['r'] - half_width < gap
+            if any(edge_distance(o, path, point) - half_width < gap
                    for point in predicted_positions(o))]
+
+
+def route_objects(obstacles, path, half_width, extra_gap=0.0):
+    """(in the way, to pass slowly) on a route: standing objects need only
+    GAP_ROUTE_MIN_M, moving ones the full GAP_ROUTE_M."""
+    moving = [o for o in obstacles if o.get('moving')]
+    standing = [o for o in obstacles if not o.get('moving')]
+    in_way = (interfering(moving, path, half_width, GAP_ROUTE_M + extra_gap) +
+              interfering(standing, path, half_width, GAP_ROUTE_MIN_M + extra_gap))
+    blocked = {id(o) for o in in_way}
+    slow = [o for o in interfering(standing, path, half_width, GAP_ROUTE_M)
+            if id(o) not in blocked]
+    return in_way, slow
 
 
 def effective_phase(phase, in_the_way, destination_centre):

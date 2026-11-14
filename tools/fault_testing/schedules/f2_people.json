@@ -1,0 +1,55 @@
+{
+ "setup": [],
+ "events": [
+  {
+   "leg": 1,
+   "owner": "NAV",
+   "after_s": 25,
+   "do": [
+    {
+     "note": "a person crosses 5 m ahead"
+    },
+    {
+     "walk_across": "person_a",
+     "ahead_m": 5.0,
+     "half_width_m": 1.3,
+     "speed": 1.2
+    }
+   ]
+  },
+  {
+   "leg": 2,
+   "owner": "NAV",
+   "after_s": 30,
+   "do": [
+    {
+     "note": "a person crosses 4.5 m ahead and stands in the path for 10 s"
+    },
+    {
+     "walk_across": "person_b",
+     "ahead_m": 4.5,
+     "half_width_m": 1.3,
+     "speed": 1.0,
+     "stand_s": 10
+    }
+   ]
+  },
+  {
+   "leg": 3,
+   "owner": "NAV",
+   "after_s": 20,
+   "do": [
+    {
+     "note": "a person steps out 1.6 m ahead (sudden) and stands 3 s"
+    },
+    {
+     "walk_across": "person_c",
+     "ahead_m": 1.6,
+     "half_width_m": 1.0,
+     "speed": 1.4,
+     "stand_s": 3
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,60 @@
+{
+ "setup": [],
+ "events": [
+  {
+   "leg": 1,
+   "owner": "NAV",
+   "after_s": 20,
+   "do": [
+    {
+     "note": "rear-right scanner stops sending"
+    },
+    {
+     "relay": {
+      "target": "rear_right",
+      "mode": "silent"
+     }
+    }
+   ]
+  },
+  {
+   "leg": 1,
+   "after_event": 0,
+   "after_s": 10,
+   "do": [
+    {
+     "note": "rear-right scanner back"
+    },
+    {
+     "relay": {
+      "target": "rear_right",
+      "mode": "none"
+     }
+    }
+   ]
+  },
+  {
+   "leg": 2,
+   "owner": "NAV",
+   "after_s": 20,
+   "do": [
+    {
+     "note": "localization program crashes"
+    },
+    {
+     "kill": "refined_localization"
+    }
+   ]
+  },
+  {
+   "leg": 2,
+   "after_event": 2,
+   "after_s": 30,
+   "do": [
+    {
+     "start": "refined_localization"
+    }
+   ]
+  }
+ ]
+}

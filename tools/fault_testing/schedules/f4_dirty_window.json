@@ -1,0 +1,138 @@
+{
+ "setup": [],
+ "events": [
+  {
+   "leg": 1,
+   "owner": "NAV",
+   "after_s": 20,
+   "do": [
+    {
+     "note": "dirt on the front-left scanner window"
+    },
+    {
+     "relay": {
+      "target": "front_left",
+      "mode": "smudge",
+      "start_deg": -15,
+      "width_deg": 30
+     }
+    }
+   ]
+  },
+  {
+   "leg": 1,
+   "after_event": 0,
+   "after_s": 30,
+   "do": [
+    {
+     "note": "window cleaned"
+    },
+    {
+     "relay": {
+      "target": "front_left",
+      "mode": "none"
+     }
+    }
+   ]
+  },
+  {
+   "leg": 2,
+   "owner": "NAV",
+   "after_s": 15,
+   "do": [
+    {
+     "note": "film on the front-left window: no returns over 120 deg"
+    },
+    {
+     "relay": {
+      "target": "front_left",
+      "mode": "blind",
+      "start_deg": -60,
+      "width_deg": 120
+     }
+    }
+   ]
+  },
+  {
+   "leg": 2,
+   "after_event": 2,
+   "after_s": 15,
+   "do": [
+    {
+     "note": "a box placed 5 m ahead in the path while the front-left scanner is half blind"
+    },
+    {
+     "spawn": "box_ahead",
+     "size": [
+      0.4,
+      0.4,
+      0.5
+     ],
+     "ahead": [
+      5.0,
+      0.0
+     ]
+    }
+   ]
+  },
+  {
+   "leg": 2,
+   "after_event": 3,
+   "after_s": 60,
+   "do": [
+    {
+     "note": "window cleaned"
+    },
+    {
+     "relay": {
+      "target": "front_left",
+      "mode": "none"
+     }
+    }
+   ]
+  },
+  {
+   "leg": 3,
+   "after_s": 0,
+   "do": [
+    {
+     "remove": "box_ahead"
+    }
+   ]
+  },
+  {
+   "leg": 3,
+   "owner": "DOCK_CAMERA",
+   "after_s": 3,
+   "do": [
+    {
+     "note": "dirt on the rear-right window during the final docking"
+    },
+    {
+     "relay": {
+      "target": "rear_right",
+      "mode": "smudge",
+      "start_deg": -30,
+      "width_deg": 40
+     }
+    }
+   ]
+  },
+  {
+   "leg": 3,
+   "after_event": 6,
+   "after_s": 25,
+   "do": [
+    {
+     "note": "window cleaned"
+    },
+    {
+     "relay": {
+      "target": "rear_right",
+      "mode": "none"
+     }
+    }
+   ]
+  }
+ ]
+}

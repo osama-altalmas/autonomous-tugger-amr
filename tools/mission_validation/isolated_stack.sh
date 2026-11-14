@@ -5,6 +5,8 @@
 # domain keeps running untouched. Only the process group started here is stopped.
 #
 # Usage: isolated_stack.sh up|down [domain_id]
+# Fault testing: TUGGER_SIM_ARGS="sensor_faults:=true sim_wheel_radius:=0.0545"
+# adds simulation launch arguments; with sensor_faults the fault relay starts.
 set -u
 ACTION=${1:?up or down}
 DOMAIN=${2:-77}
@@ -55,7 +57,12 @@ export CYCLONEDDS_URI=${CYCLONEDDS_URI:-'<CycloneDDS><Domain><Discovery><Partici
 setsid bash -c '
   echo $$ > "$0"
   ros2 launch tugger_gazebo simulation.launch.py \
-      gz_extra_args:="-s --headless-rendering $3" > "$1/gazebo.log" 2>&1 &
+      gz_extra_args:="-s --headless-rendering $3" $4 > "$1/gazebo.log" 2>&1 &
+  # Fault testing: the sensors come through the fault relay (see
+  # tools/fault_testing/fault_relay.py and TUGGER_FAULT_TESTING below).
+  case " $4 " in *" sensor_faults:=true "*)
+    python3 "$2/tools/fault_testing/fault_relay.py" > "$1/fault_relay.log" 2>&1 & ;;
+  esac
   sleep 15
   ros2 launch tugger_control control.launch.py > "$1/control.log" 2>&1 &
   ros2 launch tugger_ground_truth simulation_localization.launch.py > "$1/truth.log" 2>&1 &
@@ -91,6 +98,6 @@ setsid bash -c '
     kill -KILL "$nav2" 2>/dev/null
   done
   wait
-' "$PIDFILE" "$RUN_DIR" "$WS" "${TUGGER_GZ_EXTRA:-}" > /dev/null 2>&1 &
+' "$PIDFILE" "$RUN_DIR" "$WS" "${TUGGER_GZ_EXTRA:-}" "${TUGGER_SIM_ARGS:-}" > /dev/null 2>&1 &
 disown
 echo "started domain=$DOMAIN logs=$RUN_DIR"

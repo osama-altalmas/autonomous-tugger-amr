@@ -1,0 +1,46 @@
+{
+ "setup": [
+  {
+   "note": "reflective surfaces: ghost points and lost returns on both scanners"
+  },
+  {
+   "relay": {
+    "target": "front_left",
+    "mode": "ghost"
+   }
+  },
+  {
+   "relay": {
+    "target": "rear_right",
+    "mode": "ghost"
+   }
+  }
+ ],
+ "events": [
+  {
+   "leg": 2,
+   "after_s": 0,
+   "do": [
+    {
+     "note": "more reflections (shrink-wrapped pallets nearby)"
+    },
+    {
+     "relay": {
+      "target": "front_left",
+      "mode": "ghost",
+      "scan_share": 0.3,
+      "dropout": 0.04
+     }
+    },
+    {
+     "relay": {
+      "target": "rear_right",
+      "mode": "ghost",
+      "scan_share": 0.3,
+      "dropout": 0.04
+     }
+    }
+   ]
+  }
+ ]
+}

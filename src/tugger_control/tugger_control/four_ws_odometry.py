@@ -5,8 +5,10 @@ import math
 import rclpy
 from rclpy.node import Node
 
-from sensor_msgs.msg import JointState
 from nav_msgs.msg import Odometry
+from rclpy.qos import DurabilityPolicy, QoSProfile
+from sensor_msgs.msg import JointState
+from std_msgs.msg import Float64
 
 from tugger_control.turn_in_place import pivot_odometry
 
@@ -42,6 +44,14 @@ class FourWSOdometry(Node):
             10
         )
 
+        # Odometry calibration (refined_localization.OdometryScale): the
+        # effective wheel radius differs from the nominal one with tyre wear
+        # and load; travel measured by the scan match gives the factor.
+        self.scale = 1.0
+        self.create_subscription(
+            Float64, '/tugger/odometry/scale', self._on_scale,
+            QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
+
         self.joint_state_sub = self.create_subscription(
             JointState,
             '/joint_states',
@@ -55,6 +65,13 @@ class FourWSOdometry(Node):
             f'W={self.track_width:.3f} m, '
             f'R={self.wheel_radius:.3f} m)'
         )
+
+    def _on_scale(self, msg):
+        if math.isfinite(msg.data) and 0.9 <= msg.data <= 1.1 and msg.data != self.scale:
+            self.scale = float(msg.data)
+            radius = self.wheel_radius * self.scale
+            self.get_logger().info(f'odometry scale {self.scale:.4f} '
+                                   f'(effective wheel radius {radius:.4f} m)')
 
     def joint_state_callback(self, msg):
 
@@ -113,7 +130,7 @@ class FourWSOdometry(Node):
         try:
             linear_velocity, lateral_velocity, angular_velocity = pivot_odometry(
                 steering, speeds, wheel_positions=positions,
-                wheel_radius=self.wheel_radius)
+                wheel_radius=self.wheel_radius * self.scale)
         except ValueError:
             return
 

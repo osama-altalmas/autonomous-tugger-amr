@@ -1,0 +1,74 @@
+{
+ "setup": [
+  {
+   "note": "S3 QR: worn strip across the middle (2 cm of 10 cm, finder corners intact)"
+  },
+  {
+   "cover": "wear_s3",
+   "size": [
+    0.105,
+    0.02
+   ],
+   "at": [
+    17.5,
+    7.0
+   ]
+  },
+  {
+   "note": "S4 QR: red frame hidden; station nudged 4 cm and turned 1.5 deg"
+  },
+  {
+   "cover": "frame_s4_n",
+   "size": [
+    0.125,
+    0.012
+   ],
+   "at": [
+    17.5,
+    -6.9455
+   ]
+  },
+  {
+   "cover": "frame_s4_s",
+   "size": [
+    0.125,
+    0.012
+   ],
+   "at": [
+    17.5,
+    -7.0545
+   ]
+  },
+  {
+   "cover": "frame_s4_e",
+   "size": [
+    0.012,
+    0.125
+   ],
+   "at": [
+    17.5545,
+    -7.0
+   ]
+  },
+  {
+   "cover": "frame_s4_w",
+   "size": [
+    0.012,
+    0.125
+   ],
+   "at": [
+    17.4455,
+    -7.0
+   ]
+  },
+  {
+   "move": "cargo_dropoff_southeast_legs",
+   "to": [
+    17.54,
+    -7.0,
+    0.026179938779914945
+   ]
+  }
+ ],
+ "events": []
+}

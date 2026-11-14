@@ -26,6 +26,7 @@ from qt_gui.plugin import Plugin
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.parameter import Parameter
+from rclpy.qos import DurabilityPolicy, QoSProfile
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool, Empty, Float64MultiArray, String
 from tf2_ros import Buffer, TransformListener
@@ -64,7 +65,8 @@ from tugger_control.visual_marker_guard import FixedMarkerGuard
 from tugger_control.docking_markers import expected_marker
 from tugger_control.live_route_planner import LiveRoutePlanner
 from tugger_control.obstacle_policy import (
-    AVOID, CARGO_HALF_WIDTH_M, CONTINUE, DETOUR_OBJECT_RADIUS_M, DETOUR_WORLD_MARGIN_M, GAP_ROUTE_M, GAP_STATION_M, HOLD_EXTRA_GAP_M,
+    AVOID, CARGO_HALF_WIDTH_M, CONTINUE, DETOUR_OBJECT_RADIUS_M, DETOUR_WORLD_MARGIN_M, GAP_ROUTE_M,
+    GAP_ROUTE_MIN_M, GAP_STATION_M, HOLD_EXTRA_GAP_M, SLOW_PASS_SPEED_M_S, route_objects,
     HOLD_EXTRA_LOOK_AHEAD_M, LOOK_AHEAD_M, ObstacleSupervisor,
     ROBOT_HALF_WIDTH_M, effective_phase, interfering, path_ahead, plan_detour)
 from tugger_control.saved_route_repository import (
@@ -96,6 +98,10 @@ QR_VISUAL_MAX_NO_PROGRESS = 6
 QR_VISUAL_PROGRESS_M = 0.002
 MAX_MISSION_RETRIES = 2
 RECOVERY_DELAY_S = 1.0
+# An automatic re-plan during a mission (after undocking, an obstacle or a
+# recovery) that has produced nothing for this long has dead-ended: the
+# mission is stopped and said so, instead of the robot standing silently.
+CONTINUATION_DEADLINE_S = 15.0
 RETRYABLE_CARGO_FAILURES = ('attach_rejected', 'timeout', 'cargo_moved_before_attach')
 # Docked means at the station centre; farther away the robot is between stages.
 DOCKED_TOLERANCE_M = 0.10
@@ -243,6 +249,14 @@ class OperatorBridge(Node):
         # refined_localization's watchdog: AMCL and the scan match disagreeing.
         self.create_subscription(String, '/tugger/localization/warning',
                                  lambda m: self._report(f'LOCALIZATION WARNING: {m.data}.'), 10)
+        # Lost: the scan fits nowhere near the pose in use (refined_localization
+        # integrity check). Motion stops and RUN is refused until it is found.
+        self._localization_lost = None
+        self.create_subscription(
+            String, '/tugger/localization/lost', self._on_localization_lost,
+            QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        self._map_tf_stale_reported = False
+        self.create_timer(0.5, self._map_tf_watchdog)
         # Turn in place: an optional capability (operator panel switch).
         self.turn_in_place_enabled = False
         self._pending_rotation = None
@@ -370,11 +384,13 @@ class OperatorBridge(Node):
         self.create_timer(0.1, self._publish_motion_owner)
         self.create_timer(0.05, self._rotation_step)
         self.create_timer(0.1, self._dock_wait_watchdog)
+        self.create_timer(0.5, self._continuation_watchdog)
         self.create_timer(0.2, self._poll_live_plan)
         self._obstacles, self._obstacles_at = [], None
         self._obstacle_hold = None
         self._obstacle_supervisor = ObstacleSupervisor()
         self._obstacle_keepout = []
+        self._obstacle_fallback = None
         self._detour_obstacle = None
         self._speed_limit_pub = self.create_publisher(SpeedLimit, '/speed_limit', 10)
         self.create_subscription(String, '/tugger/obstacles', self._on_obstacles, 10)
@@ -383,6 +399,72 @@ class OperatorBridge(Node):
     def _guard_ready(self, message):
         self._loaded_control_ready = bool(message.data)
         self._loaded_guard_seen_at = self.get_clock().now()
+
+    def _on_localization_lost(self, message):
+        data = json.loads(message.data)
+        self._localization_state = data.get('state', 'lost' if data.get('lost') else 'ok')
+        self._localization_state_reason = data.get('reason', '')
+        reason = data.get('reason') or 'unknown' if data.get('lost') else None
+        was = self._localization_lost
+        self._localization_lost = reason
+        if reason is not None and was is None:
+            self._report(f'LOCALIZATION LOST: {reason}. Motion stopped; put the robot back '
+                         'where it was or give its pose (2D Pose Estimate), then press RUN.')
+            if self._mission_started() or self._continue_after_undock:
+                self.cancel_navigation()
+        elif reason is None and was is not None:
+            self._report('LOCALIZATION OK: the robot knows where it is again; press RUN.')
+
+    def _map_tf_watchdog(self):
+        """Say plainly when the map position stops updating (localization down)."""
+        try:
+            transform = self._tf.lookup_transform('map', 'odom', rclpy.time.Time())
+        except Exception:
+            return
+        stamp = rclpy.time.Time.from_msg(transform.header.stamp)
+        age = (self.get_clock().now() - stamp).nanoseconds / 1e9
+        # Normal pauses stay well under a second; a stopped program grows without end.
+        if age > 2.0 and not self._map_tf_stale_reported:
+            self._map_tf_stale_reported = True
+            self._report(f'LOCALIZATION STOPPED: the map position has not been updated for '
+                         f'{age:.1f} s (is the localization program running?). The robot '
+                         'cannot navigate until it is back.')
+        elif age <= 0.5 and self._map_tf_stale_reported:
+            self._map_tf_stale_reported = False
+            self._report('LOCALIZATION RUNNING again: the map position is updating.')
+
+    def _continuation_watchdog(self):
+        """End a mission whose automatic re-plan produced no route."""
+        waiting = (self._continue_after_undock and self._motion_armed and
+                   not self._cancel_requested and self._live_plan is None and
+                   not self._mission_started())
+        if not waiting:
+            self._continuation_idle_since = None
+            return
+        now = self.get_clock().now()
+        since = getattr(self, '_continuation_idle_since', None)
+        if since is None:
+            self._continuation_idle_since = now
+            return
+        if (now - since).nanoseconds / 1e9 < CONTINUATION_DEADLINE_S:
+            return
+        self._continuation_idle_since = None
+        self._continue_after_undock = False
+        fallback = getattr(self, '_obstacle_fallback', None)
+        self._obstacle_fallback = None
+        if fallback is not None and fallback['path'] is not None:
+            # An object could neither be passed nor avoided by another way:
+            # wait for it on the original path, as for a moving object.
+            self._obstacle_hold = dict(fallback, wait_only=True)
+            self._obstacle_supervisor.reset()
+            self._report('OBSTACLE: no way around it and no other route; waiting here for '
+                         'it to clear (the robot is standing still).')
+            return
+        retry = getattr(self, '_mission_retry', None)
+        destination = retry['destination'] if retry is not None else 'the destination'
+        self._report(f'MISSION STOPPED: no route to {destination} could be planned from '
+                     'here (reason above); the robot is standing still.')
+        self._execution_done(False, GoalStatus.STATUS_ABORTED)
 
     def _dock_wait_watchdog(self):
         if self._departure_pending is not None:
@@ -439,6 +521,7 @@ class OperatorBridge(Node):
 
     def _announce_plan(self, plan_ready, message, executing):
         """Report a plan; after undocking, continue through the normal RUN checks."""
+        self._obstacle_fallback = None
         plan_ready(message, executing)
         if self._continue_after_undock:
             self._continue_after_undock = False
@@ -597,10 +680,12 @@ class OperatorBridge(Node):
         check. Every retry runs the full RUN checks; nothing is bypassed.
         """
         self._quiet_run_blocks = attempt < CONTINUE_ATTEMPTS
+        self._continuing = True
         try:
             self.run_selected_mission(self._motion_armed)
         finally:
             self._quiet_run_blocks = False
+            self._continuing = False
         if self._mission_started() or self._cancel_requested or not self._motion_armed:
             return
         if attempt >= CONTINUE_ATTEMPTS:
@@ -614,8 +699,12 @@ class OperatorBridge(Node):
             self._continue_attempt(attempt + 1)
         timer = self.create_timer(CONTINUE_RETRY_S, retry)
 
-    def _station_partway(self, pose):
-        """The cargo station whose approach the robot stands on, short of its gate."""
+    def _station_partway(self, pose, include_centre=False):
+        """The cargo station whose approach the robot stands on, short of its gate.
+
+        With include_centre, also a station whose centre the robot stands on
+        without being docked there (a dock refused at the camera stage).
+        """
         for station in CARGO_STATIONS:
             try:
                 approach = self._station_approach(station)
@@ -628,7 +717,7 @@ class OperatorBridge(Node):
             # Partway means inside the station's approach zone: off the dock,
             # and clearly closer to it than the gate (a robot stopped at a
             # gate, e.g. as a waypoint, is outside the station).
-            if (from_dock <= DOCKED_TOLERANCE_M or
+            if ((from_dock <= DOCKED_TOLERANCE_M and not include_centre) or
                     from_dock >= math.hypot(gate[0] - dock[0], gate[1] - dock[1]) - 0.30):
                 continue
             if min(math.hypot(p[0] - pose[0], p[1] - pose[1]) for p in approach) <= 0.30:
@@ -2129,9 +2218,11 @@ class OperatorBridge(Node):
         if not self._motion_armed or self._cancel_requested:
             self._obstacle_hold = None
             self._obstacle_supervisor.reset()
+            self._update_slow_pass([])
             return
         phase = self._obstacle_phase()
         if phase is None or self._obstacles_at is None:
+            self._update_slow_pass([])      # a finished leg keeps no slow limit
             return
         now = self.get_clock().now()
         if not 0 <= (now - self._obstacles_at).nanoseconds / 1e9 <= 1.0:
@@ -2147,12 +2238,14 @@ class OperatorBridge(Node):
               else [tuple(pose[:2])])
         half = self._obstacle_half_width()
         extra_gap, extra_look = (HOLD_EXTRA_GAP_M, HOLD_EXTRA_LOOK_AHEAD_M) if hold is not None else (0.0, 0.0)
+        slow = []
         if phase == 'route':
             ahead = path_ahead(xy, pose[:2], length=LOOK_AHEAD_M + extra_look)
-            gap = GAP_ROUTE_M + extra_gap
+            in_way, slow = route_objects(self._obstacles, ahead, half, extra_gap)
         else:
             ahead, gap = path_ahead(xy, pose[:2], length=1e9), GAP_STATION_M + extra_gap
-        in_way = interfering(self._obstacles, ahead, half, gap)
+            in_way = interfering(self._obstacles, ahead, half, gap)
+        self._update_slow_pass(slow if hold is None and not in_way else [])
         detour = getattr(self, '_detour_obstacle', None)
         if detour is not None:
             # Already going around this one, with room to spare; a new measure
@@ -2170,7 +2263,8 @@ class OperatorBridge(Node):
             return
         if hold is None:
             self._begin_obstacle_hold(phase, action, in_way)
-        if action == AVOID and self._active_follow is None and self._obstacle_hold is not None:
+        if (action == AVOID and self._active_follow is None and self._obstacle_hold is not None
+                and not self._obstacle_hold.get('wait_only')):
             self._avoid_obstacle(pose, in_way, half)
 
     def _begin_obstacle_hold(self, phase, action, in_way):
@@ -2189,6 +2283,16 @@ class OperatorBridge(Node):
         if self._active_follow is not None:
             return                      # the cancel has not finished yet
         self._obstacle_hold = None
+        retry = self._mission_retry
+        if hold.get('wait_only') and retry is not None:
+            # The failed re-plan replaced the route state: plan on from here
+            # through the normal checks (the saved route is free again).
+            self._report('OBSTACLE: the way is clear; planning on from here.')
+            self._obstacle_keepout = []
+            self._continue_after_undock = True
+            self.execute_destination(retry['destination'], retry['candidates'],
+                                     retry['targets'])
+            return
         self._report('OBSTACLE: the way is clear; continuing.')
         path = hold.get('path')
         if path is None:
@@ -2262,12 +2366,29 @@ class OperatorBridge(Node):
             self._report('OBSTACLE: no room to go around and no mission to replan. Robot stopped.')
             return
         self._report('OBSTACLE: cannot pass it here; replanning another way.')
-        self._obstacle_keepout = [(o['x'], o['y'], o['r'] + half + GAP_ROUTE_M)
+        # If no other way can be planned either, wait on this path for the
+        # way to clear (see _continuation_watchdog) rather than give up.
+        self._obstacle_fallback = {'phase': hold['phase'], 'path': hold['path']}
+        self._obstacle_keepout = [(o['x'], o['y'], o['r'] + half + GAP_ROUTE_MIN_M)
                                   for o in self._obstacles]
         clear = [c for c in retry['candidates']
-                 if not interfering(self._obstacles, c[2], half, GAP_ROUTE_M)]
+                 if not route_objects(self._obstacles, c[2], half)[0]]
         self._continue_after_undock = True
         self.execute_destination(retry['destination'], clear, retry['targets'])
+
+    def _update_slow_pass(self, slow):
+        """Pass a standing object 15-50 cm away at reduced speed (user, 2026-11-14)."""
+        active = getattr(self, '_slow_pass', False)
+        if slow and not active:
+            self._slow_pass = True
+            first = slow[0]
+            self._report(f'OBSTACLE: passing an object at ({first["x"]:.2f}, {first["y"]:.2f}) '
+                         f'with less than {GAP_ROUTE_M * 100:.0f} cm to spare; slowing to '
+                         f'{SLOW_PASS_SPEED_M_S:.1f} m/s.')
+            self._publish_speed_limit(SLOW_PASS_SPEED_M_S)
+        elif not slow and active:
+            self._slow_pass = False
+            self._publish_speed_limit(0.0)
 
     def _publish_speed_limit(self, speed):
         message = SpeedLimit()
@@ -2404,6 +2525,7 @@ class OperatorBridge(Node):
         self._release_camera_frame()
         self._dock_precision_mode = False
         self.docked_station = station
+        self._camera_failed_station = None
         self._publish_precision_stop()
         self._report(
             f'PRECISION POSITION REACHED: red frame centered for {station}; '
@@ -2595,6 +2717,8 @@ class OperatorBridge(Node):
         if not self._qr_alignment_active:
             return
         self._qr_alignment_active = False
+        # Remembered so a later mission backs out of this station first.
+        self._camera_failed_station = getattr(self, '_qr_alignment_station', None)
         self._release_camera_frame()
         self._dock_precision_mode = False
         self._visual_plan_generation += 1
@@ -2697,11 +2821,24 @@ class OperatorBridge(Node):
         if age > QR_ALIGNMENT_MAX_OBSERVATION_AGE_S:
             self._hold_visual_alignment('camera frame missing; stopping for reacquisition')
         if age > QR_ALIGNMENT_TIMEOUT_S:
-            self._stop_qr_alignment('red-frame camera not reacquired within 3 s')
+            if self._red_frame_seen_at is None:
+                self._stop_qr_alignment(
+                    f'no red frame seen at {station_label(self._qr_alignment_station)}: the '
+                    'floor marker may be covered or missing (clean or replace it)')
+            else:
+                self._stop_qr_alignment('red-frame camera not reacquired within 3 s')
             return
         expected = self._qr_expected_seen_at or self._qr_alignment_started_at
         if (self.get_clock().now() - expected).nanoseconds / 1e9 > QR_ALIGNMENT_TIMEOUT_S:
-            self._stop_qr_alignment('expected QR identity not reacquired within 3 s')
+            if self._qr_expected_seen_at is None and self._red_frame_seen_at is not None:
+                # The frame is seen but the code never reads: a covered or
+                # worn marker (a lost finder corner defeats any QR reader).
+                self._stop_qr_alignment(
+                    f'the floor QR at {station_label(self._qr_alignment_station)} cannot be '
+                    'read although its red frame is seen: the marker may be covered or '
+                    'damaged (clean or replace it)')
+            else:
+                self._stop_qr_alignment('expected QR identity not reacquired within 3 s')
 
     def _pose(self, values):
         pose = PoseStamped()
@@ -3025,12 +3162,18 @@ class OperatorBridge(Node):
             # Depart a loaded dock using its own height-aware path first.
             # Never ask the ordinary 2D Nav2 global planner to start beneath
             # the stand where the static costmap marks the station occupied.
-            partway = (self._station_partway(pose)
-                       if cargo is not None and self.docked_station is None else None)
+            failed_here = getattr(self, '_camera_failed_station', None)
+            partway = None
+            if self.docked_station is None and cargo is not None:
+                partway = self._station_partway(pose)
+            elif self.docked_station is None and failed_here is not None:
+                found = self._station_partway(pose, include_centre=True)
+                partway = found if found == failed_here else None
             if partway is not None and partway != destination:
-                # Loaded and partway out of a station (e.g. a cancelled
-                # departure): under a stand no route planner may start, so
-                # finish leaving along the station's own approach first.
+                # Partway out of a station, loaded or empty (a cancelled
+                # departure, or a dock refused at the camera stage): inside a
+                # station no route planner may start, so leave along the
+                # station's own approach first (fault test 2026-11-14).
                 self._prepare_backout(destination, candidates, station_targets,
                                       station=partway)
                 return
@@ -3384,6 +3527,19 @@ class OperatorBridge(Node):
         """Run only the exact path previously previewed by the operator."""
         if not armed:
             self._report_run_block('RUN blocked: arm simulator commands first.')
+            return
+        if getattr(self, '_localization_lost', None):
+            self._report_run_block('RUN blocked: localization is lost '
+                                   f'({self._localization_lost}).')
+            return
+        # An operator's RUN waits for a doubtful fit to be checked (a robot
+        # moved by hand is found within seconds); a mission already under
+        # way continues, as a lost robot is stopped separately.
+        if (getattr(self, '_localization_state', 'ok') == 'suspect' and
+                not getattr(self, '_continuing', False)):
+            self._report_run_block('RUN blocked: checking the robot\'s position '
+                                   f'({self._localization_state_reason}); try again in a '
+                                   'few seconds.')
             return
         if (self._follow_goal_pending or self._stage_validation_pending or
                 self._departure_pending is not None or self._departure_active or

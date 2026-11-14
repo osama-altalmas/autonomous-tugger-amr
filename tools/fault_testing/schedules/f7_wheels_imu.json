@@ -1,0 +1,33 @@
+{
+ "setup": [
+  {
+   "note": "wheels 2% smaller than odometry assumes (sim_wheel_radius 0.0539); gyro drift 15 deg/h; slippery patch on the centre aisle"
+  },
+  {
+   "relay": {
+    "target": "imu",
+    "mode": "drift",
+    "deg_per_hour": 15
+   }
+  },
+  {
+   "spawn": "slick_patch",
+   "size": [
+    4.0,
+    2.0,
+    0.002
+   ],
+   "at": [
+    -3.0,
+    0.0
+   ],
+   "color": [
+    0.45,
+    0.5,
+    0.6
+   ],
+   "mu": 0.3
+  }
+ ],
+ "events": []
+}

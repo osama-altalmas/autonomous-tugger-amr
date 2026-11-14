@@ -33,6 +33,11 @@ FORGET_S = 1.0
 # Real travel, not the jitter of a partly seen object's centre (20-30 cm).
 MOVING_DISTANCE_M = 0.6
 SPEED_WINDOW_S = 2.0
+# Each object's shape as seen: its convex outline, at most this many corners.
+# An object's circle (half its longest extent) reaches past its sides: a
+# 1.0 x 0.5 m cart beside the path looked 25 cm closer than it was.
+OUTLINE_MAX_POINTS = 24
+OUTLINE_MARGIN_M = 0.03
 
 
 def load_distance_map(yaml_path):
@@ -68,8 +73,23 @@ def off_map(points, distance, resolution, origin, height):
     return keep
 
 
+def outline(members):
+    """The corners of a group of points' convex outline (all points if degenerate)."""
+    from scipy.spatial import ConvexHull, QhullError
+    corners = members
+    if len(members) >= 3:
+        try:
+            corners = members[ConvexHull(members).vertices]
+        except QhullError:      # all points on a line
+            ends = np.argsort(members @ (members[-1] - members[0]))
+            corners = members[[ends[0], ends[-1]]]
+    if len(corners) > OUTLINE_MAX_POINTS:
+        corners = corners[np.linspace(0, len(corners) - 1, OUTLINE_MAX_POINTS).astype(int)]
+    return [(round(float(x), 3), round(float(y), 3)) for x, y in corners]
+
+
 def cluster(points):
-    """Group points into objects: (x, y, radius) for each."""
+    """Group points into objects: (x, y, radius, outline) for each."""
     if len(points) == 0:
         return []
     low = points.min(axis=0)
@@ -84,7 +104,7 @@ def cluster(points):
         if len(members) >= MIN_POINTS:
             centre = members.mean(axis=0)
             radius = float(np.max(np.hypot(*(members - centre).T))) + 0.03
-            objects.append((float(centre[0]), float(centre[1]), radius))
+            objects.append((float(centre[0]), float(centre[1]), radius, outline(members)))
     return objects
 
 
@@ -95,14 +115,17 @@ class Tracks:
         self.items, self.next_id = [], 0
 
     def update(self, now, objects):
-        for x, y, r in objects:
+        for x, y, r, *shape in objects:
+            shape = shape[0] if shape else None
             match = min(self.items, key=lambda t: math.hypot(t['x'] - x, t['y'] - y), default=None)
             if match is None or math.hypot(match['x'] - x, match['y'] - y) > MATCH_M:
-                self.items.append({'id': self.next_id, 'x': x, 'y': y, 'r': r, 'hits': 1, 'seen': now,
+                self.items.append({'id': self.next_id, 'x': x, 'y': y, 'r': r, 'outline': shape,
+                                   'hits': 1, 'seen': now,
                                    'history': [(now, x, y)], 'moving': False, 'vx': 0.0, 'vy': 0.0})
                 self.next_id += 1
                 continue
-            match.update(x=x, y=y, r=max(r, 0.9 * match['r']), hits=match['hits'] + 1, seen=now)
+            match.update(x=x, y=y, r=max(r, 0.9 * match['r']), outline=shape,
+                         hits=match['hits'] + 1, seen=now)
             match['history'].append((now, x, y))
             old = [h for h in match['history'] if now - h[0] >= SPEED_WINDOW_S]
             if old:
@@ -182,6 +205,7 @@ class ObstacleMonitor(Node):
         message = String()
         message.data = json.dumps({'stamp': now, 'obstacles': [
             {'id': o['id'], 'x': round(o['x'], 3), 'y': round(o['y'], 3), 'r': round(o['r'], 3),
+             'outline': o['outline'], 'outline_margin': OUTLINE_MARGIN_M,
              'moving': o['moving'], 'vx': round(o['vx'], 2), 'vy': round(o['vy'], 2)}
             for o in confirmed]})
         self.pub.publish(message)

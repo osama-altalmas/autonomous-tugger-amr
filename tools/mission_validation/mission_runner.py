@@ -350,6 +350,7 @@ class Runner:
         self.confirm_warnings = False
         self._owner_since = (None, 0.0)
         self._disturbed = False
+        self.faults = None           # fault testing: tools/fault_testing/fault_schedule.py
         self.reports = []
         self.finished = None
         self.planned = False
@@ -403,6 +404,8 @@ class Runner:
         if getattr(self.bridge, '_obstacle_hold', None) is not None:
             return True     # waiting for an object is the robot working, not idle
         bridge = self.bridge
+        if getattr(bridge, '_continue_after_undock', False) or getattr(bridge, '_live_plan', None):
+            return True     # planning the next part (an operator would wait too)
         return (bridge._follow_goal_pending or bridge._stage_validation_pending or
                 bridge._departure_pending is not None or bridge._departure_active or
                 bridge._active_follow is not None or bridge._qr_alignment_active or
@@ -463,6 +466,8 @@ class Runner:
         while time.monotonic() < deadline:
             self.executor.spin_once(timeout_sec=0.02)
             self._maybe_disturb()
+            if self.faults is not None:
+                self.faults.tick()
             if condition():
                 return True
         return False
@@ -765,6 +770,11 @@ def main():
     parser.add_argument('--refinement-off-legs', default='',
                         help='comma-separated leg numbers (1 = first destination) driven '
                              'with the scan refinement switched off, to measure the fallback')
+    parser.add_argument('--faults', metavar='SCHEDULE.json',
+                        help='fault testing only: apply this fault schedule '
+                             '(tools/fault_testing/fault_schedule.py)')
+    parser.add_argument('--keep-going', action='store_true',
+                        help='fault testing: go on with the next destination after a failure')
     parser.add_argument('--settle', type=float, default=30.0,
                         help='seconds to wait after the stack reports ready')
     args = parser.parse_args()
@@ -793,6 +803,18 @@ def main():
     runner.disturb_delay = args.disturb_delay
     if args.teleport:
         runner.teleport(*args.teleport)
+    if args.faults:
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'fault_testing'))
+        from fault_schedule import FaultSchedule
+        runner.faults = FaultSchedule(runner, args.faults)
+        runner.faults.start()
+
+    def save_faults():
+        if runner.faults is not None:
+            Path(args.output).with_suffix('.faults.json').write_text(json.dumps({
+                'log': runner.faults.log, 'safety': runner.faults.safety,
+                'contacts': runner.faults.contacts}, indent=1))
     if args.cancel_first_after and destinations:
         results.append(runner.cancel_after(destinations.pop(0), args.cancel_first_after))
         print('cancelled on purpose at', runner.recorder.pose, flush=True)
@@ -804,8 +826,11 @@ def main():
         off = str(index + 1) in [v.strip() for v in args.refinement_off_legs.split(',') if v.strip()]
         if args.refinement_off_legs:
             set_refinement(off)
+        if runner.faults is not None:
+            runner.faults.begin_leg(index + 1)
         result = runner.mission(destination)
         result['refinement_switched_off'] = off
+        save_faults()
         results.append(result)
         Path(args.output).write_text(json.dumps(results, indent=1))
         # The requirement is judged on the true pose: 10 mm from the centre.
@@ -821,8 +846,11 @@ def main():
                   f"{nav['steer_reversals_per_10m']:.1f} steering reversals / 10 m, "
                   f"{nav['yaw_rate_flips_per_10m']:.1f} yaw flips / 10 m over "
                   f"{nav['moving_m']:.0f} m", flush=True)
-        if result['outcome'] != 'SUCCESS':
+        if result['outcome'] != 'SUCCESS' and not args.keep_going:
             break
+    if runner.faults is not None:
+        runner.faults.finish()
+        save_faults()
     runner.bridge.destroy_node()
     runner.recorder.destroy_node()
     rclpy.shutdown()

@@ -1,0 +1,138 @@
+{
+ "setup": [
+  {
+   "note": "stale map: pallets and carts left along the racks, two racks moved"
+  },
+  {
+   "spawn": "pallet_1",
+   "size": [
+    1.2,
+    0.8,
+    1.0
+   ],
+   "at": [
+    -12.0,
+    -4.15
+   ],
+   "color": [
+    0.62,
+    0.45,
+    0.25
+   ]
+  },
+  {
+   "spawn": "pallet_2",
+   "size": [
+    1.2,
+    0.8,
+    0.144
+   ],
+   "at": [
+    -1.0,
+    4.15
+   ],
+   "color": [
+    0.62,
+    0.45,
+    0.25
+   ]
+  },
+  {
+   "spawn": "pallet_3",
+   "size": [
+    1.2,
+    0.8,
+    1.2
+   ],
+   "at": [
+    10.0,
+    -4.15
+   ],
+   "color": [
+    0.62,
+    0.45,
+    0.25
+   ]
+  },
+  {
+   "spawn": "pallet_4",
+   "size": [
+    1.2,
+    0.8,
+    0.144
+   ],
+   "at": [
+    7.0,
+    4.15
+   ],
+   "color": [
+    0.62,
+    0.45,
+    0.25
+   ]
+  },
+  {
+   "spawn": "cart_6",
+   "size": [
+    1.0,
+    0.5,
+    0.9
+   ],
+   "at": [
+    10.0,
+    8.3
+   ],
+   "color": [
+    0.3,
+    0.3,
+    0.35
+   ]
+  },
+  {
+   "move": "forbidden_zone_compact_rack_1_1",
+   "to": [
+    -12.0,
+    -5.2,
+    0.0
+   ],
+   "z": 0.75
+  },
+  {
+   "move": "forbidden_zone_compact_rack_2_6",
+   "to": [
+    7.3,
+    5.0,
+    0.0
+   ],
+   "z": 0.75
+  },
+  {
+   "note": "robot pushed 0.6 m and turned 10 deg while idle at HOME"
+  },
+  {
+   "push": [
+    0.6,
+    -0.3,
+    0.17453292519943295
+   ]
+  }
+ ],
+ "events": [
+  {
+   "leg": 5,
+   "after_s": 0,
+   "do": [
+    {
+     "note": "robot pushed 0.8 m out of S4 after the drop-off"
+    },
+    {
+     "push": [
+      0.0,
+      0.8,
+      0.0
+     ]
+    }
+   ]
+  }
+ ]
+}

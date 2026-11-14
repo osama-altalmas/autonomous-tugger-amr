@@ -1,0 +1,98 @@
+{
+ "setup": [
+  {
+   "note": "robot pushed 0.6 m and turned 10 deg while idle at HOME"
+  },
+  {
+   "push": [
+    0.6,
+    -0.3,
+    0.17453292519943295
+   ]
+  },
+  {
+   "note": "S4 station nudged 4 cm and turned 1.5 deg"
+  },
+  {
+   "move": "cargo_dropoff_southeast_legs",
+   "to": [
+    17.54,
+    -7.0,
+    0.026179938779914945
+   ]
+  }
+ ],
+ "events": [
+  {
+   "leg": 1,
+   "owner": "NAV",
+   "after_s": 20,
+   "do": [
+    {
+     "note": "rear-right scanner stops sending"
+    },
+    {
+     "relay": {
+      "target": "rear_right",
+      "mode": "silent"
+     }
+    }
+   ]
+  },
+  {
+   "leg": 1,
+   "after_event": 0,
+   "after_s": 10,
+   "do": [
+    {
+     "note": "rear-right scanner back"
+    },
+    {
+     "relay": {
+      "target": "rear_right",
+      "mode": "none"
+     }
+    }
+   ]
+  },
+  {
+   "leg": 2,
+   "owner": "NAV",
+   "after_s": 20,
+   "do": [
+    {
+     "note": "localization program crashes"
+    },
+    {
+     "kill": "refined_localization"
+    }
+   ]
+  },
+  {
+   "leg": 2,
+   "after_event": 2,
+   "after_s": 30,
+   "do": [
+    {
+     "start": "refined_localization"
+    }
+   ]
+  },
+  {
+   "leg": 3,
+   "after_s": 0,
+   "do": [
+    {
+     "note": "robot pushed 0.8 m out of S4 after the drop-off"
+    },
+    {
+     "push": [
+      0.0,
+      0.8,
+      0.0
+     ]
+    }
+   ]
+  }
+ ]
+}
