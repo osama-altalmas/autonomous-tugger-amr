@@ -1518,6 +1518,16 @@ class OperatorBridge(Node):
             (self._qr_heading_stamp, self._qr_heading_angle)]
         qr_now = circular_median([a for _, a in recent])
         if self._qr_heading_reference is None:
+            # Take the reference only while the robot stands still. The camera
+            # stage often starts while the coarse approach is still rolling to
+            # a stop (50 of 88 stages, 1-7 mm); the QR yaw seen during those
+            # last millimetres differed by 5.3 degrees from the yaw seen once
+            # stopped, so a reference taken then made every later reading
+            # disagree and held the robot for good (HOME, 2026-11-14).
+            if not self._alignment_is_stationary(self.get_clock().now()):
+                self._qr_reference_samples = []
+                self._qr_heading_detail = 'waiting for the robot to stop before the QR yaw reference'
+                return False
             samples = getattr(self, '_qr_reference_samples', [])
             samples.append((qr_now, pose[2]))
             self._qr_reference_samples = samples

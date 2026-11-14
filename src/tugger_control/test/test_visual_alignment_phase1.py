@@ -148,15 +148,19 @@ def test_circular_median_ignores_one_outlier_and_wraps():
     assert abs(abs(circular_median(near_pi)) - math.pi) < 0.02
 
 
-def _heading_gate(qr_angles, map_yaw=3.1):
+def _heading_gate(qr_angles, map_yaw=3.1, stationary=None):
     """Feed QR yaw readings (one per image) to the bridge's heading check."""
     from types import SimpleNamespace
     from tugger_control.operator_panel import OperatorBridge
+    moving = [False]
     gate = SimpleNamespace(_qr_heading_reference=None, _qr_reference_samples=[],
                            _qr_heading_recent=[], _qr_heading_angle=None,
-                           _qr_heading_stamp=None)
+                           _qr_heading_stamp=None,
+                           get_clock=lambda: SimpleNamespace(now=lambda: None),
+                           _alignment_is_stationary=lambda now: not moving[0])
     results = []
     for i, angle in enumerate(qr_angles):
+        moving[0] = stationary is not None and not stationary[i]
         stamp = 10.0 + 0.1 * i
         gate._qr_heading_angle, gate._qr_heading_stamp = angle, stamp
         gate._qr_heading_recent = ([(t, a) for t, a in gate._qr_heading_recent
@@ -182,3 +186,18 @@ def test_a_lasting_qr_disagreement_still_holds():
     import math
     readings = [0.5] * 8 + [0.5 + math.radians(14)] * 5
     assert not all(_heading_gate(readings)[-3:])
+
+
+def test_qr_yaw_reference_waits_until_the_robot_stands_still():
+    import math
+    # Rolling to a stop the QR read 5.3 degrees off; once stopped it reads 0.5.
+    rolling = 0.5 - math.radians(5.3)
+    readings = [rolling] * 6 + [0.5] * 12
+    still = [False] * 6 + [True] * 12
+    results = _heading_gate(readings, stationary=still)
+    assert not any(results[:6])          # held (zero speed) until stopped
+    assert all(results[-6:])             # reference from the stopped view agrees
+    # Without the wait, that reference would hold the robot for good.
+    from tugger_control.visual_heading_gate import relative_qr_heading_consistent
+    assert not relative_qr_heading_consistent(0.5, rolling, 3.1, 3.1)
+
