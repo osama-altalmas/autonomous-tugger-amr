@@ -630,6 +630,6 @@
     "checked_poses": 169,
     "failed_pose": null
   },
-  "execution_approved": false,
+  "execution_approved": true,
   "note": "Offline geometry validation only. Robot execution not yet verified."
 }

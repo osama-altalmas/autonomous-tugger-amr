@@ -4,7 +4,7 @@
   "source_sha256": {
     "world": "a90239c1a87eca77e58a981ac5e5a5cabd7c738a39adc27e3c2335bd21f64db3",
     "robot": "9c55b2964ec1642e1abbd9fa02cf20dc7083187d18c9e2aab673dae81d33676b",
-    "database": "d3a07be79d789047026630460a074456bff89f3ae34f13e207f3ed702f0470f6"
+    "database": "89831e41d95fecdbd57e0ff0ed8289c53afefca0d8a821f9469a8b27ccdc20fe"
   },
   "candidates": {
     "cargo_dropoff_northwest__east": {
