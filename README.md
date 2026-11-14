@@ -15,8 +15,8 @@ delivers the cargo, and reacts to unexpected obstacles. No physical robot exists
 
 | Area | State |
 |---|---|
-| Route driving, docking, lift, cargo delivery, return to HOME | Working in simulation. About 1-2 cm rms from the path, 3-5 cm at worst; docking within 10 mm |
-| Laser localization (AMCL) with floor-marker correction | Working in simulation |
+| Route driving, docking, lift, cargo delivery, return to HOME | Working in simulation. About 0.5-0.7 cm rms from the path, under 2 cm at worst; docking within 10 mm |
+| Laser localization: AMCL refined by a scan-to-map match, floor-marker correction at stations | Working in simulation, about 0.5 cm and 0.07° rms |
 | Safety: protective and warning fields, E-stops, bumper, stale-sensor stop | Working in simulation |
 | Turn in place (optional checkbox) and crab motion at the docking camera stage | Working in simulation |
 | Obstacle handling | First version. Static objects, blocked aisles and station blocks tested at fixed positions. A person pacing for a long time is not proven end to end |
@@ -110,7 +110,7 @@ The route follower's control law has its own C++ tests (after a build):
 | Body | 0.90 × 0.60 m, wheelbase 0.58 m, track 0.44 m, wheel radius 0.055 m |
 | Cargo plate | 1.3 × 1.3 m, lifted about 10 cm |
 | Drive | Four wheels, each steered and driven |
-| Motion modes | Car-like (counter-phase 4WS), turn in place (54°), crab (camera stage only) |
+| Motion modes | Car-like (counter-phase 4WS with Ackermann angles, tightest radius 0.51 m), turn in place (54°), crab (camera stage only) |
 | Laser scanners | Two, at (0.41, 0.26) and (−0.41, −0.26) m, 275° each, merged into `/scan` |
 | Depth cameras | Front and rear |
 | Other sensors | IMU, wheel odometry, downward QR camera, top cargo QR camera, bumper |
@@ -155,10 +155,17 @@ stops and the end-of-path slow-down. Steering is the path's own curvature plus a
 correction for sideways and heading error: gentle on straights (like a 1.2 m
 look-ahead), firm near and in curves (like 0.6 m). The robot slows to the 0.6 m/s
 curve speed before a curve, planned from the path. Pure pursuit alone cut route
-corners by 10-17 cm.
+corners by 10-17 cm. Route corners are exact circular arcs, so the steering holds
+one angle through each corner.
 
-**Localization:** wheel odometry + IMU (EKF) → AMCL on the merged scan → corrected
-by floor markers at stations. Ground truth from Gazebo is used only to score tests;
+**Steering:** counter-phase Ackermann. Front and rear axles steer opposite ways and
+every wheel points around one turning centre, so no wheel slides sideways in a
+curve. The inner wheel's 45° limit sets the tightest turn (0.51 m radius);
+`src/tugger_control/tugger_control/steering_geometry.py` holds that limit for
+every module, and a test checks `nav2.yaml` and the C++ defaults against it.
+
+**Localization:** wheel odometry + IMU (EKF) → AMCL on the merged scan → sharpened by
+a scan-to-map match (`refined_localization`) → corrected by floor markers at stations. Ground truth from Gazebo is used only to score tests;
 the robot never reads it.
 - `scan_merger` bins the two scanners into 0.5° slices published at each slice's
   centre (publishing the slice edge turned the scan and biased AMCL's heading by 0.3°).
@@ -169,7 +176,15 @@ the robot never reads it.
   marker fix. When the robot leaves, `marker_localization` re-seeds AMCL at the
   current pose before resuming, so the whole departure is not applied as one step
   (that jumped the pose by up to 37 cm).
-- Result in simulation: 1.5-2 cm rms, under 5 cm at worst.
+- `refined_localization` publishes `map -> odom` (AMCL's `tf_broadcast` is off).
+  After every AMCL update it fits both raw scans to the localization map, starting
+  from AMCL's pose. A good fit (enough points on walls, small residual, within
+  15 cm and 3° of AMCL) replaces AMCL's pose; otherwise AMCL's is used. Directions
+  the scan cannot pin down (a featureless corridor) keep AMCL's value. It pauses in
+  station zones. Its decisions are on `/tugger/localization/refinement`.
+- Result in simulation: AMCL alone 2-3 cm; refined 0.5 cm rms and 0.07° heading.
+- RViz view of the route, the true and estimated tracks and every correction:
+  `tools/mission_view/tracking_view.sh` (T7 in TERMINAL_COMMANDS.md).
 
 **Safety (`safety_monitor`, independent of mission logic):** at 1 m/s the protective
 field reaches 0.84 m ahead and the warning field 2.34 m. Protective stops, warning
@@ -199,13 +214,14 @@ not on the map are tracked up to 6 m ahead and classed as stationary or moving.
 | `tools/mission_approaches` | Generated station gate approaches |
 | `tools/warehouse_validation` | Builds the planning and localization maps from the world file |
 | `tools/mission_validation` | Headless stack, mission runner, repeat-run campaign |
-| `tools/mission_view` | Camera windows, follow view, test obstacle placement |
+| `tools/mission_view` | Camera windows, follow view, RViz tracking view, test obstacle placement |
 | `tools/rrt_star_tests` | C++ tests for the planner |
 
 Nodes in `src/tugger_control/tugger_control/` (all started by `control.launch.py`):
 `four_ws_controller`, `four_ws_odometry`, `sim_motion_gate`, `safety_monitor`,
 `scan_merger`, `obstacle_monitor`, `marker_localization`, `qr_docking_vision`,
-`docking_precision_controller`, `cargo_estimator`, `cargo_id_reader`. The other
+`docking_precision_controller`, `cargo_estimator`, `cargo_id_reader`.
+`refined_localization` is started with AMCL by `tugger_navigation/localization.launch.py`. The other
 files there are libraries. `operator_panel.py` is the mission engine and rqt panel.
 
 `nav2_v1_static_planning.launch.py`, `nav2_v1_static.yaml`, `slam.launch.py` and the
@@ -218,6 +234,8 @@ files there are libraries. `operator_panel.py` is the mission engine and rqt pan
 | Route speed, look-ahead, arrival tolerance | `src/tugger_navigation/config/nav2.yaml` |
 | Route follower steering and curve speed (`tracking_*`, `curve_speed*`) | `FollowPath` in `src/tugger_navigation/config/nav2.yaml`; law in `src/tugger_navigation/include/tugger_navigation/path_tracking_law.hpp` |
 | Localization noise model | `src/tugger_navigation/config/amcl.yaml` |
+| Scan-match acceptance limits | `src/tugger_control/tugger_control/scan_refinement.py` |
+| Turning limit (wheel angle, tightest radius) | `src/tugger_control/tugger_control/steering_geometry.py` |
 | Station zones, marker corrections, re-seed on departure | `src/tugger_control/tugger_control/marker_localization.py` |
 | Route shape (grid search, corner rounding, staging distance) | `tools/v1_manhattan_bezier/build_route_database_v1.py`, `plan_routes.py`, then `tools/regenerate_paths_from_world.sh` |
 | Robot speed, acceleration limits | `src/tugger_control/config/sim_speed.yaml` |
@@ -263,24 +281,23 @@ After a config or C++ change, rebuild and restart the affected terminals.
 - Test obstacles are at fixed positions.
 - Obstacle positions are not remembered, so a replan avoids only where an object is now.
 - A bumper hit needs a manual reset, and there is no reverse recovery.
-- Each route corner is a Bézier curve whose steering rises, dips and rises again
-  (about 21° → 12° → 23°): a visible wobble of the wheels. Constant-radius corners
-  are planned.
-- Steering gives both wheels on an axle the same angle (not Ackermann), so the
-  wheels slip sideways in curves; with cargo the estimate can drift several cm in
-  a corner until AMCL corrects it.
-- AMCL can still wander 2-3 cm on some straights.
+- AMCL alone sits 2-3 cm off, with a map-dependent offset of about 2 cm. The scan
+  match removes it, but whenever a fit is refused the robot uses AMCL's pose for
+  that update.
+- Rare camera-stage holds: one HOME dock held 200 s on a stale QR heading (cause
+  not yet known; the hold message now names it).
+- The cargo height-clearance guard reads Gazebo's exact geometry; a real robot
+  needs that from its own sensors.
 - Motor overload and per-wheel load are not modelled.
 
 ## Planned
 
-1. Constant-radius route corners (steady steering instead of the 21° → 12° → 23° wobble).
-2. Ackermann steering: each wheel at its own angle, so no sideways slip in curves,
-   with odometry from all four wheels.
-3. AI: YOLO perception to classify objects, reinforcement learning as a small,
-   bounded correction on top of the path follower.
-4. A headless mission node before moving to hardware; a differential-drive
-   variant on its own branch.
+1. A better localization fallback: remove AMCL's own offset and keep AMCL close
+   to the refined pose, so a refused fit costs little.
+2. Fault testing: reflections, glass, worn markers, moved pallets, sensor dropouts.
+3. Then a new branch for the differential-drive variant and AI (YOLO perception,
+   reinforcement learning as a small, bounded correction on the path follower).
+4. A headless mission node before moving to hardware.
 
 ## License
 
