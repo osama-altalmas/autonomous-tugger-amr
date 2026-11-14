@@ -27,6 +27,7 @@ from nav_msgs.msg import OccupancyGrid
 from rcl_interfaces.msg import ParameterEvent
 from rcl_interfaces.srv import GetParameters
 from rclpy.duration import Duration
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
@@ -195,7 +196,10 @@ class RefinedLocalization(Node):
         p = msg.pose.pose
         amcl = (p.position.x, p.position.y, _yaw(p.orientation))
         prior = sr.compose(amcl, sr.inverse(robot_odom))   # AMCL's map -> odom
-        status = {'stamp': _stamp(msg.header), 'used': 'amcl'}
+        # AMCL's robot pose and, after a fit, the refined one (for the RViz
+        # correction view in tools/mission_view/localization_view.py).
+        status = {'stamp': _stamp(msg.header), 'used': 'amcl',
+                  'amcl': [round(v, 4) for v in amcl]}
         result = None
         if self._suspended:
             status['reason'] = 'station zone'
@@ -212,7 +216,9 @@ class RefinedLocalization(Node):
                               rms_cm=round(result.rms_m * 100, 2),
                               shift_cm=round(result.shift_m * 100, 2),
                               turn_deg=round(math.degrees(result.turn_rad), 3),
-                              constrained=result.constrained)
+                              constrained=result.constrained,
+                              refined=[round(v, 4) for v in
+                                       sr.compose(result.transform, robot_odom)])
                 if result.accepted:
                     status['used'] = 'refined'
         self._map_odom = result.transform if result is not None and result.accepted else prior
@@ -249,11 +255,11 @@ def main(args=None):
     node = RefinedLocalization()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
 
 
 if __name__ == '__main__':
