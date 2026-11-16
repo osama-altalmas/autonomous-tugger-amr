@@ -3,7 +3,9 @@
 Simulation of an autonomous four-wheel-steered (4WS) warehouse tugger, built on
 ROS 2 Lyrical, Gazebo Sim 10 and Nav2. It drives generated routes between
 stations, docks under cargo on floor markers to a 10 mm / 1° target, lifts and
-delivers the cargo, and reacts to unexpected obstacles. No physical robot exists yet.
+delivers the cargo, and reacts to unexpected obstacles. It has been tested against
+realistic warehouse faults (sensors, markers, moved racks, people, worn tyres), and
+this branch is the finished four-wheel-steered version. No physical robot exists yet.
 
 > **For AI assistants and new readers:** this file is written so you can install,
 > run and explain the project without reading the source. Use
@@ -16,11 +18,13 @@ delivers the cargo, and reacts to unexpected obstacles. No physical robot exists
 | Area | State |
 |---|---|
 | Route driving, docking, lift, cargo delivery, return to HOME | Working in simulation. About 0.5-0.7 cm rms from the path, under 2 cm at worst; docking within 10 mm |
-| Laser localization: AMCL refined by a scan-to-map match, floor-marker correction at stations | Working in simulation, about 0.5 cm and 0.07° rms |
-| Safety: protective and warning fields, E-stops, bumper, stale-sensor stop | Working in simulation |
+| Laser localization: AMCL refined by a scan-to-map match, floor-marker correction at stations | Working in simulation, about 0.5 cm and 0.07° rms; AMCL kept near the refined pose as a backup (about 2 cm when used alone) |
+| Localization checks: integrity check with relocalization, lost state, odometry scale calibration | Working in simulation |
+| Safety: protective and warning fields, E-stops, bumper, stale-sensor stop, blind-scanner check | Working in simulation |
 | Turn in place (optional checkbox) and crab motion at the docking camera stage | Working in simulation |
-| Obstacle handling | First version. Static objects, blocked aisles and station blocks tested at fixed positions. A person pacing for a long time is not proven end to end |
-| AI (YOLO perception, reinforcement learning) | Planned, nothing implemented |
+| Obstacle handling | Working in simulation: standing objects, blocked aisles, station blocks, people walking across the route |
+| Fault testing (simulation) | Done (2026-11-14): no collision, no wrong dock and no silent stop in any scenario. See [Fault testing](#fault-testing) |
+| AI (perception, reinforcement learning), differential drive | Not on this branch; planned on separate branches |
 | Real hardware | None. Safety values follow ISO 3691-4 practice but are not certified |
 
 ## Requirements
@@ -115,7 +119,9 @@ The route follower's control law has its own C++ tests (after a build):
 | Depth cameras | Front and rear |
 | Other sensors | IMU, wheel odometry, downward QR camera, top cargo QR camera, bumper |
 
-Sensors have simulated noise only; faults such as glass or worn markers are not modelled.
+Sensors have simulated noise. For tests, realistic faults can be switched on
+(dirty or covered scanner windows, reflections, IMU drift, worn tyres, worn
+markers); see [Fault testing](#fault-testing).
 
 | Name in panel | Name in code | Position (x, y) |
 |---|---|---|
@@ -182,24 +188,77 @@ the robot never reads it.
   15 cm and 3° of AMCL) replaces AMCL's pose; otherwise AMCL's is used. Directions
   the scan cannot pin down (a featureless corridor) keep AMCL's value. It pauses in
   station zones. Its decisions are on `/tugger/localization/refinement`.
-- Result in simulation: AMCL alone 2-3 cm; refined 0.5 cm rms and 0.07° heading.
+- A fit far from AMCL is still used when it continues the refined pose of a moment
+  ago (AMCL drifted, the robot did not jump). In an aisle, where the scan pins only
+  the cross-aisle position and heading, only those are corrected.
+- Backup: AMCL is the fallback whenever a fit is refused. After 10 good fits in a
+  row it is re-seeded at the refined pose when it is more than 3 cm or 0.5° away (at
+  most every 5 s, never at a station), and AMCL reads a half-cell-shifted copy of the
+  map that removes its own offset. If AMCL and the scan match disagree by more than
+  10 cm or 3° for 3 s, the panel shows a warning.
+- Odometry calibration: the distance between good fits, measured by the scan match,
+  corrects the wheel odometry's scale (worn or compressed tyres; a 2% error put the
+  robot 5.5 cm off at a camera stage). Limits 0.95-1.05; a correction over 3% is reported.
+- Integrity check, once a second, also at stations: the current scan is scored
+  against the map. Three poor scores in a row start a search around the pose; a
+  clearly better pose is taken over (relocalized, e.g. after the robot was pushed by
+  hand). If none is found the robot is **lost**: motion stops and RUN is refused until
+  the pose is known again.
+- Result in simulation: AMCL alone 2-3 cm; refined 0.5 cm rms and 0.07° heading;
+  with every fit refused (AMCL backup only) about 2 cm, tracking 1.2-1.3 cm, docks 5-7 mm.
 - RViz view of the route, the true and estimated tracks and every correction:
   `tools/mission_view/tracking_view.sh` (T7 in TERMINAL_COMMANDS.md).
 
 **Safety (`safety_monitor`, independent of mission logic):** at 1 m/s the protective
 field reaches 0.84 m ahead and the warning field 2.34 m. Protective stops, warning
 slows to 0.3 m/s. E-stops and bumper latch until **Reset safety**. A lost or stale sensor stops the robot.
+A scanner whose window is covered or blinded (no return over 60° that stays while the
+robot drives 1.5 m) also stops it, with a message naming the scanner.
 
 **Obstacles (`obstacle_monitor` + `obstacle_policy`, separate from safety):** objects
-not on the map are tracked up to 6 m ahead and classed as stationary or moving.
+not on the map are tracked up to 6 m ahead, judged by their outline (not a circle
+around them) and classed as stationary or moving. Gaps are measured from the robot's
+side, or from the cargo's edge when loaded.
 
 | Situation | Reaction |
 |---|---|
 | Object does not interfere with the path | Continue |
-| Stationary object in the way, room to pass | Wait 5 s, then detour at normal route speed with a 0.5 m gap (from the cargo edge when loaded), rejoin the route |
+| Standing object 15-50 cm from the path's edge | Pass slowly at 0.3 m/s |
+| Standing object closer than 15 cm (in the way), room to pass | Wait 5 s, then detour at normal route speed with a 0.5 m gap, rejoin the route |
 | No room to pass | Take another aisle through the route network |
-| Moving object | Stop and wait; after 30 s look for another path |
+| Neither a detour nor another aisle | Wait on the path until it clears; a re-plan that finds nothing is reported as **MISSION STOPPED** |
+| Moving object (a person) | Keep 50 cm; stop and wait; after 30 s look for another path |
 | Interfering object at a station | Hold and alert until it is gone |
+
+**Floor markers:** a marker that cannot be read (worn, covered) or a red frame that
+cannot be found is refused with a panel message naming it; the robot does not dock
+blind, and backs out of the station on the next mission.
+
+## Fault testing
+
+Done in simulation on 2026-11-14 (`tools/fault_testing/`), with faults chosen from
+what real warehouse robots run into. Pass meant: the robot either keeps working
+within limits or stops safely with a clear panel message; never a collision, a wrong
+dock or a silent stop. Every scenario passed after eight fixes to the robot code.
+
+| Fault | Result (after the fixes) |
+|---|---|
+| Cart standing beside the path | Passed: objects are judged by their outline, not a circle around them |
+| Rack moved 20 cm (stale map) | Localization within 2 cm (AMCL re-centred in aisles too), docked at 5.2 mm; before the fix it drifted 18 cm |
+| Person standing in the aisle; people crossing or stepping out | Waits on the path and continues by itself; no change was needed for crossing people |
+| No route left after a re-plan | Panel reports **MISSION STOPPED** with the reason (before: silent) |
+| Film on a scanner window (120° blind) | Protective stop, "window dirty or covered?" |
+| Heavy reflections, gyro drift 15°/h, slippery floor patch | Handled with no change |
+| Wheels 2% smaller (worn tyres) | Odometry scale measured as 0.981 (true 0.980), HOME docked at 5.7 mm; before: 5.5 cm off |
+| Worn floor QR | Panel says the QR cannot be read and should be cleaned or replaced; the robot backs out of the station |
+| Stations nudged 3-4 cm | Docked within 5.9 mm |
+| Robot pushed 67 cm and 80 cm by hand | Found its true position within about 5 s; if nothing fits clearly, **LOCALIZATION LOST** and RUN is refused |
+| Scanner goes silent; localization program crashes | Protective stop and restart; panel says **LOCALIZATION STOPPED** |
+
+Scenario files: `tools/fault_testing/schedules/`; how to run one:
+`tools/fault_testing/README.md`. The simulation launch takes `sensor_faults:=true`
+(scanners and IMU pass through the fault relay) and `sim_wheel_radius:=` (worn tyres);
+without them the simulation is unchanged.
 
 ## Repository map
 
@@ -215,6 +274,7 @@ not on the map are tracked up to 6 m ahead and classed as stationary or moving.
 | `tools/warehouse_validation` | Builds the planning and localization maps from the world file |
 | `tools/mission_validation` | Headless stack, mission runner, repeat-run campaign |
 | `tools/mission_view` | Camera windows, follow view, RViz tracking view, test obstacle placement |
+| `tools/fault_testing` | Fault relay, timed fault scenarios, the campaign's scenario files |
 | `tools/rrt_star_tests` | C++ tests for the planner |
 
 Nodes in `src/tugger_control/tugger_control/` (all started by `control.launch.py`):
@@ -246,6 +306,10 @@ files there are libraries. `operator_panel.py` is the mission engine and rqt pan
 | Robot geometry and sensor placement | `src/tugger_description/urdf/tugger.urdf.xacro` |
 | Warehouse or stations | `src/tugger_gazebo/worlds/tugger_warehouse.sdf`, then run `tools/regenerate_paths_from_world.sh` |
 | Test obstacles | `tools/mission_view/scene_objects.py` (`block`, `box`, `cross`, `pace`, `clear`) |
+| Slow-pass gap and speed, moving-object gap | `GAP_ROUTE_MIN_M`, `SLOW_PASS_SPEED_M_S`, `GAP_ROUTE_M` in `obstacle_policy.py` |
+| AMCL re-centre, integrity check, odometry calibration | Constants at the top of `src/tugger_control/tugger_control/refined_localization.py` |
+| Blind-scanner check | `BLIND_SECTOR_DEG`, `BLIND_TRAVEL_M` in `safety_monitor.py` |
+| Fault scenarios | `tools/fault_testing/schedules/*.json` |
 
 After a config or C++ change, rebuild and restart the affected terminals.
 
@@ -278,27 +342,29 @@ After a config or C++ change, rebuild and restart the affected terminals.
 
 - Simulation only.
 - Obstacle logic does not see objects sitting above the scanner plane.
-- Test obstacles are at fixed positions.
 - Obstacle positions are not remembered, so a replan avoids only where an object is now.
 - A bumper hit needs a manual reset, and there is no reverse recovery.
-- AMCL alone sits 2-3 cm off, with a map-dependent offset of about 2 cm. The scan
-  match removes it, but whenever a fit is refused the robot uses AMCL's pose for
-  that update.
-- Rare camera-stage holds: one HOME dock held 200 s on a stale QR heading (cause
-  not yet known; the hold message now names it).
+- The slow-pass speed (0.3 m/s) is an assumption, not a standard value.
+- A worn or covered floor marker cannot be read by the classic QR decoding; the
+  robot refuses the dock safely, but cannot dock there until the marker is cleaned.
+- After a fault that leaves the robot off its route, it does not plan its own way
+  back; the operator restarts the mission.
+- AMCL alone sits about 2 cm off; it is used only for updates where the scan match
+  is refused.
 - The cargo height-clearance guard reads Gazebo's exact geometry; a real robot
   needs that from its own sensors.
 - Motor overload and per-wheel load are not modelled.
 
 ## Planned
 
-1. A better localization fallback: remove AMCL's own offset and keep AMCL close
-   to the refined pose, so a refused fit costs little.
-2. Fault testing: reflections, glass, worn markers, moved pallets, sensor dropouts.
-3. Then a new branch for the differential-drive variant and AI (YOLO perception,
-   reinforcement learning as a small, bounded correction on the path follower).
-4. A headless mission node before moving to hardware.
+Done on this branch: the localization backup and fault testing. Next, each on its own
+branch so this 4WS version stays as it is:
+
+1. AI: learned perception (reading worn floor markers, recognizing obstacle types)
+   and reinforcement learning as a small, bounded correction.
+2. A differential-drive variant of the robot.
+3. A headless mission node before moving to hardware.
 
 ## License
 
-No license has been chosen yet.
+Apache License 2.0; see [LICENSE](LICENSE). Every package in `src/` declares the same.
