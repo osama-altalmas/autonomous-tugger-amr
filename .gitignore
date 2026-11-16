@@ -74,3 +74,19 @@ tools/v1_manhattan_bezier/phase14/routes_refined/phase14f_*.json
 /.aws/
 /.codex/
 /tools/warehouse_validation/results/
+# AI data stays local (datasets, zips, models); only the record and its
+# small charts and result summaries are published.
+/ai_data/**
+!/ai_data/**/
+!/ai_data/PROCESS.md
+!/ai_data/*.png
+!/ai_data/iteration*/*.png
+!/ai_data/iteration*/previews/*.png
+!/ai_data/*/previews/*.png
+!/ai_data/lighting/*.png
+/ai_data/lighting/led_ring_layout.png
+!/ai_data/models/*/markers_pose/*.png
+!/ai_data/models/*/markers_pose/summary.json
+!/ai_data/models/*/training/markers_v*/*.png
+!/ai_data/models/*/eval/report.json
+!/ai_data/models/*/heldout_test/summary.json

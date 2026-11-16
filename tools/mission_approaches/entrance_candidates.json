@@ -2,8 +2,8 @@
   "schema": "mission_entrance_candidates_v1",
   "execution_approved": true,
   "source_sha256": {
-    "world": "a90239c1a87eca77e58a981ac5e5a5cabd7c738a39adc27e3c2335bd21f64db3",
-    "robot": "9c55b2964ec1642e1abbd9fa02cf20dc7083187d18c9e2aab673dae81d33676b",
+    "world": "9eb63a0c2bd71a8cfe11d0bb62db4bc17c2daa54ba62c172a993269da2563f3c",
+    "robot": "3c4d84dd7ac07c6c0c648bc699e3ce096f5470f62d1b800c0b11961bd1e761df",
     "database": "89831e41d95fecdbd57e0ff0ed8289c53afefca0d8a821f9469a8b27ccdc20fe"
   },
   "candidates": {

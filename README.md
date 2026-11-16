@@ -4,8 +4,12 @@ Simulation of an autonomous four-wheel-steered (4WS) warehouse tugger, built on
 ROS 2 Lyrical, Gazebo Sim 10 and Nav2. It drives generated routes between
 stations, docks under cargo on floor markers to a 10 mm / 1° target, lifts and
 delivers the cargo, and reacts to unexpected obstacles. It has been tested against
-realistic warehouse faults (sensors, markers, moved racks, people, worn tyres), and
-this branch is the finished four-wheel-steered version. No physical robot exists yet.
+realistic warehouse faults (sensors, markers, moved racks, people, worn tyres).
+
+**This branch, AMR-V3,** is the finished 4WS version (branch `main`) plus AI. Done so
+far: a learned floor-marker reader (YOLO11n-pose) that also reads worn and dirty
+markers and docks with them. Next: obstacle recognition, then reinforcement learning.
+No physical robot exists yet.
 
 > **For AI assistants and new readers:** this file is written so you can install,
 > run and explain the project without reading the source. Use
@@ -24,7 +28,9 @@ this branch is the finished four-wheel-steered version. No physical robot exists
 | Turn in place (optional checkbox) and crab motion at the docking camera stage | Working in simulation |
 | Obstacle handling | Working in simulation: standing objects, blocked aisles, station blocks, people walking across the route |
 | Fault testing (simulation) | Done (2026-11-14): no collision, no wrong dock and no silent stop in any scenario. See [Fault testing](#fault-testing) |
-| AI (perception, reinforcement learning), differential drive | Not on this branch; planned on separate branches |
+| AI floor-marker reader (YOLO11n-pose + tag decoding + red-frame fit), LED ring light | Working in simulation and used for docking: 82 % of damaged test markers read (classic reader 59 %), never a wrong station, docks 1.2-6.6 mm. See [Floor-marker reader (AI)](#floor-marker-reader-ai) |
+| AI obstacle recognition, reinforcement learning | Next on this branch |
+| Differential drive | Planned on its own branch, made from this one |
 | Real hardware | None. Safety values follow ISO 3691-4 practice but are not certified |
 
 ## Requirements
@@ -49,8 +55,10 @@ sudo apt install \
   python3-yaml python3-matplotlib python3-pil python3-pytest nlohmann-json3-dev
 ```
 
-There are no pip requirements. The Gazebo Python bindings come from the ROS
-vendor packages and are importable only after sourcing ROS.
+There are no pip requirements to run the robot: the marker model runs on the CPU
+with OpenCV's DNN module. Training needs a GPU and Ultralytics 8.3.40; it runs on
+Google Colab with the notebooks in `tools/ai/marker_dataset/`. The Gazebo Python
+bindings come from the ROS vendor packages and are importable only after sourcing ROS.
 
 `rosdep` cannot resolve two keys in the package files (`nlohmann-json3-dev`,
 `ros-lyrical-gz-msgs-vendor`), so use the list above.
@@ -117,7 +125,7 @@ The route follower's control law has its own C++ tests (after a build):
 | Motion modes | Car-like (counter-phase 4WS with Ackermann angles, tightest radius 0.51 m), turn in place (54°), crab (camera stage only) |
 | Laser scanners | Two, at (0.41, 0.26) and (−0.41, −0.26) m, 275° each, merged into `/scan` |
 | Depth cameras | Front and rear |
-| Other sensors | IMU, wheel odometry, downward QR camera, top cargo QR camera, bumper |
+| Other sensors | IMU, wheel odometry, downward marker camera with a 12-LED ring light, top cargo QR camera, bumper |
 
 Sensors have simulated noise. For tests, realistic faults can be switched on
 (dirty or covered scanner windows, reflections, IMU drift, worn tyres, worn
@@ -143,7 +151,7 @@ markers); see [Fault testing](#fault-testing).
 ## How it works
 
 **A mission:** drive a generated single-segment route → enter the station gate
-at 0.3 m/s → final alignment on the floor QR marker with the downward camera →
+at 0.3 m/s → final alignment on the floor marker with the downward camera →
 lift or lower the cargo → leave by the same gate → continue to the next stop.
 
 **All motion passes through one gate, which fails closed:**
@@ -230,9 +238,55 @@ side, or from the cargo's edge when loaded.
 | Moving object (a person) | Keep 50 cm; stop and wait; after 30 s look for another path |
 | Interfering object at a station | Hold and alert until it is gone |
 
-**Floor markers:** a marker that cannot be read (worn, covered) or a red frame that
-cannot be found is refused with a panel message naming it; the robot does not dock
-blind, and backs out of the station on the next mission.
+**Floor markers:** each station has a 12 cm red frame around a white plate with four
+AprilTags (36h11), one per quarter, all naming the station. A marker that cannot be
+read (worn, covered) or a red frame that cannot be measured is refused with a panel
+message naming it; the robot does not dock blind, and backs out of the station on the
+next mission.
+
+### Floor-marker reader (AI)
+
+The downward camera sits about 6 cm above the floor, under the robot and often under
+cargo, where no room light reaches. A ring of 12 LEDs around the lens lights the
+marker the same way at every station (a real robot also needs a brush skirt to keep
+room light out; it is not modelled).
+
+`qr_docking_vision` reads every image in three steps:
+
+1. **Find the marker:** a YOLO11n-pose model (`src/tugger_control/models/marker_reader_v3.onnx`,
+   about 130 ms per image on the laptop CPU) returns the marker, a confidence and 20
+   points: the frame's 4 corners and the 4 corners of each tag, numbered from the
+   image's up-left corner (a square marker looks the same turned by 90°, so the model
+   is asked only what it can see).
+2. **Name the station:** the tags are read through those points; the turn at which
+   each tag sits in its own quarter gives the marker's own orientation. The station
+   is never learnt, so a new station is one line in `STATION_TAG_BASE`
+   (`docking_markers.py`), not a retraining.
+3. **Measure the frame:** the known square is fitted to the visible edge of the red
+   frame (`marker_geometry.py`); two adjacent sides are enough. Fitted frames were
+   within 1.5 px (0.7 mm) of the true frame, median 0.3 px.
+
+The classic OpenCV tag reader runs beside it as a check: if both name a station and
+differ, nothing is published and the robot holds. The model runs only when enough of
+the red frame is in view. The state is published on `/tugger/marker_reader`:
+**OK**; **ALERT** (confidence below 80 %, or only one tag left: clean or replace the
+marker soon); **FAULT** (below 50 %, no tag, wrong station, frame not measurable, or
+the LED light too dark). Set `marker_reader:=classic` on `qr_docking_vision` to dock
+with the classic reader only.
+
+| On 1,514 unseen test images | Classic tags | AI v2 | AI v3 (used) |
+|---|---|---|---|
+| Right station, 401 real markers | 59 % | 47 % | **82 %** |
+| Wrong station | 0 | 11 | **0** |
+| Heavily damaged markers read (94) | 9 | 12 | **42** |
+| Empty floors taken for a marker (50) | 0 | 0 | **0** |
+
+Training data is made in Gazebo (one clean image per robot pose, labelled
+automatically from the tags) and damaged afterwards by augmentation: dust, scratches,
+tape, smears, wiped frame sides, weak or failed LEDs. Training runs on Google Colab
+(`tools/ai/marker_dataset/train_markers_v3_colab.ipynb`).
+The full record of every iteration, mistake and result:
+[ai_data/PROCESS.md](ai_data/PROCESS.md).
 
 ## Fault testing
 
@@ -250,7 +304,7 @@ dock or a silent stop. Every scenario passed after eight fixes to the robot code
 | Film on a scanner window (120° blind) | Protective stop, "window dirty or covered?" |
 | Heavy reflections, gyro drift 15°/h, slippery floor patch | Handled with no change |
 | Wheels 2% smaller (worn tyres) | Odometry scale measured as 0.981 (true 0.980), HOME docked at 5.7 mm; before: 5.5 cm off |
-| Worn floor QR | Panel says the QR cannot be read and should be cleaned or replaced; the robot backs out of the station |
+| Worn floor QR | Panel says the QR cannot be read and should be cleaned or replaced; the robot backs out of the station. (On this branch the AI reader reads most worn markers; see [Floor-marker reader (AI)](#floor-marker-reader-ai)) |
 | Stations nudged 3-4 cm | Docked within 5.9 mm |
 | Robot pushed 67 cm and 80 cm by hand | Found its true position within about 5 s; if nothing fits clearly, **LOCALIZATION LOST** and RUN is refused |
 | Scanner goes silent; localization program crashes | Protective stop and restart; panel says **LOCALIZATION STOPPED** |
@@ -265,8 +319,8 @@ without them the simulation is unchanged.
 | Path | Purpose |
 |---|---|
 | `src/tugger_description` | Robot model (URDF/Xacro, meshes) |
-| `src/tugger_gazebo` | Warehouse world `tugger_warehouse.sdf`, simulation launch, controllers, QR assets, C++ Gazebo plugins |
-| `src/tugger_control` | Python nodes, operator panel, all mission logic, tests |
+| `src/tugger_gazebo` | Warehouse world `tugger_warehouse.sdf`, simulation launch, controllers, marker textures (`media/markers/`), cargo tags, C++ Gazebo plugins |
+| `src/tugger_control` | Python nodes, operator panel, all mission logic, tests; `models/` holds the trained marker model |
 | `src/tugger_navigation` | Nav2 and AMCL configuration, maps, custom RRT* Reeds-Shepp planner plugin, route-following controller plugin |
 | `src/tugger_ground_truth` | True pose from Gazebo, for evaluation only |
 | `tools/v1_manhattan_bezier` | Route generator and the generated routes (`mission_paths/`, `routes/`, `phase14/`) |
@@ -276,6 +330,8 @@ without them the simulation is unchanged.
 | `tools/mission_view` | Camera windows, follow view, RViz tracking view, test obstacle placement |
 | `tools/fault_testing` | Fault relay, timed fault scenarios, the campaign's scenario files |
 | `tools/rrt_star_tests` | C++ tests for the planner |
+| `tools/ai/marker_dataset` | Marker dataset generator (Gazebo), damage augmentation, Colab training notebooks, reader comparison |
+| `ai_data` | AI record `PROCESS.md` with its charts and result summaries (datasets and models stay local, several GB) |
 
 Nodes in `src/tugger_control/tugger_control/` (all started by `control.launch.py`):
 `four_ws_controller`, `four_ws_odometry`, `sim_motion_gate`, `safety_monitor`,
@@ -284,8 +340,8 @@ Nodes in `src/tugger_control/tugger_control/` (all started by `control.launch.py
 `refined_localization` is started with AMCL by `tugger_navigation/localization.launch.py`. The other
 files there are libraries. `operator_panel.py` is the mission engine and rqt panel.
 
-`nav2_v1_static_planning.launch.py`, `nav2_v1_static.yaml`, `slam.launch.py` and the
-`BidirectionalPlanner` plugin are older or optional and are not in the normal startup.
+`slam.launch.py` (mapping a real warehouse) and the `BidirectionalPlanner` plugin are
+optional and are not in the normal startup.
 
 ## Where to change things
 
@@ -310,6 +366,12 @@ files there are libraries. `operator_panel.py` is the mission engine and rqt pan
 | AMCL re-centre, integrity check, odometry calibration | Constants at the top of `src/tugger_control/tugger_control/refined_localization.py` |
 | Blind-scanner check | `BLIND_SECTOR_DEG`, `BLIND_TRAVEL_M` in `safety_monitor.py` |
 | Fault scenarios | `tools/fault_testing/schedules/*.json` |
+| Marker reader: ALERT / FAULT confidence, light limits, camera height | Constants at the top of `src/tugger_control/tugger_control/marker_reader.py` |
+| Frame fit tolerances | `src/tugger_control/tugger_control/marker_geometry.py` |
+| Stations and their tag IDs | `STATION_TAG_BASE` in `src/tugger_control/tugger_control/docking_markers.py` |
+| Docking reader (AI or classic), red-pixel gate | `marker_reader` parameter, `MIN_RED_PIXELS` in `qr_docking_vision.py` |
+| LED ring (number, radius, brightness) | `led_*` properties in `src/tugger_description/urdf/tugger.urdf.xacro` (changing the URDF needs `tools/regenerate_paths_from_world.sh`: the routes check the robot file) |
+| Retrain the marker model | `tools/ai/marker_dataset/` (generate, `augment.py`, Colab notebook), then replace `src/tugger_control/models/marker_reader_v3.onnx` |
 
 After a config or C++ change, rebuild and restart the affected terminals.
 
@@ -345,8 +407,14 @@ After a config or C++ change, rebuild and restart the affected terminals.
 - Obstacle positions are not remembered, so a replan avoids only where an object is now.
 - A bumper hit needs a manual reset, and there is no reverse recovery.
 - The slow-pass speed (0.3 m/s) is an assumption, not a standard value.
-- A worn or covered floor marker cannot be read by the classic QR decoding; the
-  robot refuses the dock safely, but cannot dock there until the marker is cleaned.
+- The AI reader is trained on simulated images only; real camera photos are needed
+  before it can be trusted on a real robot. Heavily damaged markers (about half of
+  the heaviest test damage) are still refused: the robot does not dock there until
+  the marker is cleaned.
+- In the simulated marker the tag plate lies 1 mm above the red frame; the reader
+  takes this into account (camera height measured to the frame, 5.63 cm).
+- Rarely, after setting cargo down at Station 4, the simulated robot stays held in
+  place while its wheels turn (seen once in four runs); not yet investigated.
 - After a fault that leaves the robot off its route, it does not plan its own way
   back; the operator restarts the mission.
 - AMCL alone sits about 2 cm off; it is used only for updates where the scan match
@@ -357,14 +425,19 @@ After a config or C++ change, rebuild and restart the affected terminals.
 
 ## Planned
 
-Done on this branch: the localization backup and fault testing. Next, each on its own
-branch so this 4WS version stays as it is:
+On this branch (AMR-V3), in order:
 
-1. AI: learned perception (reading worn floor markers, recognizing obstacle types)
-   and reinforcement learning as a small, bounded correction.
-2. A differential-drive variant of the robot.
-3. A headless mission node before moving to hardware.
+1. Done: learned floor-marker reader.
+2. Obstacle recognition on the depth cameras (person, pallet, cart, forklift).
+3. Reinforcement learning as a small, bounded correction (docking fine control,
+   recovery after leaving the route); the safety layer stays deterministic.
+
+Then a differential-drive variant on its own branch made from this one, and a
+headless mission node before moving to hardware.
 
 ## License
 
-Apache License 2.0; see [LICENSE](LICENSE). Every package in `src/` declares the same.
+GNU Affero General Public License v3.0 (AGPL-3.0-only); see [LICENSE](LICENSE). Every
+package in `src/` declares the same. This branch uses Ultralytics YOLO (AGPL-3.0) to
+train the marker model, so the branch and the model are AGPL-3.0. The `main` branch
+(the 4WS version without AI) is Apache-2.0.

@@ -6,28 +6,58 @@ import xml.etree.ElementTree as ET
 
 from tugger_control.docking_markers import (
     MARKER_IDS,
-    QR_GRID_SIZE_M,
     RED_FRAME_SIZE_M,
-    decode_floor_marker,
+    detect_floor_tags,
     detect_red_alignment_frame,
+    render_floor_marker,
+    tag_detector,
     downward_camera_planar_error,
     expected_marker,
     marker_asset_directory,
 )
 
 
-def test_every_floor_marker_decodes_to_a_registered_unique_identity():
-    assets = marker_asset_directory()
+def _padded(image, pad=40):
+    return cv2.copyMakeBorder(image, pad, pad, pad, pad, cv2.BORDER_CONSTANT,
+                              value=(255, 255, 255))
+
+
+def test_every_floor_marker_reads_as_a_registered_unique_identity():
+    detector = tag_detector()
     identities = set()
-    detector = cv2.QRCodeDetector()
-    for image_path in sorted(assets.glob('*.png')):
-        image = cv2.imread(str(image_path))
-        identity, corners = decode_floor_marker(detector, image)
-        assert corners is not None
-        assert corners.reshape(4, 2)[0][0] == 60.0
-        assert QR_GRID_SIZE_M == 0.064
-        identities.add(identity)
+    for image_path in sorted(marker_asset_directory().glob('*.png')):
+        payload, image_points, object_points, ids = detect_floor_tags(
+            detector, _padded(cv2.imread(str(image_path))))
+        assert len(ids) == 4 and len(image_points) == len(object_points) == 16
+        identities.add(payload)
     assert identities == MARKER_IDS
+
+
+def test_any_single_quarter_identifies_the_station():
+    detector = tag_detector()
+    for payload in sorted(MARKER_IDS):
+        image = _padded(render_floor_marker(payload))
+        h, w = image.shape[:2]
+        for keep in range(4):
+            worn = image.copy()
+            for q in range(4):
+                if q != keep:          # wipe every other quarter
+                    r, c = (q in (2, 3)), (q in (1, 2))
+                    worn[r * h // 2:(r + 1) * h // 2, c * w // 2:(c + 1) * w // 2] = 120
+            found, points, _, ids = detect_floor_tags(detector, worn)
+            assert found == payload and len(ids) == 1 and len(points) == 4
+
+
+def test_the_tag_corners_give_the_plate_pose_back():
+    detector = tag_detector()
+    image = _padded(render_floor_marker('TUGGER:S3'), pad=100)
+    _, image_points, object_points, _ = detect_floor_tags(detector, image)
+    # A virtual camera looking straight down: plate centre at the image centre.
+    f, cx = 500.0, image.shape[1] / 2
+    camera = np.array([[f, 0, cx], [0, f, image.shape[0] / 2], [0, 0, 1]])
+    ok, rvec, tvec = cv2.solvePnP(object_points, image_points, camera, np.zeros(5),
+                                  flags=cv2.SOLVEPNP_IPPE)
+    assert ok and abs(tvec[0, 0]) < 1e-3 and abs(tvec[1, 0]) < 1e-3
 
 
 def test_station_markers_are_unique_and_match_the_registered_identities():

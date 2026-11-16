@@ -80,11 +80,11 @@
     <!-- Unique, high-contrast QR fiducials at HOME and the docking centres.
          `model://` is resolved through GZ_SIM_RESOURCE_PATH; the old
          file://media URI was not an absolute file URI and rendered black. -->
-    <model name="qr_home"><static>true</static><pose>0 0 0.004 0 0 0</pose><link name="link"><visual name="red_alignment_frame"><cast_shadows>false</cast_shadows><geometry><plane><normal>0 0 1</normal><size>0.12 0.12</size></plane></geometry><material><ambient>0.90 0.02 0.02 1</ambient><diffuse>0.90 0.02 0.02 1</diffuse></material></visual><visual name="qr"><pose>0 0 0.001 0 0 0</pose><cast_shadows>false</cast_shadows><geometry><plane><normal>0 0 1</normal><size>0.10 0.10</size></plane></geometry><material><ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse><pbr><metal><albedo_map>model://tugger_gazebo/media/qr/home.png</albedo_map><roughness>0.8</roughness><metalness>0.0</metalness></metal></pbr></material></visual></link></model>
-    <model name="qr_station_1"><static>true</static><pose>-17.5 -7.0 0.004 0 0 0</pose><link name="link"><visual name="red_alignment_frame"><cast_shadows>false</cast_shadows><geometry><plane><normal>0 0 1</normal><size>0.12 0.12</size></plane></geometry><material><ambient>0.90 0.02 0.02 1</ambient><diffuse>0.90 0.02 0.02 1</diffuse></material></visual><visual name="qr"><pose>0 0 0.001 0 0 0</pose><cast_shadows>false</cast_shadows><geometry><plane><normal>0 0 1</normal><size>0.10 0.10</size></plane></geometry><material><ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse><pbr><metal><albedo_map>model://tugger_gazebo/media/qr/station_1.png</albedo_map><roughness>0.8</roughness><metalness>0.0</metalness></metal></pbr></material></visual></link></model>
-    <model name="qr_dropoff_2"><static>true</static><pose>-17.5 7.0 0.004 0 0 0</pose><link name="link"><visual name="red_alignment_frame"><cast_shadows>false</cast_shadows><geometry><plane><normal>0 0 1</normal><size>0.12 0.12</size></plane></geometry><material><ambient>0.90 0.02 0.02 1</ambient><diffuse>0.90 0.02 0.02 1</diffuse></material></visual><visual name="qr"><pose>0 0 0.001 0 0 0</pose><cast_shadows>false</cast_shadows><geometry><plane><normal>0 0 1</normal><size>0.10 0.10</size></plane></geometry><material><ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse><pbr><metal><albedo_map>model://tugger_gazebo/media/qr/dropoff_2.png</albedo_map><roughness>0.8</roughness><metalness>0.0</metalness></metal></pbr></material></visual></link></model>
-    <model name="qr_station_3"><static>true</static><pose>17.5 7.0 0.004 0 0 0</pose><link name="link"><visual name="red_alignment_frame"><cast_shadows>false</cast_shadows><geometry><plane><normal>0 0 1</normal><size>0.12 0.12</size></plane></geometry><material><ambient>0.90 0.02 0.02 1</ambient><diffuse>0.90 0.02 0.02 1</diffuse></material></visual><visual name="qr"><pose>0 0 0.001 0 0 0</pose><cast_shadows>false</cast_shadows><geometry><plane><normal>0 0 1</normal><size>0.10 0.10</size></plane></geometry><material><ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse><pbr><metal><albedo_map>model://tugger_gazebo/media/qr/station_3.png</albedo_map><roughness>0.8</roughness><metalness>0.0</metalness></metal></pbr></material></visual></link></model>
-    <model name="qr_dropoff_4"><static>true</static><pose>17.5 -7.0 0.004 0 0 0</pose><link name="link"><visual name="red_alignment_frame"><cast_shadows>false</cast_shadows><geometry><plane><normal>0 0 1</normal><size>0.12 0.12</size></plane></geometry><material><ambient>0.90 0.02 0.02 1</ambient><diffuse>0.90 0.02 0.02 1</diffuse></material></visual><visual name="qr"><pose>0 0 0.001 0 0 0</pose><cast_shadows>false</cast_shadows><geometry><plane><normal>0 0 1</normal><size>0.10 0.10</size></plane></geometry><material><ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse><pbr><metal><albedo_map>model://tugger_gazebo/media/qr/dropoff_4.png</albedo_map><roughness>0.8</roughness><metalness>0.0</metalness></metal></pbr></material></visual></link></model>
+    <model name="qr_home"><static>true</static><pose>0 0 0.004 0 0 0</pose><link name="link"><visual name="red_alignment_frame"><cast_shadows>false</cast_shadows><geometry><plane><normal>0 0 1</normal><size>0.12 0.12</size></plane></geometry><material><ambient>0.90 0.02 0.02 1</ambient><diffuse>0.90 0.02 0.02 1</diffuse></material></visual><visual name="qr"><pose>0 0 0.001 0 0 0</pose><cast_shadows>false</cast_shadows><geometry><plane><normal>0 0 1</normal><size>0.10 0.10</size></plane></geometry><material><ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse><pbr><metal><albedo_map>model://tugger_gazebo/media/markers/home.png</albedo_map><roughness>0.8</roughness><metalness>0.0</metalness></metal></pbr></material></visual></link></model>
+    <model name="qr_station_1"><static>true</static><pose>-17.5 -7.0 0.004 0 0 0</pose><link name="link"><visual name="red_alignment_frame"><cast_shadows>false</cast_shadows><geometry><plane><normal>0 0 1</normal><size>0.12 0.12</size></plane></geometry><material><ambient>0.90 0.02 0.02 1</ambient><diffuse>0.90 0.02 0.02 1</diffuse></material></visual><visual name="qr"><pose>0 0 0.001 0 0 0</pose><cast_shadows>false</cast_shadows><geometry><plane><normal>0 0 1</normal><size>0.10 0.10</size></plane></geometry><material><ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse><pbr><metal><albedo_map>model://tugger_gazebo/media/markers/station_1.png</albedo_map><roughness>0.8</roughness><metalness>0.0</metalness></metal></pbr></material></visual></link></model>
+    <model name="qr_dropoff_2"><static>true</static><pose>-17.5 7.0 0.004 0 0 0</pose><link name="link"><visual name="red_alignment_frame"><cast_shadows>false</cast_shadows><geometry><plane><normal>0 0 1</normal><size>0.12 0.12</size></plane></geometry><material><ambient>0.90 0.02 0.02 1</ambient><diffuse>0.90 0.02 0.02 1</diffuse></material></visual><visual name="qr"><pose>0 0 0.001 0 0 0</pose><cast_shadows>false</cast_shadows><geometry><plane><normal>0 0 1</normal><size>0.10 0.10</size></plane></geometry><material><ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse><pbr><metal><albedo_map>model://tugger_gazebo/media/markers/dropoff_2.png</albedo_map><roughness>0.8</roughness><metalness>0.0</metalness></metal></pbr></material></visual></link></model>
+    <model name="qr_station_3"><static>true</static><pose>17.5 7.0 0.004 0 0 0</pose><link name="link"><visual name="red_alignment_frame"><cast_shadows>false</cast_shadows><geometry><plane><normal>0 0 1</normal><size>0.12 0.12</size></plane></geometry><material><ambient>0.90 0.02 0.02 1</ambient><diffuse>0.90 0.02 0.02 1</diffuse></material></visual><visual name="qr"><pose>0 0 0.001 0 0 0</pose><cast_shadows>false</cast_shadows><geometry><plane><normal>0 0 1</normal><size>0.10 0.10</size></plane></geometry><material><ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse><pbr><metal><albedo_map>model://tugger_gazebo/media/markers/station_3.png</albedo_map><roughness>0.8</roughness><metalness>0.0</metalness></metal></pbr></material></visual></link></model>
+    <model name="qr_dropoff_4"><static>true</static><pose>17.5 -7.0 0.004 0 0 0</pose><link name="link"><visual name="red_alignment_frame"><cast_shadows>false</cast_shadows><geometry><plane><normal>0 0 1</normal><size>0.12 0.12</size></plane></geometry><material><ambient>0.90 0.02 0.02 1</ambient><diffuse>0.90 0.02 0.02 1</diffuse></material></visual><visual name="qr"><pose>0 0 0.001 0 0 0</pose><cast_shadows>false</cast_shadows><geometry><plane><normal>0 0 1</normal><size>0.10 0.10</size></plane></geometry><material><ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse><pbr><metal><albedo_map>model://tugger_gazebo/media/markers/dropoff_4.png</albedo_map><roughness>0.8</roughness><metalness>0.0</metalness></metal></pbr></material></visual></link></model>
     <model name="north_wall">
       <static>true</static>
       <pose>0 12.45 4 0 0 0</pose>
@@ -597,40 +597,6 @@
           </material>
         </visual>
         <gravity>true</gravity>
-      </link>
-    </model>
-    <model name="cargo_dropoff_northwest">
-      <static>true</static>
-      <pose>-17.5 7.0 0.0015 0 0 0</pose>
-      <link name="marker_link">
-        <visual name="green_target_visual">
-          <geometry>
-            <box>
-              <size>1.3 1.3 0.003</size>
-            </box>
-          </geometry>
-          <material>
-            <ambient>0.0 0.85 0.0 1</ambient>
-            <diffuse>0.0 0.85 0.0 1</diffuse>
-          </material>
-        </visual>
-      </link>
-    </model>
-    <model name="cargo_dropoff_southeast">
-      <static>true</static>
-      <pose>17.5 -7.0 0.0015 0 0 0</pose>
-      <link name="marker_link">
-        <visual name="green_target_visual">
-          <geometry>
-            <box>
-              <size>1.3 1.3 0.003</size>
-            </box>
-          </geometry>
-          <material>
-            <ambient>0.0 0.85 0.0 1</ambient>
-            <diffuse>0.0 0.85 0.0 1</diffuse>
-          </material>
-        </visual>
       </link>
     </model>
     <model name="forbidden_zone_compact_rack_0_0">

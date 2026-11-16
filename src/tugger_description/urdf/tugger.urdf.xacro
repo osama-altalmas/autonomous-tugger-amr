@@ -569,11 +569,12 @@
 
   </joint>
 
-  <!-- Thin, 50 mm square QR camera below the intact lower chassis.  Its
+  <!-- Thin, 50 mm square QR camera below the intact lower chassis, lying
+       flat (the link's x axis looks down, so the thin side is along x).  Its
        optical origin remains centred over base_footprint / the lift platform. -->
   <link name="downward_camera_link">
     <visual>
-      <geometry><box size="0.050 0.050 0.005"/></geometry>
+      <geometry><box size="0.005 0.050 0.050"/></geometry>
       <material name="camera_black"/>
     </visual>
     <inertial>
@@ -590,6 +591,79 @@
          underside while retaining a 330 mm-wide 140-degree field of view. -->
     <origin xyz="0 0 -0.040" rpy="0 1.57079632679 0"/>
   </joint>
+
+  <!-- Marker lighting.  Under the robot (and under cargo) almost no room light
+       reaches the floor, so the camera brings its own: a ring of LEDs around
+       the lens (12 LEDs).  The marker image then looks the same at every
+       station, whatever the room light.  A real robot also needs a light
+       shield (a brush skirt, about 0.40 x 0.34 m, chassis to 10 mm above the
+       floor, inside the wheels) to keep room light and shadows out; it is
+       left out of the model because it does not change the simulated image. -->
+  <xacro:property name="led_ring_radius" value="0.070"/>
+  <!-- Ring board: an open 12-sided ring around the camera (the 50 mm camera
+       sits in its 124 mm opening), flush with the camera's top, 16 mm wide.
+       LEDs at 70 mm from the lens: on a 12 cm marker 6 cm below, a real
+       ring this size lights tags, frame sides and corners within about
+       +-30 % of each other; at 44.5 mm the frame corners got 36 % of the
+       centre's light (estimate 2026-11-15, LEDs spreading as cos). -->
+  <xacro:property name="ring_inner" value="0.062"/>
+  <xacro:property name="ring_outer" value="0.078"/>
+  <!-- LED ring: an open ring board around the camera, 12 LEDs on a 70 mm
+       circle around the lens, each a wide diffused spot light shining down.
+       The light cones are not drawn in the Gazebo editor (visualize false). -->
+  <xacro:property name="led_count" value="12"/>
+  <xacro:property name="led_level" value="0.04"/>
+  <xacro:macro name="ring_led" params="n">
+    <xacro:property name="angle" value="${2 * pi * (n + 0.5) / led_count}"/>
+    <visual name="led_ring_segment_${n}">
+      <origin xyz="${(ring_inner + ring_outer) / 2 * cos(angle)} ${(ring_inner + ring_outer) / 2 * sin(angle)} -0.039" rpy="0 0 ${angle}"/>
+      <geometry><box size="${ring_outer - ring_inner} ${2 * ring_outer * tan(pi / led_count)} 0.003"/></geometry>
+      <material name="gap_dark"/>
+    </visual>
+    <visual name="marker_led_${n}">
+      <origin xyz="${led_ring_radius * cos(angle)} ${led_ring_radius * sin(angle)} -0.041" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.004" length="0.002"/></geometry>
+      <material name="led_white"/>
+    </visual>
+  </xacro:macro>
+  <xacro:macro name="ring_led_light" params="n">
+    <xacro:property name="angle" value="${2 * pi * (n + 0.5) / led_count}"/>
+    <gazebo reference="base_link">
+      <light name="marker_led_${n}" type="spot">
+        <pose>${led_ring_radius * cos(angle)} ${led_ring_radius * sin(angle)} -0.0425 0 0 0</pose>
+        <visualize>false</visualize>
+        <cast_shadows>false</cast_shadows>
+        <diffuse>${led_level} ${led_level} ${led_level} 1</diffuse>
+        <specular>0.03 0.03 0.03 1</specular>
+        <direction>0 0 -1</direction>
+        <attenuation><range>0.5</range><constant>0.2</constant><linear>2.0</linear><quadratic>20.0</quadratic></attenuation>
+        <spot><inner_angle>1.8</inner_angle><outer_angle>2.9</outer_angle><falloff>1.0</falloff></spot>
+      </light>
+    </gazebo>
+  </xacro:macro>
+  <material name="led_white">
+    <color rgba="1.0 1.0 0.92 1.0"/>
+  </material>
+  <link name="led_ring_link">
+    <xacro:ring_led n="0"/><xacro:ring_led n="1"/><xacro:ring_led n="2"/><xacro:ring_led n="3"/>
+    <xacro:ring_led n="4"/><xacro:ring_led n="5"/><xacro:ring_led n="6"/><xacro:ring_led n="7"/>
+    <xacro:ring_led n="8"/><xacro:ring_led n="9"/><xacro:ring_led n="10"/><xacro:ring_led n="11"/>
+    <inertial>
+      <mass value="0.05"/>
+      <inertia ixx="0.00001" ixy="0" ixz="0" iyy="0.00001" iyz="0" izz="0.00001"/>
+    </inertial>
+  </link>
+  <joint name="led_ring_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="led_ring_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  <xacro:ring_led_light n="0"/><xacro:ring_led_light n="1"/>
+  <xacro:ring_led_light n="2"/><xacro:ring_led_light n="3"/>
+  <xacro:ring_led_light n="4"/><xacro:ring_led_light n="5"/>
+  <xacro:ring_led_light n="6"/><xacro:ring_led_light n="7"/>
+  <xacro:ring_led_light n="8"/><xacro:ring_led_light n="9"/>
+  <xacro:ring_led_light n="10"/><xacro:ring_led_light n="11"/>
 
 
 

@@ -25,6 +25,10 @@ setup(
             glob('config/*.yaml') + glob('config/*.json')
         ),
         (
+            os.path.join('share', package_name, 'models'),
+            glob('models/*.onnx')
+        ),
+        (
             os.path.join('share', package_name, 'launch'),
             glob('launch/*.launch.py')
         ),

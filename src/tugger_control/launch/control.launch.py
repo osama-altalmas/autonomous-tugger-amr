@@ -68,7 +68,7 @@ def generate_launch_description():
         executable='qr_docking_vision',
         name='qr_docking_vision',
         output='screen',
-        parameters=[{'use_sim_time': True, 'qr_grid_size_m': 0.064}],
+        parameters=[{'use_sim_time': True}],
     )
 
     sim_motion_gate = Node(

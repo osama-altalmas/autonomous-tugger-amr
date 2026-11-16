@@ -1,8 +1,8 @@
 {
   "schema": "amr_single_segment_mission_path_v1_index",
   "source_sha256": {
-    "route_database": "e223e3ffd6d405ed18175650b9138f05754f5721bc7119f6cb55f2991848befd",
-    "candidates": "8e6dd423170db18f3a19f27e47d2b3b3cf5290989a1b149c56c219d72d8ba335"
+    "route_database": "89831e41d95fecdbd57e0ff0ed8289c53afefca0d8a821f9469a8b27ccdc20fe",
+    "candidates": "af48cfddb9621f4200867d84225c20e3bead4cde1c3cbc29f58186f9e8510937"
   },
   "paths": {
     "HOME__TO__cargo_dropoff_northwest": {

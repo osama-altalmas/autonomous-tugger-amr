@@ -1,0 +1,157 @@
+{
+ "images": {
+  "real": 401,
+  "foreign": 1002,
+  "gone": 61,
+  "empty": 50
+ },
+ "outcomes": {
+  "classic/empty": {
+   "none": 50
+  },
+  "classic/foreign": {
+   "none": 949,
+   "wrong": 53
+  },
+  "classic/gone": {
+   "none": 61
+  },
+  "classic/real": {
+   "right": 236,
+   "none": 165
+  },
+  "v2/empty": {
+   "not found": 50,
+   "none": 50
+  },
+  "v2/foreign": {
+   "found": 925,
+   "wrong": 414,
+   "none": 588,
+   "not found": 77
+  },
+  "v2/gone": {
+   "not found": 10,
+   "none": 56,
+   "found": 51,
+   "wrong": 5
+  },
+  "v2/real": {
+   "found": 390,
+   "right": 190,
+   "none": 200,
+   "not found": 11,
+   "wrong": 11
+  },
+  "v3/empty": {
+   "not found": 50,
+   "none": 50
+  },
+  "v3/foreign": {
+   "found": 993,
+   "none": 979,
+   "wrong": 23,
+   "not found": 9
+  },
+  "v3/gone": {
+   "not found": 30,
+   "none": 55,
+   "found": 31,
+   "wrong": 6
+  },
+  "v3/real": {
+   "found": 394,
+   "right": 327,
+   "frame fitted": 211,
+   "frame not fitted": 190,
+   "not found": 7,
+   "none": 74
+  }
+ },
+ "real_by_damage": {
+  "classic/clean": {
+   "right": 66
+  },
+  "classic/heavy": {
+   "none": 85,
+   "right": 9
+  },
+  "classic/light": {
+   "right": 105,
+   "none": 15
+  },
+  "classic/medium": {
+   "right": 56,
+   "none": 65
+  },
+  "v2/clean": {
+   "right": 66
+  },
+  "v2/heavy": {
+   "none": 79,
+   "wrong": 3,
+   "right": 12
+  },
+  "v2/light": {
+   "right": 73,
+   "none": 45,
+   "wrong": 2
+  },
+  "v2/medium": {
+   "none": 76,
+   "right": 39,
+   "wrong": 6
+  },
+  "v3/clean": {
+   "right": 66
+  },
+  "v3/heavy": {
+   "right": 42,
+   "none": 52
+  },
+  "v3/light": {
+   "right": 114,
+   "none": 6
+  },
+  "v3/medium": {
+   "right": 105,
+   "none": 16
+  }
+ },
+ "v3_states": {
+  "real": {
+   "OK": 188,
+   "FAULT": 198,
+   "ALERT": 15
+  },
+  "foreign": {
+   "FAULT": 995,
+   "ALERT": 7
+  },
+  "gone": {
+   "FAULT": 61
+  },
+  "empty": {
+   "FAULT": 50
+  }
+ },
+ "v3_keypoints": {
+  "frame_corners": {
+   "median_px": 1.5,
+   "p90_px": 6.0
+  },
+  "tag_corners": {
+   "median_px": 1.1,
+   "p90_px": 4.2
+  },
+  "fitted_frame": {
+   "median_px": 0.3,
+   "p90_px": 0.7
+  }
+ },
+ "cpu_ms_median": {
+  "v3": 134.0,
+  "classic": 3.2,
+  "v2": 103.2
+ }
+}
