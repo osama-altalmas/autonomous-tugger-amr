@@ -65,9 +65,11 @@ from tugger_control.visual_marker_guard import FixedMarkerGuard
 from tugger_control.docking_markers import expected_marker
 from tugger_control.live_route_planner import LiveRoutePlanner
 from tugger_control.obstacle_policy import (
+    may_move,
     AVOID, CARGO_HALF_WIDTH_M, CONTINUE, DETOUR_OBJECT_RADIUS_M, DETOUR_WORLD_MARGIN_M, GAP_ROUTE_M,
     GAP_ROUTE_MIN_M, GAP_STATION_M, HOLD_EXTRA_GAP_M, SLOW_PASS_SPEED_M_S, route_objects,
-    HOLD_EXTRA_LOOK_AHEAD_M, LOOK_AHEAD_M, ObstacleSupervisor,
+    HOLD_EXTRA_LOOK_AHEAD_M, LOOK_AHEAD_M, ObstacleSupervisor, split_for_look,
+    BACKUP_SPEED_M_S, plan_backup,
     ROBOT_HALF_WIDTH_M, effective_phase, interfering, path_ahead, plan_detour)
 from tugger_control.saved_route_repository import (
     MissionPathRepository,
@@ -1034,6 +1036,8 @@ class OperatorBridge(Node):
 
     def start_mission(self, destination, candidates, station_targets):
         """Operator request: a new mission with a fresh recovery budget."""
+        self._backups_done = []         # back up once per object, per mission
+        self._backup = None
         self._mission_retry = {'destination': destination, 'candidates': candidates,
                                'targets': station_targets, 'attempts': 0}
         self._mission_confirm = None
@@ -2245,7 +2249,12 @@ class OperatorBridge(Node):
         else:
             ahead, gap = path_ahead(xy, pose[:2], length=1e9), GAP_STATION_M + extra_gap
             in_way = interfering(self._obstacles, ahead, half, gap)
-        self._update_slow_pass(slow if hold is None and not in_way else [])
+        approach = []
+        if phase == 'route' and hold is None:
+            # Look before deciding: drive on slowly so the cameras can see it.
+            in_way, approach = split_for_look(in_way, ahead)
+        self._update_slow_pass(slow if hold is None and not in_way else [],
+                               approach if not in_way else [])
         detour = getattr(self, '_detour_obstacle', None)
         if detour is not None:
             # Already going around this one, with room to spare; a new measure
@@ -2264,14 +2273,16 @@ class OperatorBridge(Node):
         if hold is None:
             self._begin_obstacle_hold(phase, action, in_way)
         if (action == AVOID and self._active_follow is None and self._obstacle_hold is not None
-                and not self._obstacle_hold.get('wait_only')):
+                and not self._obstacle_hold.get('wait_only')
+                and getattr(self, '_backup', None) is None):   # backing up: wait for it to clear
             self._avoid_obstacle(pose, in_way, half)
 
     def _begin_obstacle_hold(self, phase, action, in_way):
         first = in_way[0]
         kind = 'moving' if first.get('moving') else 'stationary'
+        noun = first.get('cls') or 'object'     # named by the colour cameras (AI)
         where = 'at the station: waiting until it is gone' if phase == 'station' else 'waiting'
-        self._report(f'OBSTACLE: {kind} object ({first["r"] * 2:.2f} m wide) at '
+        self._report(f'OBSTACLE: {kind} {noun} ({first["r"] * 2:.2f} m wide) at '
                      f'({first["x"]:.2f}, {first["y"]:.2f}) in the way; {where}.')
         self._obstacle_hold = {'phase': phase, 'path': getattr(self, '_followed_path', None)
                                if self._active_follow is not None else None}
@@ -2316,7 +2327,12 @@ class OperatorBridge(Node):
             o['x'] - target['x'], o['y'] - target['y']) <= DETOUR_OBJECT_RADIUS_M]
         if interfering(nearby, [(x, y) for x, y in points], half, GAP_ROUTE_M - 1e-3):
             return False
-        prepared = prepare_dynamic_path(points, heading)
+        try:
+            # A path the robot could not start along (heading off by more
+            # than the tolerance) is not a clear detour; it must never raise.
+            prepared = prepare_dynamic_path(points, heading)
+        except ValueError:
+            return False
         poses = [[x, y, h] for (x, y), h in zip(points, prepared['body_headings'])]
         cargo = self._confirmed_cargo()
         try:
@@ -2335,32 +2351,117 @@ class OperatorBridge(Node):
         except (ValueError, TypeError):
             return False
 
+    def _points_path(self, points, heading):
+        prepared = prepare_dynamic_path(points, heading)
+        path = NavPath()
+        path.header.frame_id = 'map'
+        path.header.stamp = self.get_clock().now().to_msg()
+        for (x, y), body in zip(points, prepared['body_headings']):
+            path.poses.append(self._pose([x, y, body]))
+        return path
+
+    def _start_detour(self, bent, target, heading):
+        self._report(f'OBSTACLE: going around the object at '
+                     f'({target["x"]:.2f}, {target["y"]:.2f}).')
+        path = self._points_path(bent, heading)
+        # The detour and the rest of the route run at normal route speed
+        # (user decision); the safety fields still slow or stop the robot.
+        self._detour_obstacle = {'x': target['x'], 'y': target['y'], 'close': False}
+        self._publish_speed_limit(0.0)
+        self._follow(path)
+
+    def _backed_up_for(self, target):
+        done = getattr(self, '_backups_done', [])
+        return any(math.hypot(target['x'] - x, target['y'] - y) <= 1.0 for x, y in done)
+
+    def _try_backup(self, pose, route, target, half):
+        """Back up, then go around (user, 2026-11-20). Returns True when the robot
+        is backing up or waiting for the way behind it to clear."""
+        if self._backed_up_for(target):
+            return False                # once per object; then the network is replanned
+        # Each candidate detour starts behind the robot, where the body faces
+        # the way the driven path ran there (round a corner: 30 deg from now),
+        # so it is checked with that heading, not the present one.
+        def clear(points):
+            heading = math.atan2(points[1][1] - points[0][1], points[1][0] - points[0][0])
+            return self._detour_clear(points, heading, half, target)
+        plan = plan_backup(route, pose[:2], target, half, clear)
+        if plan is None:
+            return False
+        back, bent = plan
+        behind = [o for o in self._obstacles if o is not target and
+                  math.hypot(o['x'] - target['x'], o['y'] - target['y']) > 1.0]
+        if interfering(behind, back, half, GAP_ROUTE_MIN_M):
+            if not getattr(self, '_backup_wait_reported', False):
+                self._backup_wait_reported = True
+                self._report('OBSTACLE: something is behind the robot; waiting for it to clear '
+                             'before backing up.')
+            return True                 # the hold stays; this is checked again next tick
+        self._backup_wait_reported = False
+        try:
+            reverse = self._points_path(back, pose[2])
+        except ValueError as exc:       # cannot reverse along it: replan instead
+            self._report(f'OBSTACLE: cannot back up here ({exc}).')
+            return False
+        length = sum(math.dist(a, b) for a, b in zip(back, back[1:]))
+        self._report(f'OBSTACLE: too close to go around the object at ({target["x"]:.2f}, '
+                     f'{target["y"]:.2f}); backing up {length:.2f} m at '
+                     f'{BACKUP_SPEED_M_S:.1f} m/s, then going around.')
+        self._backups_done = getattr(self, '_backups_done', []) + [(target['x'], target['y'])]
+        self._backup = {'route': route, 'target': dict(target), 'half': half,
+                        'path': self._obstacle_hold['path']}
+        self._obstacle_hold = None
+        self._obstacle_supervisor.reset()
+        self._publish_speed_limit(BACKUP_SPEED_M_S)
+        self._follow(reverse)
+        return True
+
+    def _finish_backup(self, succeeded):
+        """After backing up: plan the detour again from the measured pose."""
+        backup, self._backup = self._backup, None
+        self._publish_speed_limit(0.0)
+        try:
+            pose = self._robot_pose()
+        except Exception:
+            pose = None
+        target, half = backup['target'], backup['half']
+        bent = None
+        if succeeded and pose is not None:
+            bent = plan_detour(backup['route'], pose[:2], target, half,
+                               lambda points: self._detour_clear(points, pose[2], half, target))
+        if bent is not None:
+            try:
+                self._start_detour(bent, target, pose[2])
+                return
+            except ValueError as exc:
+                self._report(f'OBSTACLE: the detour cannot start from here ({exc}).')
+        self._report('OBSTACLE: backed up, but going around still does not fit; '
+                     'replanning another way.')
+        self._replan_around(backup['route'], half, {'path': backup['path']})
+
     def _avoid_obstacle(self, pose, in_way, half):
-        """Go around if there is room, else take another way to the goal."""
+        """Go around if there is room, else back up and go around, else take
+        another way to the goal."""
         hold = self._obstacle_hold
         route = [(p.pose.position.x, p.pose.position.y) for p in hold['path'].poses]
         target = min(in_way, key=lambda o: math.hypot(o['x'] - pose[0], o['y'] - pose[1]))
-        # Never squeeze past something moving: only a standing object is passed.
-        bent = (None if any(o.get('moving') for o in in_way) else
+        # Never squeeze past something moving, nor a person or forklift that may
+        # move: only a standing object is passed; for those, another way is taken.
+        moving = any(may_move(o) for o in in_way)
+        bent = (None if moving else
                 plan_detour(route, pose[:2], target, half,
                             lambda points: self._detour_clear(points, pose[2], half, target)))
+        if bent is None and not moving and self._try_backup(pose, route, target, half):
+            return
         self._obstacle_hold = None
         self._obstacle_supervisor.reset()
         if bent is not None:
-            self._report(f'OBSTACLE: going around the object at '
-                         f'({target["x"]:.2f}, {target["y"]:.2f}).')
-            prepared = prepare_dynamic_path(bent, pose[2])
-            path = NavPath()
-            path.header.frame_id = 'map'
-            path.header.stamp = self.get_clock().now().to_msg()
-            for (x, y), heading in zip(bent, prepared['body_headings']):
-                path.poses.append(self._pose([x, y, heading]))
-            # The detour and the rest of the route run at normal route speed
-            # (user decision); the safety fields still slow or stop the robot.
-            self._detour_obstacle = {'x': target['x'], 'y': target['y'], 'close': False}
-            self._publish_speed_limit(0.0)
-            self._follow(path)
+            self._start_detour(bent, target, pose[2])
             return
+        self._replan_around(route, half, hold)
+
+    def _replan_around(self, route, half, hold=None):
+        """Take another way: the route network first, then the live planners."""
         retry = self._mission_retry
         if retry is None:
             self._report('OBSTACLE: no room to go around and no mission to replan. Robot stopped.')
@@ -2368,7 +2469,8 @@ class OperatorBridge(Node):
         self._report('OBSTACLE: cannot pass it here; replanning another way.')
         # If no other way can be planned either, wait on this path for the
         # way to clear (see _continuation_watchdog) rather than give up.
-        self._obstacle_fallback = {'phase': hold['phase'], 'path': hold['path']}
+        path = hold['path'] if hold is not None else self._followed_path
+        self._obstacle_fallback = {'phase': 'route', 'path': path}
         self._obstacle_keepout = [(o['x'], o['y'], o['r'] + half + GAP_ROUTE_MIN_M)
                                   for o in self._obstacles]
         clear = [c for c in retry['candidates']
@@ -2376,17 +2478,27 @@ class OperatorBridge(Node):
         self._continue_after_undock = True
         self.execute_destination(retry['destination'], clear, retry['targets'])
 
-    def _update_slow_pass(self, slow):
-        """Pass a standing object 15-50 cm away at reduced speed (user, 2026-11-14)."""
+    def _update_slow_pass(self, slow, approach=()):
+        """Pass a standing object 15-50 cm away at reduced speed (user, 2026-11-14),
+        and approach one the cameras have not looked at yet at the same speed
+        (look before deciding, user 2026-11-20)."""
         active = getattr(self, '_slow_pass', False)
-        if slow and not active:
+        reported = getattr(self, '_look_reported', set())
+        for o in approach:
+            if o['id'] not in reported:
+                self._report(f'OBSTACLE: object at ({o["x"]:.2f}, {o["y"]:.2f}) in the way, not yet '
+                             f'seen by the cameras; approaching at {SLOW_PASS_SPEED_M_S:.1f} m/s '
+                             f'to look before deciding.')
+        self._look_reported = reported | {o['id'] for o in approach} if approach else set()
+        if (slow or approach) and not active:
             self._slow_pass = True
-            first = slow[0]
-            self._report(f'OBSTACLE: passing an object at ({first["x"]:.2f}, {first["y"]:.2f}) '
-                         f'with less than {GAP_ROUTE_M * 100:.0f} cm to spare; slowing to '
-                         f'{SLOW_PASS_SPEED_M_S:.1f} m/s.')
+            if slow:
+                first = slow[0]
+                self._report(f'OBSTACLE: passing an object at ({first["x"]:.2f}, {first["y"]:.2f}) '
+                             f'with less than {GAP_ROUTE_M * 100:.0f} cm to spare; slowing to '
+                             f'{SLOW_PASS_SPEED_M_S:.1f} m/s.')
             self._publish_speed_limit(SLOW_PASS_SPEED_M_S)
-        elif not slow and active:
+        elif not (slow or approach) and active:
             self._slow_pass = False
             self._publish_speed_limit(0.0)
 
@@ -3721,6 +3833,11 @@ class OperatorBridge(Node):
                 self._execution_done(False, GoalStatus.STATUS_CANCELED)
                 return
             succeeded = status == GoalStatus.STATUS_SUCCEEDED
+            if getattr(self, '_backup', None) is not None and (
+                    succeeded or getattr(self, '_obstacle_hold', None) is None):
+                self._active_follow = None
+                self._finish_backup(succeeded)
+                return
             if not succeeded and getattr(self, '_obstacle_hold', None) is not None:
                 self._active_follow = None      # stopped on purpose; it resumes
                 return

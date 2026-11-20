@@ -61,6 +61,7 @@ setup(
             'marker_localization = tugger_control.marker_localization:main',
             'refined_localization = tugger_control.refined_localization:main',
             'obstacle_monitor = tugger_control.obstacle_monitor:main',
+            'obstacle_recognition = tugger_control.obstacle_recognition:main',
             'docking_precision_controller = tugger_control.docking_precision_controller:main',
             'nav2_startup_guard = tugger_control.nav2_startup_guard:main',
         ],

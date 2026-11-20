@@ -14,10 +14,12 @@ fitted precisely from its visible sides (marker_geometry). The state:
   OK     marker found with confidence >= ALERT_BELOW, at least two tags of
          one station read, frame fitted
   ALERT  still reads, but the confidence is below ALERT_BELOW or only one
-         tag is left: clean or replace the marker soon
+         tag is left, or the red frame is too worn to fit and its position
+         comes from two or more readable tags (frame_from_tags): clean or
+         replace the marker soon
   FAULT  no marker or confidence below FAULT_BELOW, no tag readable (or tags
-         of two stations), a wrong station, or a frame that cannot be fitted
-         precisely
+         of two stations), a wrong station, or a frame that can be measured
+         neither from its sides nor from at least two tags
 
 The camera brings its own light (an LED ring around the lens, so the
 floor under the robot and its cargo is lit the same everywhere). The light is
@@ -33,7 +35,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from tugger_control.docking_markers import STATION_MARKER_IDS
+from tugger_control.docking_markers import STATION_MARKER_IDS, TAG_PAYLOAD, tag_object_corners
 from tugger_control.marker_geometry import fit_frame
 from tugger_control.marker_identity import identify
 
@@ -120,8 +122,53 @@ def light_check(image):
     return dict(result, state='OK', reason='')
 
 
-def assess(detections, identity=None, expected_station=None, frame_fit=None):
-    """Reader state from the best detection, its tags and the frame fit (module doc)."""
+TAG_FIT_MIN_TAGS = 2           # frame from the tags only with two or more readable tags
+TAG_FIT_MAX_RESIDUAL_PX = 2.5  # tag corners must agree with one plane this well
+
+
+def frame_from_tags(identity, min_tags=TAG_FIT_MIN_TAGS, max_residual_px=TAG_FIT_MAX_RESIDUAL_PX):
+    """The red frame's corners from the readable tags (v3 review M1, 2026-11-18).
+
+    When too little of the red frame is left to fit it, the tags that still
+    read give the marker's plane: their corners' places on the plate are
+    exactly known (docking_markers.tag_object_corners), so a homography from
+    those (8 to 16) points maps the frame's corners into the image. Refused
+    with fewer than `min_tags` tags or when the corners do not fit one plane
+    within `max_residual_px` (a misplaced keypoint): refusing is a FAULT,
+    never a wrong position. Corners in the marker's own order (TL, TR, BR, BL),
+    in the tag plate's plane (in the simulation 1 mm above the frame: 2 % larger
+    about the image centre; a printed marker is flat).
+    """
+    if not identity or identity.get('state') != 'OK':
+        return {'ok': False, 'reason': 'tags not read'}
+    kp = np.asarray(identity['marker_keypoints'], dtype=np.float64)
+    image_pts, plate_pts, used = [], [], []
+    for tag in identity['tags']:
+        q = tag['quarter']
+        if tag.get('ok') and TAG_PAYLOAD.get(tag['tag_id']) == identity['payload']:
+            image_pts.append(kp[4 + 4 * q:8 + 4 * q])
+            plate_pts.append(tag_object_corners(tag['tag_id'])[:, :2])
+            used.append(q)
+    if len(used) < min_tags:
+        return {'ok': False, 'reason': f'{len(used)} tag(s) readable, {min_tags} needed', 'tags_used': used}
+    image_pts, plate_pts = np.concatenate(image_pts), np.concatenate(plate_pts)
+    homography, _ = cv2.findHomography(plate_pts, image_pts, 0)
+    if homography is None:
+        return {'ok': False, 'reason': 'tag corners give no plane', 'tags_used': used}
+    back = cv2.perspectiveTransform(plate_pts.reshape(-1, 1, 2), homography).reshape(-1, 2)
+    residual = float(np.sqrt(np.mean(np.sum((back - image_pts) ** 2, axis=1))))
+    if residual > max_residual_px:
+        return {'ok': False, 'reason': f'tag corners disagree ({residual:.1f} px)',
+                'tags_used': used, 'residual_px': residual}
+    h = FRAME_SIZE_M / 2
+    frame = np.array([[-h, h], [h, h], [h, -h], [-h, -h]], dtype=np.float64)
+    corners = cv2.perspectiveTransform(frame.reshape(-1, 1, 2), homography).reshape(-1, 2)
+    return {'ok': True, 'corners': corners, 'residual_px': residual, 'tags_used': used}
+
+
+def assess(detections, identity=None, expected_station=None, frame_fit=None, tag_fit=None):
+    """Reader state from the best detection, its tags and the frame fit (module doc).
+    tag_fit: frame_from_tags() result, used when the frame fit is refused."""
     if not detections:
         return {'state': 'FAULT', 'station': None, 'confidence': 0.0,
                 'reason': 'no marker found'}
@@ -145,6 +192,10 @@ def assess(detections, identity=None, expected_station=None, frame_fit=None):
         return dict(result, state='FAULT',
                     reason=f'reads {station}, expected {expected_station} (wrong station?)')
     if frame_fit is not None and not frame_fit.get('ok'):
+        if tag_fit is not None and tag_fit.get('ok'):
+            return dict(result, state='ALERT', frame_source='tags',
+                        reason=f'red frame worn ({frame_fit.get("reason")}): position taken '
+                        f'from {len(tag_fit["tags_used"])} tags; clean or replace the marker soon')
         return dict(result, state='FAULT', reason='red frame cannot be measured precisely: '
                     f'{frame_fit.get("reason")}')
     if score < ALERT_BELOW:
@@ -182,20 +233,29 @@ def read_marker(model, image, side_px, expected_station=None):
     own order TL, TR, BR, BL), 'marker_turn' and 'frame_residual_px'.
     """
     detections = model.detect(image)
-    fit, identity = None, None
+    fit, identity, tag_fit = None, None, None
     if detections:
         keypoints = detections[0][6][:, :2]
         identity = identify(image, keypoints)
         if side_px is not None:
             fit = fit_frame(image, keypoints[:4], side_px)
-    result = assess(detections, identity, expected_station, fit)
+            if not fit.get('ok'):
+                tag_fit = frame_from_tags(identity)
+    result = assess(detections, identity, expected_station, fit, tag_fit)
     result['detections'] = len(detections)
     result['payload'] = identity.get('payload') if identity else None
-    if fit is not None and fit.get('ok') and result['payload']:
+    if result['state'] == 'FAULT' or not result['payload']:
+        return result
+    if fit is not None and fit.get('ok'):
         result['frame_corners'] = marker_ordered_corners(
             fit['corners'], identity['marker_keypoints'])
-        result['marker_turn'] = identity['turn']
+        result['frame_source'] = 'frame'
         result['frame_residual_px'] = round(fit['residual_px'], 2)
+    elif tag_fit is not None and tag_fit.get('ok'):
+        result['frame_corners'] = tag_fit['corners']
+        result['frame_residual_px'] = round(tag_fit['residual_px'], 2)
+    if 'frame_corners' in result:
+        result['marker_turn'] = identity['turn']
     return result
 
 

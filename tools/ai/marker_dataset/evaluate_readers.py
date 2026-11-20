@@ -34,7 +34,8 @@ from tugger_control.docking_markers import detect_floor_tags, tag_detector  # no
 from tugger_control.marker_geometry import fit_frame  # noqa: E402
 from tugger_control.marker_identity import identify  # noqa: E402
 from tugger_control.marker_reader import (  # noqa: E402
-    CAMERA_HEIGHT_M, FAULT_BELOW, FRAME_SIZE_M, MarkerModel, STATION_OF_PAYLOAD, assess)
+    CAMERA_HEIGHT_M, FAULT_BELOW, FRAME_SIZE_M, MarkerModel, STATION_OF_PAYLOAD, assess,
+    frame_from_tags)
 
 FOCAL_PX = 320 / np.tan(2.44346 / 2)    # downward camera: 640 px wide, 140 degree view
 SIDE_PX = FOCAL_PX * FRAME_SIZE_M / CAMERA_HEIGHT_M   # red frame side in the image (as the node)
@@ -97,7 +98,7 @@ def main():
     counts = defaultdict(Counter)        # (reader, kind) -> outcome counts
     by_level = defaultdict(Counter)      # (reader, level) on real markers
     states = defaultdict(Counter)        # v3 state per kind
-    frame_err, tag_err, fit_err, times = [], [], [], defaultdict(list)
+    frame_err, tag_err, fit_err, tagfit_err, times = [], [], [], [], defaultdict(list)
     rows = []
     for s in samples:
         img = cv2.imread(str(test / 'images' / s['file']))
@@ -116,15 +117,17 @@ def main():
         t = time.perf_counter()
         det = v3.detect(img)
         found = bool(det) and det[0][1] >= FAULT_BELOW
-        named, fit, ident = None, None, None
+        named, fit, ident, tag_fit = None, None, None, None
         if det:
             kp = det[0][6][:, :2]
             ident = identify(img, kp)
             fit = fit_frame(img, kp[:4], SIDE_PX)
+            if not fit['ok']:
+                tag_fit = frame_from_tags(ident)     # 2026-11-18: frame from the tags
             if ident['state'] == 'OK':
                 named = STATION_OF_PAYLOAD.get(ident['payload'])
         times['v3'].append(time.perf_counter() - t)
-        state = assess(det, ident, expected, fit)['state']
+        state = assess(det, ident, expected, fit, tag_fit)['state']
         states[kind][state] += 1
         if gt is not None and det:
             e = np.hypot(*(kp - gt).T)
@@ -133,12 +136,22 @@ def main():
             if fit['ok']:
                 fit_err.append(cyclic_error(fit['corners'], true_frame))
                 row['fit_error_px'] = round(fit_err[-1], 2)
+            elif tag_fit and tag_fit['ok'] and state != 'FAULT':
+                # The tag fit lies in the tag plate's plane: compare with the captured
+                # (plate-plane) frame corners, not the ones moved onto the red frame.
+                plate_frame = np.asarray(clean[s['clean']]['keypoints'])[:4]
+                tagfit_err.append(cyclic_error(tag_fit['corners'], plate_frame))
+                row['tag_fit_error_px'] = round(tagfit_err[-1], 2)
+                row['tag_fit_tags'] = len(tag_fit['tags_used'])
         row['v3'] = {'found': found, 'score': round(det[0][1], 3) if det else 0.0,
                      'station': named, 'fit_ok': bool(fit and fit['ok']), 'state': state}
         counts['v3', kind]['found' if found else 'not found'] += 1
         counts['v3', kind][station_outcome(named, truth if kind == 'real' else None)] += 1
         if kind == 'real':
-            counts['v3', kind]['frame fitted' if fit and fit['ok'] else 'frame not fitted'] += 1
+            counts['v3', kind]['frame fitted' if fit and fit['ok'] else
+                               'frame from tags' if 'tag_fit_error_px' in row else 'no position'] += 1
+            if 'fit_error_px' in row or 'tag_fit_error_px' in row:
+                by_level['v3 position', s['level']]['given'] += 1
             by_level['v3', s['level']][station_outcome(named, truth)] += 1
 
         t = time.perf_counter()
@@ -172,7 +185,8 @@ def main():
         'real_by_damage': {f'{r}/{lv}': dict(c) for (r, lv), c in sorted(by_level.items())},
         'v3_states': {k: dict(c) for k, c in states.items()},
         'v3_keypoints': {'frame_corners': q(frame_err), 'tag_corners': q(tag_err),
-                         'fitted_frame': q(fit_err)},
+                         'fitted_frame': q(fit_err), 'frame_from_tags': q(tagfit_err),
+                         'frame_from_tags_max_px': round(max(tagfit_err), 2) if tagfit_err else None},
         'cpu_ms_median': {r: round(1000 * float(np.median(t)), 1) for r, t in times.items()},
     }
     (out / 'report.json').write_text(json.dumps(report, indent=1))

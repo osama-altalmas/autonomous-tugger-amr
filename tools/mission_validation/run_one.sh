@@ -13,7 +13,9 @@ tools/mission_validation/isolated_stack.sh down $D
 tools/mission_validation/isolated_stack.sh up $D
 for _ in $(seq 1 300); do [ -f "$TUGGER_VALIDATION_DIR/domain_$D/nav2_ready" ] && break; sleep 2; done
 [ -f "$TUGGER_VALIDATION_DIR/domain_$D/nav2_ready" ] || { echo STACK_NOT_READY; tools/mission_validation/isolated_stack.sh down $D; exit 3; }
-ROS_DOMAIN_ID=$D GZ_PARTITION=tugger_validation_$D timeout 3000 python3 tools/mission_validation/mission_runner.py \
+# Wall-clock limit for the whole run (the per-leg limit is in simulated time);
+# raise TUGGER_RUN_WALL_S when a Gazebo window slows the simulation down.
+ROS_DOMAIN_ID=$D GZ_PARTITION=tugger_validation_$D timeout ${TUGGER_RUN_WALL_S:-3000} python3 tools/mission_validation/mission_runner.py \
     "$@" --output "$OUT/$NAME.json" --timeout 900 > "$OUT/$NAME.log" 2>&1
 echo runner_exit=$?
 for f in control amcl; do cp "$TUGGER_VALIDATION_DIR/domain_$D/$f.log" "$OUT/$NAME.$f.log" 2>/dev/null; done

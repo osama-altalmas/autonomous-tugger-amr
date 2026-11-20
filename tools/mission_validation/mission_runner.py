@@ -336,6 +336,10 @@ class Recorder(Node):
         return result
 
 
+IDLE_LIMIT_S = 120.0          # simulated seconds with nothing running: the leg has stalled
+WALL_BACKSTOP_FACTOR = 10.0   # wall-clock limit = this x the simulated limit
+
+
 class Runner:
     def __init__(self, timeout, trial_routes=(), trial_candidates=()):
         self.timeout = timeout
@@ -583,12 +587,22 @@ class Runner:
             self.bridge._motion_armed = True
             if action != 'none':
                 self.bridge.select_cargo_action(action)
-            deadline = time.monotonic() + self.timeout
+            # The limit is in simulated time, the robot's own time: with the
+            # Gazebo window open the simulation ran at 0.18x real time and a
+            # wall-clock limit stopped a leg while it was still docking
+            # (half cycle, 2026-11-20). A wall-clock backstop still ends a
+            # run whose simulation has frozen.
+            sim_now = self.recorder._now
+            deadline = sim_now() + self.timeout
+            wall_deadline = time.monotonic() + self.timeout * WALL_BACKSTOP_FACTOR
+
+            def in_time():
+                return sim_now() < deadline and time.monotonic() < wall_deadline
             # A loaded departure asks for a new RUN at staging, as for an operator.
             # Press RUN once, like an operator; the panel continues by itself
             # after undocking. Press again only if nothing is running.
             first = True
-            while self.finished is None and time.monotonic() < deadline:
+            while self.finished is None and in_time():
                 self.planned = False
                 if first or not self._busy():
                     confirm = getattr(self.bridge, '_mission_confirm', None)
@@ -602,13 +616,12 @@ class Runner:
                         print('confirming the warning with a second RUN', flush=True)
                         self.bridge.run_selected_mission_with_retry(True)
                 first = False
-                idle_limit = time.monotonic() + 120.0
-                while (self.finished is None and not self.planned and
-                       time.monotonic() < deadline):
+                idle_limit = sim_now() + IDLE_LIMIT_S
+                while (self.finished is None and not self.planned and in_time()):
                     self.spin_until(lambda: self.finished is not None or self.planned, 5.0)
                     if self._busy():
-                        idle_limit = time.monotonic() + 120.0
-                    elif time.monotonic() > idle_limit:
+                        idle_limit = sim_now() + IDLE_LIMIT_S
+                    elif sim_now() > idle_limit:
                         deadline = 0.0
             if self.finished is None:
                 result['outcome'] = 'TIMEOUT'
@@ -740,7 +753,8 @@ def main():
     parser.add_argument('--leading-yaw', type=float, default=0.0,
                         help='robot yaw at the staging pose for --sweep')
     parser.add_argument('--output', required=True)
-    parser.add_argument('--timeout', type=float, default=600.0)
+    parser.add_argument('--timeout', type=float, default=600.0,
+                        help='per leg, in simulated seconds (see WALL_BACKSTOP_FACTOR)')
     parser.add_argument('--trial-route', action='append', default=[],
                         help='Allow this unapproved route in this run only')
     parser.add_argument('--trial-candidate', action='append', default=[],

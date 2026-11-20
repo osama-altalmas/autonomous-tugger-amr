@@ -93,6 +93,11 @@ def generate_launch_description():
         package='tugger_control', executable='obstacle_monitor',
         name='tugger_obstacle_monitor', output='screen',
     )
+    # AI (AMR-V3): names the tracked obstacles from the colour cameras.
+    obstacle_recognition = Node(
+        package='tugger_control', executable='obstacle_recognition',
+        name='tugger_obstacle_recognition', output='screen',
+    )
     marker_localization = Node(
         package='tugger_control', executable='marker_localization',
         name='tugger_marker_localization', output='screen',
@@ -132,4 +137,5 @@ def generate_launch_description():
         cargo_id_reader,
         marker_localization,
         obstacle_monitor,
+        obstacle_recognition,
     ])

@@ -25,6 +25,9 @@ def generate_launch_description():
         # Empty keeps the normal GUI. Validation runs pass
         # '-s --headless-rendering' so cameras render without a window.
         DeclareLaunchArgument('gz_extra_args', default_value=''),
+        # Another world file (e.g. a station with a worn marker for validation).
+        # Empty = the normal warehouse world.
+        DeclareLaunchArgument('world', default_value=''),
         # Fault testing only (tools/fault_testing): 'true' publishes the
         # laser scanners and the IMU under /sim_raw/..., and the fault relay
         # passes them on to the normal topics, with a chosen fault applied.
@@ -56,7 +59,7 @@ def _simulation(context):
         'tugger.urdf.xacro'
     )
 
-    world_file = os.path.join(
+    world_file = LaunchConfiguration('world').perform(context) or os.path.join(
         gazebo_pkg,
         'worlds',
         'tugger_warehouse.sdf'
@@ -215,6 +218,20 @@ def _simulation(context):
         output='screen'
     )
 
+    # Colour cameras for obstacle recognition. Lazy: Gazebo renders them only
+    # while a ROS node subscribes, so they cost nothing when unused.
+    recognition_camera_bridge = Node(
+        package='ros_gz_bridge',
+        executable='parameter_bridge',
+        name='recognition_camera_bridge',
+        arguments=[
+            '/front_rgb/image_raw@sensor_msgs/msg/Image[gz.msgs.Image',
+            '/rear_rgb/image_raw@sensor_msgs/msg/Image[gz.msgs.Image',
+        ],
+        parameters=[{'lazy': True}],
+        output='screen'
+    )
+
     # The detachable-joint Gazebo systems use Empty messages for cargo pickup
     # and release.  The RQt panel publishes the ROS endpoints below.
     cargo_attachment_bridge = Node(
@@ -306,6 +323,7 @@ def _simulation(context):
         imu_bridge,
         lidar_bridge,
         camera_bridge,
+        recognition_camera_bridge,
         cargo_attachment_bridge,
         bumper_bridge,
         spawn_robot,

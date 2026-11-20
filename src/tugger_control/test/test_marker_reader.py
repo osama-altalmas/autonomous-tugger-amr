@@ -1,8 +1,11 @@
 """YOLO-pose marker reader (v3, one class): output decoding and the OK/ALERT/FAULT rule."""
 import numpy as np
 
-from tugger_control.marker_reader import (KEYPOINTS, assess, decode, letterbox, light_check,
-                                          marker_ordered_corners)
+import cv2
+
+from tugger_control.docking_markers import STATION_TAG_BASE, tag_object_corners
+from tugger_control.marker_reader import (FRAME_SIZE_M, KEYPOINTS, assess, decode, frame_from_tags,
+                                          letterbox, light_check, marker_ordered_corners)
 
 CLASSES = 1
 
@@ -57,6 +60,39 @@ def test_a_frame_that_cannot_be_fitted_is_a_fault_even_when_the_station_reads():
     result = assess(det(0.95), tags(), frame_fit={'ok': False, 'sides_seen': 1,
                                                   'reason': 'fewer than two adjacent frame sides'})
     assert result['state'] == 'FAULT' and 'measured precisely' in result['reason']
+
+
+def test_a_worn_frame_with_two_readable_tags_is_an_alert_with_a_position():
+    worn = {'ok': False, 'sides_seen': 2, 'reason': 'two opposite sides only'}
+    result = assess(det(0.95), tags(), frame_fit=worn, tag_fit={'ok': True, 'tags_used': [0, 2]})
+    assert result['state'] == 'ALERT' and result['frame_source'] == 'tags'
+    refused = assess(det(0.95), tags(), frame_fit=worn, tag_fit={'ok': False, 'reason': '1 tag'})
+    assert refused['state'] == 'FAULT'
+
+
+def _identity(readable, payload='TUGGER:S3', shift=None):
+    """Marker-ordered keypoints of a marker seen through a known homography."""
+    plate_to_img = np.array([[2000.0, 150.0, 320.0], [-120.0, -2050.0, 240.0], [0.3, 0.2, 1.0]])
+    h = FRAME_SIZE_M / 2
+    frame = np.array([[-h, h], [h, h], [h, -h], [-h, -h]])
+    base = STATION_TAG_BASE[payload]
+    pts = [frame] + [tag_object_corners(base + q)[:, :2] for q in range(4)]
+    kp = cv2.perspectiveTransform(np.concatenate(pts).reshape(-1, 1, 2), plate_to_img).reshape(-1, 2)
+    if shift is not None:
+        kp[4 + shift] += (12.0, -9.0)                     # one misplaced tag corner
+    tags_ = [{'quarter': q, 'tag_id': base + q, 'ok': q in readable} for q in range(4)]
+    truth = cv2.perspectiveTransform(frame.reshape(-1, 1, 2), plate_to_img).reshape(-1, 2)
+    return {'state': 'OK', 'payload': payload, 'tags': tags_, 'marker_keypoints': kp.tolist()}, truth
+
+
+def test_the_frame_comes_from_two_or_more_tags_and_is_refused_otherwise():
+    for readable in ([0, 2], [1, 2, 3], [0, 1, 2, 3]):
+        identity, truth = _identity(readable)
+        fit = frame_from_tags(identity)
+        assert fit['ok'] and np.abs(fit["corners"] - truth).max() < 1e-3
+    assert not frame_from_tags(_identity([3])[0])['ok']              # one tag: no position
+    bad = frame_from_tags(_identity([0, 1], shift=0)[0])              # tag corners disagree
+    assert not bad['ok'] and 'disagree' in bad['reason']
 
 
 def test_the_wrong_station_is_a_fault():

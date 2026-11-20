@@ -248,6 +248,9 @@ class QrDockingVision(Node):
                               f'{result.get("reason") or "frame not fitted"}')
             self._publish_debug(image, message.header, payload)
             return
+        if result.get('frame_source') == 'tags':
+            self._warn_reader(f'{payload}: red frame worn, position from the tags '
+                              f'({result.get("reason")})')
         checked = self._publish_frame_pose(corners, message.header)
         # Heading from the fitted frame: its corners are in the marker's own
         # order, so the plate axes are the same as the tags' (docking_markers).

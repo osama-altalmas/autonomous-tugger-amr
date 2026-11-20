@@ -79,6 +79,7 @@ tools/v1_manhattan_bezier/phase14/routes_refined/phase14f_*.json
 /ai_data/**
 !/ai_data/**/
 !/ai_data/PROCESS.md
+!/ai_data/PROCESS_obstacles.md
 !/ai_data/*.png
 !/ai_data/iteration*/*.png
 !/ai_data/iteration*/previews/*.png

@@ -11,6 +11,56 @@ import threading
 from pathlib import Path
 
 
+ANCHOR_MAX_M = 0.05     # at most this far (a grid cell) is an end moved onto its true pose
+
+
+def _anchor_run(poses, target, from_end):
+    """Shift the straight run at one end of ``poses`` sideways onto the line
+    through ``target`` (x, y, heading), fully at that end and fading to nothing
+    where the run starts, and put that end exactly on ``target``."""
+    order = list(range(len(poses) - 1, -1, -1)) if from_end else list(range(len(poses)))
+    heading = poses[order[0]][2]
+    run = []
+    for i in order:
+        if abs(math.remainder(poses[i][2] - heading, 2 * math.pi)) > 1e-3:
+            break
+        run.append(i)
+    if len(run) < 2:
+        return poses
+    nx, ny = -math.sin(target[2]), math.cos(target[2])     # sideways (either way along the axis)
+    end = poses[run[0]]
+    offset = (end[0] - target[0]) * nx + (end[1] - target[1]) * ny
+    out = [list(p) for p in poses]
+    for k, i in enumerate(run):
+        weight = 1.0 - k / (len(run) - 1)
+        out[i][0] -= weight * offset * nx
+        out[i][1] -= weight * offset * ny
+    out[run[0]][0], out[run[0]][1] = target[0], target[1]
+    return out
+
+
+def anchor_ends(poses, start_pose, entry):
+    """Put the path's ends exactly on the robot's pose and on the station entry.
+
+    The A* works on map cell centres, half a cell (2.5 cm on each axis) from
+    the robot's real pose and from the entry pose, so the path missed the entry
+    by 3.5 cm and was rejected (2026-11-20). Each straight end run is moved
+    sideways onto the true line, fading out along the run, and its end point
+    set exactly. Only an end within ANCHOR_MAX_M and running along the true
+    heading is moved; anything else is left for the checks to judge."""
+    out = [list(p) for p in poses]
+    if len(out) < 2:
+        return out
+    for target, from_end in ((entry, True), (start_pose, False)):
+        end = out[-1] if from_end else out[0]
+        # The start may leave forward or in reverse along the body axis.
+        period = 2 * math.pi if from_end else math.pi
+        if (math.hypot(end[0] - target[0], end[1] - target[1]) <= ANCHOR_MAX_M and
+                abs(math.remainder(end[2] - target[2], period)) <= 1e-3):
+            out = _anchor_run(out, target, from_end)
+    return out
+
+
 class LiveRoutePlanner:
     def __init__(self, tools_dir, map_yaml, *, world=None, clearance=1.05, corner_trim=1.0,
                  max_curvature=1.6, centre_weight=None):
@@ -133,6 +183,7 @@ class LiveRoutePlanner:
                                             float(spec['resolution']))),
                     centre_cost=centre_cost, centre_weight=weight,
                     corner_penalty=generator.CORNER_PENALTY_M / float(spec['resolution']))
+                candidate['poses'] = anchor_ends(candidate['poses'], start_pose, entry)
                 self._audit(candidate['poses'], boxes)
                 if best is None or candidate['length_m'] < best[0]['length_m']:
                     best = (candidate, entry)

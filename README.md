@@ -6,16 +6,39 @@ stations, docks under cargo on floor markers to a 10 mm / 1° target, lifts and
 delivers the cargo, and reacts to unexpected obstacles. It has been tested against
 realistic warehouse faults (sensors, markers, moved racks, people, worn tyres).
 
-**This branch, AMR-V3,** is the finished 4WS version (branch `main`) plus AI. Done so
-far: a learned floor-marker reader (YOLO11n-pose) that also reads worn and dirty
-markers and docks with them. Next: obstacle recognition, then reinforcement learning.
-No physical robot exists yet.
+**This branch, `AMR-V3`, is the AI-integrated version.** It is the finished 4WS
+robot from branch `main` plus two learned (AI) components: a floor-marker reader
+for docking and an obstacle recogniser on the colour cameras. **Branch `main` has no
+AI**: the same robot with rule-based behaviour only. No physical robot exists yet.
 
 > **For AI assistants and new readers:** this file is written so you can install,
-> run and explain the project without reading the source. Use
+> run and explain the project without reading the source. Start with
+> [Project summary](#project-summary-for-ai-assistants); use
 > [Where to change things](#where-to-change-things) to go straight to the right
 > file. [TERMINAL_COMMANDS.md](TERMINAL_COMMANDS.md) has the full per-terminal
 > startup with checks.
+
+## Project summary (for AI assistants)
+
+| Question | Answer |
+|---|---|
+| What is it? | A simulated autonomous mobile robot (AMR) that tows/lifts cargo in a warehouse: it drives between 4 stations and HOME, docks on floor markers to 10 mm, lifts or lowers cargo, and handles obstacles |
+| Robot type | Four-wheel-steered (4WS) tugger, each wheel steered and driven; car-like (Ackermann) driving, turn in place, crab at docking |
+| Software stack | ROS 2 Lyrical, Gazebo Sim 10, Nav2, ros2_control; Python nodes plus C++ Nav2 plugins; Cyclone DDS |
+| AI (this branch only) | YOLO11n-pose floor-marker reader; YOLO11n obstacle recogniser (person, pallet, cart, forklift); both exported to ONNX and run on the CPU. Trained with Ultralytics on synthetic Gazebo images (+ open real datasets for obstacles) |
+| Design idea | Rules are the baseline: safe, predictable, explainable. The AI adds understanding (what an object is, which station a worn marker belongs to). Later the AI is meant to optimise execution and smoothness; the safety layer always stays rule-based |
+| Main entry points | Operator panel / mission engine `src/tugger_control/tugger_control/operator_panel.py`; launch files `tugger_gazebo/simulation.launch.py`, `tugger_control/control.launch.py`, `tugger_navigation/localization.launch.py`, `tugger_navigation/nav2.launch.py` |
+| How to run | With windows: [TERMINAL_COMMANDS.md](TERMINAL_COMMANDS.md). Headless test of a mission: [Run](#run) |
+| Hardware | None; simulation only. Safety values follow ISO 3691-4 practice but are not certified |
+| License | This branch AGPL-3.0 (Ultralytics); `main` Apache-2.0 |
+
+## Branches
+
+| Branch | Contents | AI | License |
+|---|---|---|---|
+| `main` | The finished 4WS robot: routes, docking, lift, localization, safety, obstacle handling, fault testing | **No** | Apache-2.0 |
+| `AMR-V3` (this one) | `main` + AI floor-marker reader + AI obstacle recognition + the obstacle behaviour built on it | **Yes** | AGPL-3.0 |
+| (planned) | A differential-drive variant, made from `AMR-V3` | Yes | |
 
 ## Status
 
@@ -26,10 +49,11 @@ No physical robot exists yet.
 | Localization checks: integrity check with relocalization, lost state, odometry scale calibration | Working in simulation |
 | Safety: protective and warning fields, E-stops, bumper, stale-sensor stop, blind-scanner check | Working in simulation |
 | Turn in place (optional checkbox) and crab motion at the docking camera stage | Working in simulation |
-| Obstacle handling | Working in simulation: standing objects, blocked aisles, station blocks, people walking across the route |
+| Obstacle handling | Working in simulation: standing objects, blocked aisles, station blocks, people walking across the route; backs up first when too close to go around. See [Obstacles](#obstacles) |
 | Fault testing (simulation) | Done (2026-11-14): no collision, no wrong dock and no silent stop in any scenario. See [Fault testing](#fault-testing) |
 | AI floor-marker reader (YOLO11n-pose + tag decoding + red-frame fit), LED ring light | Working in simulation and used for docking: 82 % of damaged test markers read (classic reader 59 %), never a wrong station, docks 1.2-6.6 mm. See [Floor-marker reader (AI)](#floor-marker-reader-ai) |
-| AI obstacle recognition, reinforcement learning | Next on this branch |
+| AI obstacle recognition (YOLO11n on the front and rear colour cameras) | Working in simulation and used by the obstacle behaviour: people named from about 6-8 m, pallets from about 3 m. Obstacle campaign 5/5 and an obstacle half cycle 3/3 legs passed (2026-11-20). See [Obstacle recognition (AI)](#obstacle-recognition-ai) |
+| Reinforcement learning (optimising execution) | Next on this branch |
 | Differential drive | Planned on its own branch, made from this one |
 | Real hardware | None. Safety values follow ISO 3691-4 practice but are not certified |
 
@@ -55,10 +79,13 @@ sudo apt install \
   python3-yaml python3-matplotlib python3-pil python3-pytest nlohmann-json3-dev
 ```
 
-There are no pip requirements to run the robot: the marker model runs on the CPU
-with OpenCV's DNN module. Training needs a GPU and Ultralytics 8.3.40; it runs on
-Google Colab with the notebooks in `tools/ai/marker_dataset/`. The Gazebo Python
-bindings come from the ROS vendor packages and are importable only after sourcing ROS.
+There are no pip requirements to run the robot: both AI models run on the CPU with
+OpenCV's DNN module (no GPU needed). The obstacle recogniser uses ONNX Runtime
+instead when it is installed for ROS's Python (about 55 ms per image instead of
+140 ms); it is optional. Training needs a GPU and Ultralytics: the marker model
+on Google Colab (`tools/ai/marker_dataset/`), the obstacle model on Kaggle
+(`tools/ai/obstacle_dataset/`). The Gazebo Python bindings come from the ROS
+vendor packages and are importable only after sourcing ROS.
 
 `rosdep` cannot resolve two keys in the package files (`nlohmann-json3-dev`,
 `ros-lyrical-gz-msgs-vendor`), so use the list above.
@@ -97,7 +124,27 @@ tools/mission_validation/isolated_stack.sh down 77
 ```
 
 Each destination may end in `:attach`, `:detach` or `:none`. Logs are in
-`/tmp/tugger_validation/domain_77/`.
+`/tmp/tugger_validation/domain_77/`. `--timeout` is per leg in **simulated**
+seconds, so a slow PC or an open Gazebo window does not stop a leg early.
+
+**The same in one line, with obstacles in the world** (used for the obstacle tests):
+
+```bash
+# a world with test objects (Gazebo Fuel models; kinds: person, pallet)
+python3 tools/mission_validation/obstacle_world.py /tmp/obstacles.sdf \
+  --object pallet:10:7.8:0 --object person:17.5:-3
+# full reset, run the missions, write OUT/NAME.json and logs, shut down
+TUGGER_SIM_ARGS="world:=/tmp/obstacles.sdf" \
+  tools/mission_validation/run_one.sh /tmp/out half cargo_station_3 cargo_dropoff_southeast HOME --confirm-warnings
+```
+
+Options: `TUGGER_RECOGNITION_DEBUG=<dir>` saves what the obstacle recogniser saw
+(every frame's detections and expected object positions in `looks.jsonl`, plus
+annotated and clean pictures). `TUGGER_RUN_WALL_S` raises the wall-clock limit of
+the whole run (default 3000 s) when a Gazebo window slows the simulation. To watch a
+headless run, start `gz sim -g` and `tools/mission_view/mission_view.py` with
+`ROS_DOMAIN_ID=77 GZ_PARTITION=tugger_validation_77` (from a normal terminal, not
+the VS Code Snap terminal).
 
 **Automated tests:**
 
@@ -124,7 +171,8 @@ The route follower's control law has its own C++ tests (after a build):
 | Drive | Four wheels, each steered and driven |
 | Motion modes | Car-like (counter-phase 4WS with Ackermann angles, tightest radius 0.51 m), turn in place (54°), crab (camera stage only) |
 | Laser scanners | Two, at (0.41, 0.26) and (−0.41, −0.26) m, 275° each, merged into `/scan` |
-| Depth cameras | Front and rear |
+| Depth cameras | Front and rear, 4 m range (obstacle detection, safety) |
+| Colour cameras (AI) | Front and rear, 640 × 480, 87° wide, 5 images/s, 19.5 cm above the floor (obstacle recognition) |
 | Other sensors | IMU, wheel odometry, downward marker camera with a 12-LED ring light, top cargo QR camera, bumper |
 
 Sensors have simulated noise. For tests, realistic faults can be switched on
@@ -223,20 +271,39 @@ slows to 0.3 m/s. E-stops and bumper latch until **Reset safety**. A lost or sta
 A scanner whose window is covered or blinded (no return over 60° that stays while the
 robot drives 1.5 m) also stops it, with a message naming the scanner.
 
-**Obstacles (`obstacle_monitor` + `obstacle_policy`, separate from safety):** objects
-not on the map are tracked up to 6 m ahead, judged by their outline (not a circle
-around them) and classed as stationary or moving. Gaps are measured from the robot's
-side, or from the cargo's edge when loaded.
+### Obstacles
+
+`obstacle_monitor` + `obstacle_recognition` + `obstacle_policy`, separate from
+safety (the safety fields stop for every object, whatever the AI says).
+
+- **Detect (scanners and depth cameras):** points not on the map are grouped into
+  objects (gaps under 0.4 m joined: the robot cannot pass through them anyway) and
+  tracked up to 6 m ahead along the route. **One track per real object:** every scan
+  piece inside a track's outline belongs to it, so a pallet seen as one piece, then
+  as two, stays one steady object. An object is **moving** when its centre travels
+  0.6 m in 2 s, not counting the shift of an object that grows into view round a
+  corner. Gaps are measured from the object's outline (not a circle around it) to
+  the robot's side, or to the cargo's edge when loaded.
+- **Recognise (AI, colour cameras):** each object gets a class when the camera sees
+  it: person, pallet, cart or forklift. See [Obstacle recognition (AI)](#obstacle-recognition-ai).
+- **Decide (rules, `obstacle_policy.py`):**
 
 | Situation | Reaction |
 |---|---|
 | Object does not interfere with the path | Continue |
-| Standing object 15-50 cm from the path's edge | Pass slowly at 0.3 m/s |
-| Standing object closer than 15 cm (in the way), room to pass | Wait 5 s, then detour at normal route speed with a 0.5 m gap, rejoin the route |
-| No room to pass | Take another aisle through the route network |
-| Neither a detour nor another aisle | Wait on the path until it clears; a re-plan that finds nothing is reported as **MISSION STOPPED** |
-| Moving object (a person) | Keep 50 cm; stop and wait; after 30 s look for another path |
-| Interfering object at a station | Hold and alert until it is gone |
+| Object in the way that the cameras have not looked at yet (e.g. the scanners see it round a corner) | Drive on at 0.3 m/s until the cameras have looked, at most to 1.5 m from it; only then decide ("look before deciding") |
+| Person or forklift (may move at any moment), or a moving object | Keep the full 50 cm; never pass it closely or drive around it; stop and wait; after 30 s look for another route |
+| Standing object the cameras looked at but could not name | Keep the full 50 cm (it could be a person), never pass it closely; otherwise handled as a standing object below |
+| Standing pallet or cart (or any standing object when recognition is not running) 15-50 cm from the path's edge | Pass slowly at 0.3 m/s |
+| Standing object in the way, room to pass | Wait 5 s, then go around with a 0.5 m gap on a gentle curve, rejoin the route at normal speed |
+| ... too close to bend out (detour needs about 3.5 m of path before the object) | Back up along the path just driven (straight if it is straight, else along the curve), at 0.3 m/s, at most 2 m, only as far as needed plus 0.25 m, once per object; wait first if something is behind; then go around |
+| No room to go around (even after backing up) | Find another way, in this order: saved route network → live A* (the offline route generator's own planner, object kept out) → Nav2 RRT* Reeds-Shepp planner → short connector to the network |
+| No way found at all | Wait on the path until it clears; a re-plan that finds nothing is reported as **MISSION STOPPED** |
+| Object at a station (interfering) | Hold and alert until it is gone; never back up there |
+
+Every decision is written to the panel, e.g. `OBSTACLE: stationary pallet (1.33 m
+wide) at (9.87, 7.75) in the way; waiting.` then `OBSTACLE: too close to go around
+the object ...; backing up 0.74 m at 0.3 m/s, then going around.`
 
 **Floor markers:** each station has a 12 cm red frame around a white plate with four
 AprilTags (36h11), one per quarter, all naming the station. A marker that cannot be
@@ -288,6 +355,50 @@ tape, smears, wiped frame sides, weak or failed LEDs. Training runs on Google Co
 The full record of every iteration, mistake and result:
 [ai_data/PROCESS.md](ai_data/PROCESS.md).
 
+### Obstacle recognition (AI)
+
+The scanners tell *that* something is in the way and where; the colour cameras tell
+*what* it is. `obstacle_recognition` runs a YOLO11n detector
+(`src/tugger_control/models/obstacles_v5n.onnx`, classes person, pallet, cart,
+forklift; roll cages count as carts, pallet jacks as forklifts) and gives each
+tracked object the class of the detection at its place:
+
+1. **Which camera:** 2.5 images per second, from the camera that has a tracked
+   object in view; with objects in both or neither, the camera facing the driving
+   direction; standing still, in turn.
+2. **Match:** from the object's tracked position and the camera's pose *at the moment
+   the image was taken*, the node computes the image columns it should cover and the
+   row where it stands on the floor; a detection there is its class.
+3. **Vote:** a class is kept when seen at least twice within 3 s (one wrong frame
+   does not relabel an object). An object with one vote is "being recognised" and is
+   not judged yet.
+
+It publishes `/tugger/obstacle_classes`; `obstacle_monitor` adds `cls`, `looks` (how
+often a camera had it in view) and `pending` to `/tugger/obstacles`, and
+`obstacle_policy` reacts (see [Obstacles](#obstacles)). Every 10 s it logs what it did
+(frames, detections, matches, TF failures).
+
+| Measured in simulation (2026-11-20 test runs) | Person | Euro pallet (14 cm high) |
+|---|---|---|
+| Named correctly in camera frames | 88-100 % from 3 to 10 m | 93 % at 3-4 m; 56 % at 2-3 m; 33 % at 4-5 m |
+| Usually named at | about 6 m (at most 8 m) | about 3 m |
+
+| Model test (YOLO11n, dataset v5) | Result |
+|---|---|
+| Synthetic test images (unseen object models), mAP50 / mAP50-95 | 0.879 / 0.747; near forklifts found 94 % |
+| Real images from an unseen warehouse (LOCO site 1), mAP50 / mAP50-95 | 0.591 / 0.339; near people found 91 %, near forklifts only 55 % |
+
+Training data: Gazebo images of the warehouse with randomised worlds and objects
+built from parts (pallets, carts, roll cages, forklifts, pallet trucks, stackers),
+labelled automatically, plus open real datasets (LOCO logistics images, COCO people,
+CC BY Roboflow forklift sets). Training ran on Kaggle (`tools/ai/obstacle_dataset/`).
+Record: [ai_data/PROCESS_obstacles.md](ai_data/PROCESS_obstacles.md).
+
+Known weak spots: a low grey pallet seen from far down is a thin line in the image
+and is sometimes not named or named "forklift" (the robot then uses the safe rule
+for its class or for an unnamed object); real forklifts at a new site need a few
+hundred images from that site. None of this affects safety.
+
 ## Fault testing
 
 Done in simulation on 2026-11-14 (`tools/fault_testing/`), with faults chosen from
@@ -314,29 +425,48 @@ Scenario files: `tools/fault_testing/schedules/`; how to run one:
 (scanners and IMU pass through the fault relay) and `sim_wheel_radius:=` (worn tyres);
 without them the simulation is unchanged.
 
+## Obstacle tests (AI branch)
+
+Headless simulations with Gazebo Fuel models (a standing person and a Euro pallet)
+placed on the routes with `tools/mission_validation/obstacle_world.py`, one run at
+a time from a full reset. Seven campaigns of HOME → Station 3 found and fixed the
+faults (a person judged as a box round a corner, a pallet split into pieces and
+taken for moving, live replanning that always failed by 3.5 cm, a robot too close
+to go around, a crash in the back-up search). Final results (2026-11-20):
+
+| Test | Result |
+|---|---|
+| Campaign 7: pallet round the corner, pallet before the station, person round the corner, person on the straight, no obstacle | 5/5 SUCCESS, docked 1.0-5.5 mm. Pallet round the corner: looked, backed up 0.99 m, went around |
+| Half cycle HOME → Station 3 → Station 4 → HOME with two pallets and a person on the routes (Gazebo window open) | 3/3 legs SUCCESS, docked 3.8-5.1 mm; empty: backed up and went around; loaded: waited for the person, rerouted around both pallets |
+
+Run records: `ai_data/validation_runs/obstacle_recognition/` (local, with
+`RESULTS.md` per campaign).
+
 ## Repository map
 
 | Path | Purpose |
 |---|---|
 | `src/tugger_description` | Robot model (URDF/Xacro, meshes) |
 | `src/tugger_gazebo` | Warehouse world `tugger_warehouse.sdf`, simulation launch, controllers, marker textures (`media/markers/`), cargo tags, C++ Gazebo plugins |
-| `src/tugger_control` | Python nodes, operator panel, all mission logic, tests; `models/` holds the trained marker model |
+| `src/tugger_control` | Python nodes, operator panel, all mission logic, tests; `models/` holds the trained marker model and obstacle model (ONNX) |
 | `src/tugger_navigation` | Nav2 and AMCL configuration, maps, custom RRT* Reeds-Shepp planner plugin, route-following controller plugin |
 | `src/tugger_ground_truth` | True pose from Gazebo, for evaluation only |
 | `tools/v1_manhattan_bezier` | Route generator and the generated routes (`mission_paths/`, `routes/`, `phase14/`) |
 | `tools/mission_approaches` | Generated station gate approaches |
 | `tools/warehouse_validation` | Builds the planning and localization maps from the world file |
-| `tools/mission_validation` | Headless stack, mission runner, repeat-run campaign |
+| `tools/mission_validation` | Headless stack, mission runner, one-run script `run_one.sh`, repeat-run campaign, test worlds with obstacles (`obstacle_world.py`) and worn markers (`worn_marker_world.py`) |
 | `tools/mission_view` | Camera windows, follow view, RViz tracking view, test obstacle placement |
 | `tools/fault_testing` | Fault relay, timed fault scenarios, the campaign's scenario files |
 | `tools/rrt_star_tests` | C++ tests for the planner |
 | `tools/ai/marker_dataset` | Marker dataset generator (Gazebo), damage augmentation, Colab training notebooks, reader comparison |
-| `ai_data` | AI record `PROCESS.md` with its charts and result summaries (datasets and models stay local, several GB) |
+| `tools/ai/obstacle_dataset` | Obstacle dataset generators (Gazebo, objects built from parts), converters for open real datasets, Kaggle training notebooks, model comparison and miss analysis |
+| `ai_data` | AI records `PROCESS.md` (marker reader) and `PROCESS_obstacles.md` (obstacle recognition) with charts and result summaries (datasets, models and run logs stay local, several GB) |
 
 Nodes in `src/tugger_control/tugger_control/` (all started by `control.launch.py`):
 `four_ws_controller`, `four_ws_odometry`, `sim_motion_gate`, `safety_monitor`,
-`scan_merger`, `obstacle_monitor`, `marker_localization`, `qr_docking_vision`,
-`docking_precision_controller`, `cargo_estimator`, `cargo_id_reader`.
+`scan_merger`, `obstacle_monitor`, `obstacle_recognition` (AI), `marker_localization`,
+`qr_docking_vision` (AI marker reader), `docking_precision_controller`,
+`cargo_estimator`, `cargo_id_reader`.
 `refined_localization` is started with AMCL by `tugger_navigation/localization.launch.py`. The other
 files there are libraries. `operator_panel.py` is the mission engine and rqt panel.
 
@@ -361,8 +491,14 @@ optional and are not in the normal startup.
 | Obstacle detection | `src/tugger_control/tugger_control/obstacle_monitor.py` |
 | Robot geometry and sensor placement | `src/tugger_description/urdf/tugger.urdf.xacro` |
 | Warehouse or stations | `src/tugger_gazebo/worlds/tugger_warehouse.sdf`, then run `tools/regenerate_paths_from_world.sh` |
-| Test obstacles | `tools/mission_view/scene_objects.py` (`block`, `box`, `cross`, `pace`, `clear`) |
+| Test obstacles | In a running Gazebo: `tools/mission_view/scene_objects.py` (`block`, `box`, `cross`, `pace`, `clear`). In a world file (people, pallets): `tools/mission_validation/obstacle_world.py --object kind:x:y[:yaw]` |
 | Slow-pass gap and speed, moving-object gap | `GAP_ROUTE_MIN_M`, `SLOW_PASS_SPEED_M_S`, `GAP_ROUTE_M` in `obstacle_policy.py` |
+| Look before deciding, back-up limits, classes waited for | `LOOKS_BEFORE_JUDGING`, `LOOK_STOP_M`, `BACKUP_*`, `MAY_MOVE_CLASSES` in `obstacle_policy.py` |
+| Detour curve sharpness and length | `MAX_RAMP_CURVATURE`, `MIN_RAMP_M`, `DETOUR_*` in `obstacle_policy.py` |
+| Object grouping and tracking (join distance, moving test) | `JOIN_CELLS`, `OWN_MARGIN_M`, `MOVING_DISTANCE_M` in `obstacle_monitor.py` |
+| Obstacle recognition: model, rate, confidence, matching, votes | `MODEL_FILE`, `rate_hz`, `CONF_MIN`, `COLUMN_MARGIN_PX`, `FLOOR_ROW_TOLERANCE`, `MIN_VOTES`, `VOTE_WINDOW_S` in `obstacle_recognition.py` |
+| Colour cameras (resolution, view angle, rate) | `recognition_camera` macro in `src/tugger_description/urdf/tugger.urdf.xacro` (the model was trained for this camera; changing it needs new training images) |
+| Retrain the obstacle model | `tools/ai/obstacle_dataset/` (generator, `pack.sh`, Kaggle notebook), then replace `src/tugger_control/models/obstacles_v5n.onnx` |
 | AMCL re-centre, integrity check, odometry calibration | Constants at the top of `src/tugger_control/tugger_control/refined_localization.py` |
 | Blind-scanner check | `BLIND_SECTOR_DEG`, `BLIND_TRAVEL_M` in `safety_monitor.py` |
 | Fault scenarios | `tools/fault_testing/schedules/*.json` |
@@ -404,8 +540,17 @@ After a config or C++ change, rebuild and restart the affected terminals.
 
 - Simulation only.
 - Obstacle logic does not see objects sitting above the scanner plane.
+- Low objects (a pallet is 14 cm high) are seen only by the depth cameras, so from
+  about 4 m; the robot then often has to back up before it can go around.
 - Obstacle positions are not remembered, so a replan avoids only where an object is now.
-- A bumper hit needs a manual reset, and there is no reverse recovery.
+- A bumper hit needs a manual reset (backing up exists only for going around an obstacle).
+- The obstacle model is trained mostly on simulated images; low grey pallets from far
+  away are its weak spot, and real forklifts at a new site need images from that
+  site. The simulated colour cameras are wider (87°) than a real RealSense D435's
+  colour camera (69°).
+- Choices are rule-based and sometimes cautious (e.g. a loaded robot rerouted
+  instead of going around a pallet in a wide aisle); optimising them is the planned
+  AI step.
 - The slow-pass speed (0.3 m/s) is an assumption, not a standard value.
 - The AI reader is trained on simulated images only; real camera photos are needed
   before it can be trusted on a real robot. Heavily damaged markers (about half of
@@ -428,9 +573,15 @@ After a config or C++ change, rebuild and restart the affected terminals.
 On this branch (AMR-V3), in order:
 
 1. Done: learned floor-marker reader.
-2. Obstacle recognition on the depth cameras (person, pallet, cart, forklift).
-3. Reinforcement learning as a small, bounded correction (docking fine control,
-   recovery after leaving the route); the safety layer stays deterministic.
+2. Done: obstacle recognition on the colour cameras (person, pallet, cart,
+   forklift) and the obstacle behaviour built on it. Next for it: more training
+   images of low pallets, possibly a high-resolution camera with a cut-out around
+   the expected object, and a tilted camera.
+3. Validate the whole rule-based system (both half cycles and full cycles with
+   obstacles) and freeze it as the baseline.
+4. Reinforcement learning to optimise execution and smoothness on top of the rules
+   (docking fine control, recovery after leaving the route, choices such as backing
+   up or rerouting); the safety layer stays deterministic.
 
 Then a differential-drive variant on its own branch made from this one, and a
 headless mission node before moving to hardware.
@@ -439,5 +590,5 @@ headless mission node before moving to hardware.
 
 GNU Affero General Public License v3.0 (AGPL-3.0-only); see [LICENSE](LICENSE). Every
 package in `src/` declares the same. This branch uses Ultralytics YOLO (AGPL-3.0) to
-train the marker model, so the branch and the model are AGPL-3.0. The `main` branch
-(the 4WS version without AI) is Apache-2.0.
+train the marker and obstacle models, so the branch and the models are AGPL-3.0. The
+`main` branch (the 4WS version without AI) is Apache-2.0.
